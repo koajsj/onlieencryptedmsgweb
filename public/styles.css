@@ -465,6 +465,16 @@ textarea:disabled {
   background: rgba(139, 123, 255, 0.08);
 }
 
+.chat-badge[data-state="secure"] {
+  border-color: rgba(70, 213, 159, 0.3);
+  background: rgba(70, 213, 159, 0.14);
+}
+
+.chat-badge[data-state="error"] {
+  border-color: rgba(255, 127, 138, 0.38);
+  background: rgba(255, 127, 138, 0.12);
+}
+
 .security-strip {
   display: flex;
   align-items: center;
@@ -478,11 +488,51 @@ textarea:disabled {
   font-size: 14px;
 }
 
-.security-strip > div {
+.security-main {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 10px;
+}
+
+.security-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.security-state-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.security-state-badge[data-state="pending"] {
+  color: #ffe1ad;
+  border-color: rgba(255, 197, 109, 0.34);
+  background: rgba(255, 197, 109, 0.14);
+}
+
+.security-state-badge[data-state="secure"] {
+  color: #b9ffe4;
+  border-color: rgba(70, 213, 159, 0.36);
+  background: rgba(70, 213, 159, 0.14);
+}
+
+.security-state-badge[data-state="error"] {
+  color: #ffd7dc;
+  border-color: rgba(255, 127, 138, 0.38);
+  background: rgba(255, 127, 138, 0.14);
 }
 
 .status-dot {
@@ -519,6 +569,11 @@ textarea:disabled {
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-weight: 800;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.safety-copy {
+  min-height: 38px;
   white-space: nowrap;
 }
 
@@ -848,6 +903,20 @@ textarea:disabled {
   .security-strip {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .security-tools {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .security-state-badge {
+    order: 1;
+  }
+
+  .safety-copy {
+    width: 100%;
+    order: 3;
   }
 
   .field-row,

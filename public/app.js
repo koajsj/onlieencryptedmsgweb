@@ -19,10 +19,14 @@ const elements = {
   peerBadge: $("#peerBadge"),
   roomTitle: $("#roomTitle"),
   secureDot: $("#secureDot"),
+  secureStateBadge: $("#secureStateBadge"),
   secureText: $("#secureText"),
   safetyCode: $("#safetyCode"),
+  safetyCopy: $("#safetyCopy"),
   messageList: $("#messageList"),
   emptyState: $("#emptyState"),
+  emptyTitle: $("#emptyTitle"),
+  emptyHint: $("#emptyHint"),
   typingIndicator: $("#typingIndicator"),
   messageForm: $("#messageForm"),
   messageInput: $("#messageInput"),
@@ -43,7 +47,9 @@ const state = {
   helloEchoedFor: new Set(),
   pendingMessages: [],
   seenMessageIds: new Set(),
-  toastTimer: 0
+  toastTimer: 0,
+  presenceCount: 0,
+  disconnected: false
 };
 
 function loadClientId() {
@@ -124,6 +130,21 @@ function setTypingIndicator(visible) {
   elements.typingIndicator.hidden = !visible;
 }
 
+function setSecurityState(label, stateName) {
+  elements.secureStateBadge.textContent = label;
+  elements.secureStateBadge.dataset.state = stateName;
+}
+
+function setSafetyCode(code, copyable) {
+  elements.safetyCode.textContent = code;
+  elements.safetyCopy.disabled = !copyable;
+}
+
+function setEmptyState(title, hint) {
+  elements.emptyTitle.textContent = title;
+  elements.emptyHint.textContent = hint;
+}
+
 function setComposerEnabled(enabled) {
   elements.messageInput.disabled = !enabled;
   elements.sendButton.disabled = !enabled;
@@ -178,7 +199,10 @@ function setConnectedUi() {
   setDot("pending");
   setBadge(elements.connectionBadge, "在线", "pending");
   setBadge(elements.peerBadge, "等待配对", "pending");
+  setSecurityState("协商中", "pending");
+  setSafetyCode("----", false);
   setTypingIndicator(true);
+  setEmptyState("等待对方加入", "连接已建立，正在等待另一位成员进入房间。");
   elements.secureText.textContent = "等待对方加入";
 }
 
@@ -188,7 +212,9 @@ function resetSessionUi() {
   elements.cryptoState.textContent = "未建立";
   elements.roomTitle.textContent = "尚未进入房间";
   elements.secureText.textContent = "输入房间号和口令后开始";
-  elements.safetyCode.textContent = "----";
+  setSecurityState("待建立", "idle");
+  setSafetyCode("----", false);
+  setEmptyState("还没有消息", "加入房间并建立密钥后即可发送加密消息。");
   setBadge(elements.connectionBadge, "离线", "idle");
   setBadge(elements.peerBadge, "未配对", "idle");
   elements.leaveButton.disabled = true;
@@ -276,9 +302,11 @@ async function buildSession(peerPublicKeyB64) {
   );
 
   const safetyDigest = await sha256(concatBytes([encoder.encode("SecureRoom SAS v1|"), ikm]));
-  elements.safetyCode.textContent = formatSafetyCode(safetyDigest);
+  setSafetyCode(formatSafetyCode(safetyDigest), true);
   elements.cryptoState.textContent = "已建立";
   elements.secureText.textContent = "已建立密钥，请核对安全码";
+  setSecurityState("安全会话", "secure");
+  setEmptyState("会话已加密", "安全码一致后即可放心交流。");
   setBadge(elements.connectionBadge, "安全", "secure");
   setDot("secure");
   setTypingIndicator(false);
@@ -328,6 +356,7 @@ async function handleHello(from, payload) {
   elements.peerState.textContent = state.peer.name;
   elements.cryptoState.textContent = "派生中";
   elements.secureText.textContent = "正在建立密钥";
+  setSecurityState("协商中", "pending");
   setBadge(elements.peerBadge, state.peer.name, "active");
   setDot("pending");
   setTypingIndicator(true);
@@ -420,6 +449,7 @@ async function handleEncryptedMessage(payload) {
   } catch (error) {
     elements.cryptoState.textContent = "解密失败";
     elements.secureText.textContent = "口令或安全码不一致";
+    setSecurityState("异常", "error");
     setDot("error");
     showToast("消息解密失败，请核对双方口令和安全码");
   }
@@ -459,15 +489,28 @@ async function handleSignal(event) {
 function handlePresence(event) {
   try {
     const data = JSON.parse(event.data);
+    const previousCount = state.presenceCount;
+    state.presenceCount = Number(data.count) || 0;
+    if (state.presenceCount >= 2 && previousCount < 2) {
+      renderSystemMessage("对方已加入房间");
+      showToast("对方已加入");
+    } else if (state.presenceCount < 2 && previousCount >= 2) {
+      renderSystemMessage("对方已离开或连接中断");
+      showToast("对方已离开");
+    }
+
     if (data.count <= 1 && !state.sessionKey) {
       elements.peerState.textContent = "等待对方";
       elements.secureText.textContent = "等待对方加入";
       setBadge(elements.peerBadge, "未配对", "idle");
+      setEmptyState("等待对方加入", "建立双人会话后将自动开始密钥协商。");
       setTypingIndicator(true);
     } else if (data.count >= 2 && !state.sessionKey) {
       elements.peerState.textContent = "已加入";
       elements.secureText.textContent = "正在协商密钥";
       setBadge(elements.peerBadge, "已加入", "pending");
+      setSecurityState("协商中", "pending");
+      setEmptyState("协商密钥中", "双方正在本地派生会话密钥，请稍候。");
       setTypingIndicator(true);
     }
   } catch (error) {
@@ -502,6 +545,8 @@ async function joinRoom(event) {
   state.helloEchoedFor.clear();
   state.pendingMessages = [];
   state.seenMessageIds.clear();
+  state.presenceCount = 0;
+  state.disconnected = false;
   localStorage.setItem("secure-chat-name", state.name);
 
   elements.joinButton.disabled = true;
@@ -527,6 +572,13 @@ async function joinRoom(event) {
 
     source.addEventListener("presence", handlePresence);
     source.addEventListener("signal", handleSignal);
+    source.onopen = () => {
+      if (state.disconnected) {
+        state.disconnected = false;
+        renderSystemMessage("连接已恢复");
+        showToast("连接已恢复");
+      }
+    };
     source.addEventListener("room-full", () => {
       showToast("房间已满，请换一个房间号");
       leaveRoom(false);
@@ -536,8 +588,14 @@ async function joinRoom(event) {
 
     source.onerror = () => {
       if (state.eventSource) {
+        if (!state.disconnected) {
+          state.disconnected = true;
+          renderSystemMessage("连接中断，正在重连");
+          showToast("连接中断，正在重连");
+        }
         elements.connectionState.textContent = "重连中";
         elements.secureText.textContent = "连接中断，正在重连";
+        setSecurityState("连接中", "pending");
         setDot("pending");
         setBadge(elements.connectionBadge, "重连中", "pending");
         setTypingIndicator(true);
@@ -562,6 +620,7 @@ async function sendMessage(event) {
   }
 
   elements.messageInput.value = "";
+  sessionStorage.removeItem("secure-chat-draft");
   autoResizeMessageInput();
 
   try {
@@ -591,6 +650,8 @@ function leaveRoom(showMessage = true) {
   state.secret = "";
   state.pendingMessages = [];
   state.helloEchoedFor.clear();
+  state.presenceCount = 0;
+  state.disconnected = false;
   resetSessionUi();
   if (showMessage) {
     showToast("已离开会话");
@@ -608,13 +669,49 @@ function autoResizeMessageInput() {
   elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, 160)}px`;
 }
 
+function restoreDraft() {
+  const draft = sessionStorage.getItem("secure-chat-draft");
+  if (!draft) {
+    return;
+  }
+  elements.messageInput.value = draft.slice(0, 1200);
+  autoResizeMessageInput();
+}
+
+function persistDraft() {
+  const draft = elements.messageInput.value.slice(0, 1200);
+  if (draft) {
+    sessionStorage.setItem("secure-chat-draft", draft);
+  } else {
+    sessionStorage.removeItem("secure-chat-draft");
+  }
+}
+
+async function copySafetyCode() {
+  const code = elements.safetyCode.textContent.trim();
+  if (!code || code === "----") {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast("安全码已复制");
+  } catch (error) {
+    showToast("复制失败，请手动记录安全码");
+  }
+}
+
 function boot() {
   elements.nameInput.value = localStorage.getItem("secure-chat-name") || "";
+  restoreDraft();
   elements.joinForm.addEventListener("submit", joinRoom);
   elements.messageForm.addEventListener("submit", sendMessage);
   elements.randomRoomButton.addEventListener("click", generateRoomCode);
   elements.leaveButton.addEventListener("click", () => leaveRoom(true));
-  elements.messageInput.addEventListener("input", autoResizeMessageInput);
+  elements.messageInput.addEventListener("input", () => {
+    autoResizeMessageInput();
+    persistDraft();
+  });
+  elements.safetyCopy.addEventListener("click", copySafetyCode);
   elements.messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();

@@ -101,17 +101,21 @@
         </header>
 
         <section class="security-strip" aria-live="polite">
-          <div>
+          <div class="security-main">
             <span class="status-dot" id="secureDot"></span>
             <span id="secureText">输入房间号和口令后开始</span>
           </div>
-          <output class="safety-code" id="safetyCode">----</output>
+          <div class="security-tools">
+            <span class="security-state-badge" id="secureStateBadge">待建立</span>
+            <output class="safety-code" id="safetyCode">----</output>
+            <button class="ghost-button compact safety-copy" id="safetyCopy" type="button" disabled>复制安全码</button>
+          </div>
         </section>
 
         <section class="messages" id="messageList" aria-live="polite" aria-label="消息列表">
           <div class="empty-state" id="emptyState">
-            <strong>没有消息</strong>
-            <span>建立密钥后即可发送加密消息。</span>
+            <strong id="emptyTitle">还没有消息</strong>
+            <span id="emptyHint">加入房间并建立密钥后即可发送加密消息。</span>
           </div>
           <div class="typing-indicator" id="typingIndicator" hidden>
             <span></span>
