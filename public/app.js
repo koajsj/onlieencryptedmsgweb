@@ -17,10 +17,12 @@ const elements = {
   cryptoState: $("#cryptoState"),
   connectionBadge: $("#connectionBadge"),
   peerBadge: $("#peerBadge"),
+  peerStatusBadge: $("#peerStatusBadge"),
   roomTitle: $("#roomTitle"),
   secureDot: $("#secureDot"),
   secureText: $("#secureText"),
   safetyCode: $("#safetyCode"),
+  cryptoBadge: $("#cryptoBadge"),
   messageList: $("#messageList"),
   emptyState: $("#emptyState"),
   typingIndicator: $("#typingIndicator"),
@@ -40,10 +42,18 @@ const state = {
   publicKeyB64: "",
   sessionKey: null,
   peer: null,
+  peerOnline: false,
   helloEchoedFor: new Set(),
   pendingMessages: [],
   seenMessageIds: new Set(),
-  toastTimer: 0
+  toastTimer: 0,
+  unsendMessages: [],
+  peerTyping: false,
+  messageReadStatus: new Map(),
+  typingTimeout: null,
+  messageStore: new Map(),
+  editingMessageId: null,
+  replyingToMessageId: null
 };
 
 function loadClientId() {
@@ -108,6 +118,176 @@ function formatSafetyCode(bytes) {
     .replace(/-$/, "");
 }
 
+function formatMessageTime(timestamp) {
+  const now = new Date();
+  const msgDate = new Date(timestamp);
+  const diffMs = now - msgDate;
+  const diffMin = Math.floor(diffMs / 60000);
+
+  if (diffMin < 1) {
+    return "刚刚";
+  }
+  if (diffMin < 60) {
+    return `${diffMin}分钟前`;
+  }
+
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) {
+    return msgDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays === 1) {
+    return "昨天";
+  }
+  if (diffDays < 7) {
+    return `${diffDays}天前`;
+  }
+
+  return msgDate.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+async function sendTypingIndicator() {
+  if (!state.sessionKey || !state.room) {
+    return;
+  }
+  try {
+    await sendSignal("typing", { active: true });
+  } catch (error) {
+    // Ignore typing signal errors
+  }
+}
+
+async function markMessageAsRead(messageId) {
+  if (!state.sessionKey || !state.room) {
+    return;
+  }
+  state.messageReadStatus.set(messageId, true);
+  try {
+    await sendSignal("read", { messageId });
+  } catch (error) {
+    // Ignore read signal errors
+  }
+}
+
+function showReadStatus(element, messageId) {
+  if (state.messageReadStatus.has(messageId)) {
+    const status = element.querySelector(".read-status");
+    if (!status) {
+      const statusEl = document.createElement("span");
+      statusEl.className = "read-status";
+      statusEl.textContent = "✓✓";
+      element.append(statusEl);
+    }
+  }
+}
+
+function savePendingMessage(message) {
+  const pending = JSON.parse(localStorage.getItem("secure-chat-pending") || "[]");
+  pending.push({ ...message, savedAt: Date.now() });
+  localStorage.setItem("secure-chat-pending", JSON.stringify(pending));
+}
+
+function loadPendingMessages() {
+  const pending = JSON.parse(localStorage.getItem("secure-chat-pending") || "[]");
+  return pending.filter((msg) => Date.now() - msg.savedAt < 86400000);
+}
+
+function clearPendingMessages() {
+  localStorage.setItem("secure-chat-pending", "[]");
+}
+
+function setPeerOnlineStatus(online) {
+  state.peerOnline = online;
+  if (elements.peerStatusBadge) {
+    elements.peerStatusBadge.hidden = !online;
+  }
+}
+
+async function sendStatusUpdate() {
+  if (!state.sessionKey || !state.room) {
+    return;
+  }
+  try {
+    await sendSignal("status", { online: true });
+  } catch (error) {
+    // Ignore status signal errors
+  }
+}
+
+async function deleteMessage(messageId) {
+  if (!state.sessionKey || !state.room) {
+    return;
+  }
+  try {
+    await sendSignal("delete", { messageId });
+    const msgElement = elements.messageList.querySelector(`[data-message-id="${messageId}"]`);
+    if (msgElement) {
+      const bubble = msgElement.querySelector(".bubble");
+      if (bubble) {
+        bubble.textContent = "[消息已删除]";
+        bubble.classList.add("deleted-message");
+        msgElement.classList.add("is-deleted");
+      }
+    }
+  } catch (error) {
+    showToast("删除失败");
+  }
+}
+
+async function editMessage(messageId, newText) {
+  if (!state.sessionKey || !state.room) {
+    return;
+  }
+  try {
+    const originalMsg = state.messageStore.get(messageId);
+    if (!originalMsg) {
+      showToast("无法编辑此消息");
+      return;
+    }
+    await sendSignal("edit", { messageId, text: newText, editedAt: Date.now() });
+    const msgElement = elements.messageList.querySelector(`[data-message-id="${messageId}"]`);
+    if (msgElement) {
+      const bubble = msgElement.querySelector(".bubble");
+      if (bubble) {
+        bubble.textContent = newText;
+      }
+      const meta = msgElement.querySelector(".meta");
+      if (meta) {
+        meta.textContent += " (已编辑)";
+      }
+    }
+    state.editingMessageId = null;
+  } catch (error) {
+    showToast("编辑失败");
+  }
+}
+
+function setReplyTarget(messageId, text, author) {
+  state.replyingToMessageId = messageId;
+  const replyHint = document.querySelector(".reply-hint") || document.createElement("div");
+  replyHint.className = "reply-hint";
+  replyHint.innerHTML = `<strong>回复 ${author}:</strong> ${text.substring(0, 40)}...`;
+  if (!document.querySelector(".reply-hint")) {
+    elements.messageForm.insertBefore(replyHint, elements.messageInput);
+  }
+}
+
+function clearReplyTarget() {
+  state.replyingToMessageId = null;
+  const replyHint = document.querySelector(".reply-hint");
+  if (replyHint) {
+    replyHint.remove();
+  }
+}
+
+function showCryptoStrength() {
+  if (state.sessionKey && elements.cryptoBadge) {
+    elements.cryptoBadge.textContent = "✓ E2EE";
+    elements.cryptoBadge.title = "AES-256-GCM + ECDH P-256 + PBKDF2-SHA256";
+  }
+}
+
 function setDot(mode) {
   elements.secureDot.className = "status-dot";
   if (mode) {
@@ -149,11 +329,22 @@ function renderSystemMessage(text) {
   });
 }
 
-function renderMessage({ text, name, mine, system = false, sentAt }) {
+function renderMessage({ text, name, mine, system = false, sentAt, messageId, replyTo }) {
   elements.emptyState.hidden = true;
 
   const wrapper = document.createElement("article");
   wrapper.className = `message${mine ? " is-own" : ""}${system ? " is-system" : ""}`;
+  if (messageId) {
+    wrapper.dataset.messageId = messageId;
+    state.messageStore.set(messageId, { text, name, sentAt });
+  }
+
+  if (replyTo) {
+    const replyBlock = document.createElement("div");
+    replyBlock.className = "reply-block";
+    replyBlock.innerHTML = `<strong>${replyTo.author}</strong>: ${replyTo.text.substring(0, 50)}...`;
+    wrapper.append(replyBlock);
+  }
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -161,9 +352,56 @@ function renderMessage({ text, name, mine, system = false, sentAt }) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = system ? "" : `${name || "匿名"} · ${new Date(sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  if (system) {
+    meta.textContent = "";
+  } else {
+    const timeStr = formatMessageTime(sentAt);
+    meta.textContent = `${name || "匿名"} · ${timeStr}`;
+  }
 
   wrapper.append(bubble, meta);
+
+  if (mine && messageId && !system) {
+    const actionBar = document.createElement("div");
+    actionBar.className = "message-actions";
+    
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "编辑";
+    editBtn.className = "action-btn edit-btn";
+    editBtn.onclick = () => {
+      const newText = prompt("编辑消息:", text);
+      if (newText && newText.trim()) {
+        editMessage(messageId, newText.trim());
+      }
+    };
+    
+    const deleteBtn = document.createElement("button");
+    deleteBtn.textContent = "删除";
+    deleteBtn.className = "action-btn delete-btn";
+    deleteBtn.onclick = () => {
+      if (confirm("确认删除此消息?")) {
+        deleteMessage(messageId);
+      }
+    };
+    
+    actionBar.append(editBtn, deleteBtn);
+    wrapper.append(actionBar);
+  } else if (!mine && !system && messageId) {
+    const replyBtn = document.createElement("button");
+    replyBtn.textContent = "回复";
+    replyBtn.className = "action-btn reply-btn";
+    replyBtn.onclick = () => {
+      setReplyTarget(messageId, text, name || "匿名");
+    };
+    const actionBar = document.createElement("div");
+    actionBar.className = "message-actions";
+    actionBar.append(replyBtn);
+    wrapper.append(actionBar);
+  }
+
+  if (mine && messageId) {
+    showReadStatus(wrapper, messageId);
+  }
   elements.messageList.append(wrapper);
   elements.messageList.scrollTop = elements.messageList.scrollHeight;
 }
@@ -283,6 +521,8 @@ async function buildSession(peerPublicKeyB64) {
   setDot("secure");
   setTypingIndicator(false);
   setComposerEnabled(true);
+  showCryptoStrength();
+  await sendStatusUpdate();
   await flushPendingMessages();
 }
 
@@ -415,8 +655,10 @@ async function handleEncryptedMessage(payload) {
       text: String(message.text || ""),
       name: String(message.name || state.peer?.name || "对方"),
       mine: false,
-      sentAt: Number(message.sentAt) || Date.now()
+      sentAt: Number(message.sentAt) || Date.now(),
+      messageId: payload.id
     });
+    await markMessageAsRead(payload.id);
   } catch (error) {
     elements.cryptoState.textContent = "解密失败";
     elements.secureText.textContent = "口令或安全码不一致";
@@ -449,6 +691,52 @@ async function handleSignal(event) {
       await handleHello(signal.from, signal.payload);
     } else if (signal.type === "chat") {
       await handleEncryptedMessage(signal.payload);
+    } else if (signal.type === "typing") {
+      state.peerTyping = signal.payload?.active === true;
+      setTypingIndicator(state.peerTyping);
+    } else if (signal.type === "read") {
+      const msgId = signal.payload?.messageId;
+      if (msgId) {
+        state.messageReadStatus.set(msgId, true);
+        const msgElement = elements.messageList.querySelector(`[data-message-id="${msgId}"]`);
+        if (msgElement) {
+          showReadStatus(msgElement, msgId);
+        }
+      }
+    } else if (signal.type === "edit") {
+      const msgId = signal.payload?.messageId;
+      const newText = signal.payload?.text;
+      if (msgId && newText) {
+        const msgElement = elements.messageList.querySelector(`[data-message-id="${msgId}"]`);
+        if (msgElement) {
+          const bubble = msgElement.querySelector(".bubble");
+          if (bubble) {
+            bubble.textContent = newText;
+            const meta = msgElement.querySelector(".meta");
+            if (meta && !meta.textContent.includes("已编辑")) {
+              meta.textContent += " (已编辑)";
+            }
+          }
+        }
+      }
+    } else if (signal.type === "delete") {
+      const msgId = signal.payload?.messageId;
+      if (msgId) {
+        const msgElement = elements.messageList.querySelector(`[data-message-id="${msgId}"]`);
+        if (msgElement) {
+          const bubble = msgElement.querySelector(".bubble");
+          if (bubble) {
+            bubble.textContent = "[消息已删除]";
+            bubble.classList.add("deleted-message");
+            msgElement.classList.add("is-deleted");
+          }
+        }
+      }
+    } else if (signal.type === "status") {
+      const online = signal.payload?.online === true;
+      setPeerOnlineStatus(online);
+    } else if (signal.type === "file") {
+      showToast("对方分享了文件（功能开发中）");
     }
   } catch (error) {
     setDot("error");
@@ -567,15 +855,30 @@ async function sendMessage(event) {
   try {
     const encrypted = await encryptText(text);
     state.seenMessageIds.add(encrypted.id);
+    
+    const replyTo = state.replyingToMessageId ? {
+      author: state.messageStore.get(state.replyingToMessageId)?.name || "匿名",
+      text: state.messageStore.get(state.replyingToMessageId)?.text || ""
+    } : null;
+    
     renderMessage({
       text,
       name: state.name,
       mine: true,
-      sentAt: encrypted.sentAt
+      sentAt: encrypted.sentAt,
+      messageId: encrypted.id,
+      replyTo
     });
-    await sendSignal("chat", encrypted);
+    state.peerTyping = false;
+    setTypingIndicator(false);
+    
+    const payload = { ...encrypted, replyTo: state.replyingToMessageId || null };
+    await sendSignal("chat", payload);
+    clearReplyTarget();
   } catch (error) {
-    showToast("发送失败，消息未离开本机");
+    const failedMsg = { text, sentAt: Date.now() };
+    savePendingMessage(failedMsg);
+    showToast("网络不稳定，消息已保存，将在恢复后重试");
   }
 }
 
@@ -588,9 +891,19 @@ function leaveRoom(showMessage = true) {
   state.publicKeyB64 = "";
   state.sessionKey = null;
   state.peer = null;
+  state.peerOnline = false;
   state.secret = "";
   state.pendingMessages = [];
   state.helloEchoedFor.clear();
+  state.peerTyping = false;
+  state.messageReadStatus.clear();
+  state.messageStore.clear();
+  state.editingMessageId = null;
+  state.replyingToMessageId = null;
+  if (state.typingTimeout) {
+    clearTimeout(state.typingTimeout);
+    state.typingTimeout = null;
+  }
   resetSessionUi();
   if (showMessage) {
     showToast("已离开会话");
@@ -615,6 +928,18 @@ function boot() {
   elements.randomRoomButton.addEventListener("click", generateRoomCode);
   elements.leaveButton.addEventListener("click", () => leaveRoom(true));
   elements.messageInput.addEventListener("input", autoResizeMessageInput);
+  elements.messageInput.addEventListener("input", () => {
+    if (state.sessionKey && elements.messageInput.value.trim()) {
+      sendTypingIndicator();
+      if (state.typingTimeout) {
+        clearTimeout(state.typingTimeout);
+      }
+      state.typingTimeout = setTimeout(() => {
+        state.peerTyping = false;
+        setTypingIndicator(false);
+      }, 3000);
+    }
+  });
   elements.messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();

@@ -95,6 +95,7 @@
             <div class="chat-badges">
               <span class="chat-badge" id="connectionBadge">离线</span>
               <span class="chat-badge is-secondary" id="peerBadge">未配对</span>
+              <span class="chat-badge is-status" id="peerStatusBadge" hidden>● 在线</span>
             </div>
           </div>
           <button class="ghost-button compact" id="leaveButton" type="button" disabled>离开</button>
@@ -105,7 +106,10 @@
             <span class="status-dot" id="secureDot"></span>
             <span id="secureText">输入房间号和口令后开始</span>
           </div>
-          <output class="safety-code" id="safetyCode">----</output>
+          <div class="crypto-info">
+            <span class="crypto-badge" id="cryptoBadge" title="密钥信息">E2EE</span>
+            <output class="safety-code" id="safetyCode">----</output>
+          </div>
         </section>
 
         <section class="messages" id="messageList" aria-live="polite" aria-label="消息列表">

@@ -221,7 +221,7 @@ async function handleSignal(req, res) {
   const type = typeof body.type === "string" ? body.type.slice(0, 32) : "";
   const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
 
-  if (!roomId || !clientId || !["hello", "chat"].includes(type)) {
+  if (!roomId || !clientId || !["hello", "chat", "typing", "read", "edit", "delete", "status", "file"].includes(type)) {
     sendJson(res, 400, { error: "invalid signal" });
     return;
   }
