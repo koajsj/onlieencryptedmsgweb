@@ -8,10 +8,11 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 const PUBLIC_DIR = path.join(__dirname, "public");
 
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 512 * 1024;
 const MAX_ROOM_CLIENTS = 2;
 const HEARTBEAT_MS = 15000;
 const ROOM_IDLE_TTL_MS = 10 * 60 * 1000;
+const ALLOWED_SIGNAL_TYPES = new Set(["hello", "chat", "typing", "read", "edit", "delete", "status", "file"]);
 
 const rooms = new Map();
 
@@ -30,11 +31,14 @@ function securityHeaders(extra = {}) {
   return {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Origin-Agent-Cluster": "?1",
     "Content-Security-Policy":
-      "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      "default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; media-src 'none'; object-src 'none'; worker-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
     ...extra
   };
 }
@@ -208,11 +212,25 @@ function readJsonBody(req) {
 }
 
 async function handleSignal(req, res) {
+  const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (contentType !== "application/json") {
+    sendJson(res, 415, { error: "content type must be application/json" });
+    return;
+  }
+
+  const declaredLength = Number.parseInt(req.headers["content-length"] || "0", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    sendJson(res, 413, { error: "body too large" });
+    return;
+  }
+
   let body;
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, 400, { error: "invalid json" });
+    sendJson(res, error?.message === "body too large" ? 413 : 400, {
+      error: error?.message === "body too large" ? "body too large" : "invalid json"
+    });
     return;
   }
 
@@ -221,7 +239,7 @@ async function handleSignal(req, res) {
   const type = typeof body.type === "string" ? body.type.slice(0, 32) : "";
   const payload = body.payload && typeof body.payload === "object" ? body.payload : {};
 
-  if (!roomId || !clientId || !["hello", "chat", "typing", "read", "edit", "delete", "status", "file"].includes(type)) {
+  if (!roomId || !clientId || !ALLOWED_SIGNAL_TYPES.has(type)) {
     sendJson(res, 400, { error: "invalid signal" });
     return;
   }
@@ -270,6 +288,11 @@ function serveStatic(req, res, url) {
         "Content-Length": stat.size
       })
     );
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
     fs.createReadStream(filePath).pipe(res);
   });
 }
