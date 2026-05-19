@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f4f7f2" />
+    <title>在线加密聊天</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="background-glow background-glow-one" aria-hidden="true"></div>
+    <div class="background-glow background-glow-two" aria-hidden="true"></div>
+    <div class="background-grid" aria-hidden="true"></div>
+
+    <div class="app-shell">
+      <aside class="setup-panel" aria-label="会话设置">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">密</div>
+          <div>
+            <strong>在线加密聊天</strong>
+            <span>端到端密钥会话</span>
+          </div>
+        </div>
+
+        <section class="intro-card" aria-label="产品简介">
+          <p class="intro-kicker">Secure by design</p>
+          <h2>极简、安静、流畅的私密聊天体验</h2>
+          <p>
+            双端协商密钥后再发送消息，界面会用轻柔动效反馈连接、协商、发送与到达状态。
+          </p>
+        </section>
+
+        <form class="join-form" id="joinForm">
+          <label class="field">
+            <span>昵称</span>
+            <input id="nameInput" name="name" maxlength="24" autocomplete="nickname" placeholder="你的名字" required />
+          </label>
+
+          <label class="field">
+            <span>房间号</span>
+            <div class="field-row">
+              <input id="roomInput" name="room" maxlength="80" autocomplete="off" placeholder="例如 SECURE-4821" required />
+              <button class="ghost-button" id="randomRoomButton" type="button">生成</button>
+            </div>
+          </label>
+
+          <label class="field">
+            <span>会话口令</span>
+            <input
+              id="secretInput"
+              name="secret"
+              type="password"
+              minlength="8"
+              autocomplete="new-password"
+              placeholder="只在双方浏览器中使用"
+              required
+            />
+          </label>
+
+          <button class="primary-button" id="joinButton" type="submit">进入会话</button>
+        </form>
+
+        <section class="status-grid" aria-label="会话状态">
+          <div class="status-item">
+            <span>连接</span>
+            <strong id="connectionState">未连接</strong>
+          </div>
+          <div class="status-item">
+            <span>成员</span>
+            <strong id="peerState">等待</strong>
+          </div>
+          <div class="status-item">
+            <span>加密</span>
+            <strong id="cryptoState">未建立</strong>
+          </div>
+        </section>
+
+        <section class="tips-card" aria-label="使用提示">
+          <div class="tip-item">
+            <span class="tip-bullet"></span>
+            <span>双方输入相同房间号与口令即可建立会话</span>
+          </div>
+          <div class="tip-item">
+            <span class="tip-bullet"></span>
+            <span>建议在确认安全码一致后再正式交流</span>
+          </div>
+        </section>
+      </aside>
+
+      <main class="chat-panel" aria-label="聊天窗口">
+        <header class="chat-header">
+          <div class="chat-title-block">
+            <p class="eyebrow">Secure Room</p>
+            <h1 id="roomTitle">尚未进入房间</h1>
+            <div class="chat-badges">
+              <span class="chat-badge" id="connectionBadge">离线</span>
+              <span class="chat-badge is-secondary" id="peerBadge">未配对</span>
+            </div>
+          </div>
+          <button class="ghost-button compact" id="leaveButton" type="button" disabled>离开</button>
+        </header>
+
+        <section class="security-strip" aria-live="polite">
+          <div>
+            <span class="status-dot" id="secureDot"></span>
+            <span id="secureText">输入房间号和口令后开始</span>
+          </div>
+          <output class="safety-code" id="safetyCode">----</output>
+        </section>
+
+        <section class="messages" id="messageList" aria-live="polite" aria-label="消息列表">
+          <div class="empty-state" id="emptyState">
+            <strong>没有消息</strong>
+            <span>建立密钥后即可发送加密消息。</span>
+          </div>
+          <div class="typing-indicator" id="typingIndicator" hidden>
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+        </section>
+
+        <form class="composer" id="messageForm">
+          <textarea
+            id="messageInput"
+            rows="1"
+            maxlength="1200"
+            placeholder="等待加密会话建立"
+            disabled
+          ></textarea>
+          <button class="primary-button send-button" id="sendButton" type="submit" disabled>发送</button>
+        </form>
+
+        <footer class="chat-footer">
+          <span>安全连接 · 本地协商 · 浏览器端加密</span>
+          <span class="footer-divider" aria-hidden="true"></span>
+          <span>Enter 发送，Shift + Enter 换行</span>
+        </footer>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

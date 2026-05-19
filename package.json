@@ -1,0 +1,14 @@
+{
+  "name": "secure-e2e-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A lightweight browser-based end-to-end encrypted chat site.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
