@@ -2,31 +2,6 @@
 
 一个轻量的在线端到端加密聊天网站。服务端只负责静态页面、SSE 长连接和密文转发，不保存聊天记录，不接触明文。
 
-## GitHub Pages 是否可用
-
-不能只靠 `GitHub Pages` 实现在线对话。
-
-原因很直接：
-
-- `GitHub Pages` 是静态站点托管，只发布 HTML、CSS、JavaScript 文件。
-- 当前项目的在线聊天依赖 [server.js](server.js) 提供两个实时接口：
-  - `GET /events`：SSE 长连接
-  - `POST /signal`：房间内信令转发
-- 这些接口都需要持续运行的 Node.js 进程，而 `GitHub Pages` 不能运行 Node 服务端代码。
-
-这意味着：
-
-- 把当前仓库原样部署到 `GitHub Pages` 后，页面可以打开。
-- 但真正进入房间时，`/events` 和 `/signal` 不存在，在线对话无法工作。
-
-如果你一定要用 `GitHub Pages`，可行方式只有一种：
-
-1. 前端静态页面部署到 `GitHub Pages`
-2. 把 `server.js` 单独部署到可运行 Node.js 的服务
-3. 前端把 `fetch("/signal")` 和 `EventSource("/events")` 改成指向独立后端地址，并处理 HTTPS 与 CORS
-
-也就是说，`GitHub Pages` 最多只能承载前端，不可能单独承载当前这套在线聊天架构。
-
 ## 运行
 
 ```powershell
