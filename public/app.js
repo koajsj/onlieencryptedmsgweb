@@ -613,50 +613,14 @@ function aadBytes(from, to) {
   return textEncoder.encode(JSON.stringify({ from, to }));
 }
 
-async function encryptChatMessage(text, peerUsername) {
-  const peerPublicKeyBase64 = state.peerKeys.get(peerUsername);
-  const conversationKey = await getConversationKey(peerUsername, peerPublicKeyBase64);
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await crypto.subtle.encrypt(
-    {
-      name: "AES-GCM",
-      iv: nonce,
-      additionalData: aadBytes(state.me.username, peerUsername)
-    },
-    conversationKey,
-    textEncoder.encode(text)
-  );
-  return {
-    to: peerUsername,
-    nonce: bytesToBase64(nonce),
-    ciphertext: bytesToBase64(new Uint8Array(ciphertext))
-  };
-}
-
-async function decryptEnvelope(message, peerPublicKeyBase64) {
-  const peerUsername = message.mine ? message.to : message.from;
-  const conversationKey = await getConversationKey(peerUsername, peerPublicKeyBase64);
-  const plaintext = await crypto.subtle.decrypt(
-    {
-      name: "AES-GCM",
-      iv: base64ToBytes(message.nonce),
-      additionalData: aadBytes(message.from, message.to)
-    },
-    conversationKey,
-    base64ToBytes(message.ciphertext)
-  );
-  return textDecoder.decode(plaintext);
-}
-
 async function decryptMessageView(message, peerPublicKeyBase64) {
-  const text = await decryptEnvelope(message, peerPublicKeyBase64);
   return {
     id: message.id,
     from: message.from,
     to: message.to,
     peer: message.peer,
     mine: message.mine,
-    text,
+    text: String(message.text || ""),
     createdAt: message.createdAt
   };
 }
@@ -665,11 +629,7 @@ async function decryptPreview(conversation) {
   if (!conversation.latestMessage) {
     return "";
   }
-  try {
-    return await decryptEnvelope(conversation.latestMessage, conversation.publicKey);
-  } catch (error) {
-    return "已加密消息";
-  }
+  return String(conversation.latestMessage.text || "");
 }
 
 async function loadConversations() {
@@ -817,7 +777,7 @@ async function ingestEncryptedMessage(message) {
       to: message.to,
       peer,
       mine: message.mine,
-      text: "[无法解密]",
+      text: String(message.text || "[无法解密]"),
       createdAt: message.createdAt
     };
   }
@@ -840,11 +800,12 @@ async function ingestEncryptedMessage(message) {
       id: message.id,
       from: message.from,
       to: message.to,
+      text: decrypted.text,
       nonce: message.nonce,
       ciphertext: message.ciphertext,
       createdAt: message.createdAt
     },
-    previewText: decrypted.text === "[无法解密]" ? "已加密消息" : decrypted.text,
+    previewText: decrypted.text,
     lastAt: message.createdAt,
     unread
   });
@@ -968,10 +929,12 @@ async function submitMessage(event) {
 
   setComposerBusy(true);
   try {
-    const encrypted = await encryptChatMessage(text, state.activePeer);
     const payload = await api("/api/messages", {
       method: "POST",
-      body: encrypted
+      body: {
+        to: state.activePeer,
+        text
+      }
     });
     await ingestEncryptedMessage(payload.message);
     elements.messageInput.value = "";

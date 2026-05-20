@@ -31,6 +31,7 @@ const PRIVATE_KEY_IV_BYTES = { min: 12, max: 24 };
 const ENCRYPTED_PRIVATE_KEY_BYTES = { min: 96, max: 4096 };
 const MESSAGE_NONCE_BYTES = { min: 12, max: 24 };
 const MESSAGE_CIPHERTEXT_BYTES = { min: 24, max: 12288 };
+const SERVER_MESSAGE_KEY_FILE = path.join(DATA_DIR, "message-key.json");
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -49,6 +50,7 @@ const rateBuckets = new Map();
 
 let users = [];
 let messages = [];
+let serverMessageKey = null;
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -57,6 +59,11 @@ function ensureDataFiles() {
   }
   if (!fs.existsSync(MESSAGES_FILE)) {
     fs.writeFileSync(MESSAGES_FILE, "[]\n", "utf8");
+  }
+  if (!fs.existsSync(SERVER_MESSAGE_KEY_FILE)) {
+    writeJsonFile(SERVER_MESSAGE_KEY_FILE, {
+      key: crypto.randomBytes(32).toString("base64")
+    });
   }
 }
 
@@ -76,6 +83,14 @@ function writeJsonFile(filePath, value) {
 
 function loadData() {
   ensureDataFiles();
+  const keyFile = readJsonFile(SERVER_MESSAGE_KEY_FILE, null);
+  const decodedKey = decodeBase64Blob(keyFile?.key || "");
+  if (!decodedKey || decodedKey.length !== 32) {
+    serverMessageKey = crypto.randomBytes(32);
+    writeJsonFile(SERVER_MESSAGE_KEY_FILE, { key: serverMessageKey.toString("base64") });
+  } else {
+    serverMessageKey = decodedKey;
+  }
   users = readJsonFile(USERS_FILE, []);
   messages = readJsonFile(MESSAGES_FILE, []);
 }
@@ -86,6 +101,40 @@ function persistUsers() {
 
 function persistMessages() {
   writeJsonFile(MESSAGES_FILE, messages);
+}
+
+function encryptMessageText(text, from, to) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", serverMessageKey, iv);
+  cipher.setAAD(Buffer.from(JSON.stringify({ from, to }), "utf8"));
+  const encrypted = Buffer.concat([cipher.update(String(text), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    nonce: iv.toString("base64"),
+    ciphertext: Buffer.concat([encrypted, tag]).toString("base64")
+  };
+}
+
+function decryptMessageText(message) {
+  if (typeof message?.text === "string") {
+    return message.text;
+  }
+  const nonce = decodeBase64Blob(message?.nonce || "");
+  const ciphertext = decodeBase64Blob(message?.ciphertext || "");
+  if (!nonce || !ciphertext || ciphertext.length <= 16) {
+    return "[无法解密]";
+  }
+  try {
+    const payload = Buffer.from(ciphertext);
+    const encrypted = payload.subarray(0, payload.length - 16);
+    const tag = payload.subarray(payload.length - 16);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", serverMessageKey, Buffer.from(nonce));
+    decipher.setAAD(Buffer.from(JSON.stringify({ from: message.from, to: message.to }), "utf8"));
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+  } catch (error) {
+    return "[无法解密]";
+  }
 }
 
 function securityHeaders(extra = {}) {
@@ -319,6 +368,7 @@ function createMessageView(message, viewer) {
     peer,
     mine: message.from === viewer,
     publicKey: peerUser?.publicKey || "",
+    text: decryptMessageText(message),
     nonce: message.nonce,
     ciphertext: message.ciphertext,
     createdAt: message.createdAt
@@ -353,6 +403,7 @@ function buildConversationSummary(viewer, peer) {
           id: latest.id,
           from: latest.from,
           to: latest.to,
+          text: decryptMessageText(latest),
           nonce: latest.nonce,
           ciphertext: latest.ciphertext,
           createdAt: latest.createdAt
@@ -739,27 +790,24 @@ async function handleSendMessage(req, res, url) {
   }
 
   const peer = findUserByUsername(body.to);
-  const nonce = String(body.nonce || "").trim();
-  const ciphertext = String(body.ciphertext || "").trim();
+  const text = String(body.text || "").trim();
   if (!peer || peer.username === session.username) {
     sendJson(res, 404, { error: "user not found" });
     return;
   }
-  if (!isBase64Blob(nonce, MESSAGE_NONCE_BYTES.min, MESSAGE_NONCE_BYTES.max)) {
-    sendJson(res, 400, { error: "message must be encrypted before sending" });
+  if (!text) {
+    sendJson(res, 400, { error: "message text is required" });
     return;
   }
-  if (!isBase64Blob(ciphertext, MESSAGE_CIPHERTEXT_BYTES.min, MESSAGE_CIPHERTEXT_BYTES.max)) {
-    sendJson(res, 400, { error: "message must be encrypted before sending" });
-    return;
-  }
+
+  const encrypted = encryptMessageText(text, session.username, peer.username);
 
   const message = {
     id: crypto.randomUUID(),
     from: session.username,
     to: peer.username,
-    nonce,
-    ciphertext,
+    nonce: encrypted.nonce,
+    ciphertext: encrypted.ciphertext,
     createdAt: Date.now()
   };
   messages.push(message);

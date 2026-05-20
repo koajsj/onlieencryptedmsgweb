@@ -215,7 +215,7 @@ test("register and login require unique usernames and return encrypted key bundl
   }
 });
 
-test("private messaging stores and streams encrypted envelopes only", async () => {
+test("private messaging accepts plaintext and returns readable messages", async () => {
   const server = await startServer();
 
   try {
@@ -246,80 +246,44 @@ test("private messaging stores and streams encrypted envelopes only", async () =
     assert.equal(search.json.users[0].username, "Bob");
     assert.equal(search.json.users[0].publicKey, SAMPLE_BUNDLES.Bob.publicKey);
 
-    const envelope = encryptedMessageEnvelope();
     const send = await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        ...envelope
+        text: "Hello Bob"
       },
       aliceToken
     );
     assert.equal(send.status, 201);
     const sendBody = await send.json();
     assert.equal(sendBody.message.peer, "Bob");
-    assert.equal(sendBody.message.nonce, envelope.nonce);
-    assert.equal(sendBody.message.ciphertext, envelope.ciphertext);
+    assert.equal(sendBody.message.text, "Hello Bob");
     assert.equal(sendBody.message.publicKey, SAMPLE_BUNDLES.Bob.publicKey);
-    assert.equal(sendBody.conversation.latestMessage.ciphertext, envelope.ciphertext);
+    assert.equal(sendBody.conversation.latestMessage.text, "Hello Bob");
 
     const incoming = await waitForEvent(
       bobEvents,
       "message",
-      (payload) => payload.from === "Alice" && payload.ciphertext === envelope.ciphertext
+      (payload) => payload.from === "Alice" && payload.text === "Hello Bob"
     );
     assert.equal(incoming.peer, "Alice");
     assert.equal(incoming.mine, false);
     assert.equal(incoming.publicKey, SAMPLE_BUNDLES.Alice.publicKey);
+    assert.equal(incoming.text, "Hello Bob");
 
     const history = await getJson(server.port, "/api/messages?with=Alice", bobToken);
     assert.equal(history.response.status, 200);
     assert.equal(history.json.peer.publicKey, SAMPLE_BUNDLES.Alice.publicKey);
     assert.equal(history.json.messages.length, 1);
-    assert.equal(history.json.messages[0].ciphertext, envelope.ciphertext);
-    assert.equal(history.json.messages[0].nonce, envelope.nonce);
+    assert.equal(history.json.messages[0].text, "Hello Bob");
 
     const conversations = await getJson(server.port, "/api/conversations", aliceToken);
     assert.equal(conversations.response.status, 200);
     assert.equal(conversations.json.conversations.length, 1);
     assert.equal(conversations.json.conversations[0].username, "Bob");
     assert.equal(conversations.json.conversations[0].publicKey, SAMPLE_BUNDLES.Bob.publicKey);
-    assert.equal(conversations.json.conversations[0].latestMessage.ciphertext, envelope.ciphertext);
-  } finally {
-    await server.stop();
-  }
-});
-
-test("plaintext messages are rejected", async () => {
-  const server = await startServer();
-
-  try {
-    const register = await postJson(server.port, "/api/register", {
-      username: "Alice",
-      password: "hello123",
-      ...SAMPLE_BUNDLES.Alice
-    });
-    const peer = await postJson(server.port, "/api/register", {
-      username: "Bob",
-      password: "world123",
-      ...SAMPLE_BUNDLES.Bob
-    });
-    const token = (await register.json()).token;
-    await peer.json();
-
-    const plaintext = await postJson(
-      server.port,
-      "/api/messages",
-      {
-        to: "Bob",
-        text: "this should never reach the server in plaintext"
-      },
-      token
-    );
-    assert.equal(plaintext.status, 400);
-    const body = await plaintext.json();
-    assert.equal(body.error, "message must be encrypted before sending");
+    assert.equal(conversations.json.conversations[0].latestMessage.text, "Hello Bob");
   } finally {
     await server.stop();
   }
