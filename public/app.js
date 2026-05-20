@@ -59,7 +59,13 @@ const state = {
   peerKeys: new Map(),
   importedPeerKeys: new Map(),
   conversationKeys: new Map(),
+  pendingMessages: new Map(),
+  pendingSequence: 0,
   eventSource: null,
+  reconnectTimer: 0,
+  reconnectAttempts: 0,
+  manualEventSourceClose: false,
+  connectionState: "offline",
   searchTimer: 0,
   toastTimer: 0,
   openConversationRequest: 0
@@ -190,9 +196,13 @@ function syncLayoutState() {
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
 }
 
-function clearStoredSessionArtifacts() {
-  localStorage.removeItem(STORAGE.token);
-  localStorage.removeItem(STORAGE.activePeer);
+function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true) {
+  if (clearToken) {
+    localStorage.removeItem(STORAGE.token);
+  }
+  if (clearActivePeer) {
+    localStorage.removeItem(STORAGE.activePeer);
+  }
 }
 
 async function api(pathname, options = {}) {
@@ -221,19 +231,31 @@ async function api(pathname, options = {}) {
   const payload = contentType.includes("application/json") ? await response.json() : null;
 
   if (!response.ok) {
-    if (response.status === 401 && state.token) {
-      clearSession(false);
+    if (response.status === 401 && state.token && !options.skipAuthReset) {
+      clearSession(true);
     }
     throw new Error(payload?.error || `request failed: ${response.status}`);
   }
   return payload;
 }
 
-function clearSession(showAuth = true) {
+function closeEventStream() {
   if (state.eventSource) {
+    state.manualEventSourceClose = true;
     state.eventSource.close();
     state.eventSource = null;
   }
+  if (state.reconnectTimer) {
+    window.clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = 0;
+  }
+  state.manualEventSourceClose = false;
+  state.reconnectAttempts = 0;
+  state.connectionState = "offline";
+}
+
+function clearSession(showAuth = true, clearToken = true) {
+  closeEventStream();
 
   state.token = "";
   state.me = null;
@@ -246,9 +268,11 @@ function clearSession(showAuth = true) {
   state.peerKeys.clear();
   state.importedPeerKeys.clear();
   state.conversationKeys.clear();
+  state.pendingMessages.clear();
+  state.pendingSequence = 0;
   state.openConversationRequest += 1;
 
-  clearStoredSessionArtifacts();
+  clearStoredSessionArtifacts(clearToken, true);
   elements.globalSearchInput.value = "";
   elements.messageInput.value = "";
   elements.messageInput.style.height = "auto";
@@ -263,6 +287,7 @@ function setSession(token, user, identity) {
   state.token = token;
   state.me = user;
   state.identity = identity;
+  localStorage.setItem(STORAGE.token, token);
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
   elements.meUsername.textContent = user.username;
@@ -396,12 +421,17 @@ function renderListItem(item, isSearchResult) {
 
 function renderMessage(message) {
   const article = document.createElement("article");
-  article.className = `message ${message.mine ? "is-own" : "is-peer"}`;
+  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}`;
+  const statusAction = message.pending
+    ? '<span class="message-state">发送中</span>'
+    : message.failed
+      ? `<button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">重试</button>`
+      : "";
   article.innerHTML = `
     ${message.mine ? "" : `<div class="message-avatar avatar avatar-tone-${avatarTone(message.from)}">${escapeHtml(avatarInitial(message.from))}</div>`}
     <div class="message-body">
       <div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>
-      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}</div>
+      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}${statusAction ? ` · ${statusAction}` : ""}</div>
     </div>
   `;
   return article;
@@ -423,7 +453,13 @@ function renderThread() {
   }
 
   elements.peerName.textContent = peer.username;
-  elements.peerStatus.textContent = peer.online ? "在线 · 自动端到端加密" : "离线 · 自动端到端加密";
+  let connectionLabel = "";
+  if (state.connectionState === "reconnecting") {
+    connectionLabel = " · 连接重试中";
+  } else if (state.connectionState === "offline") {
+    connectionLabel = " · 连接未建立";
+  }
+  elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} · 自动端到端加密${connectionLabel}`;
   setAvatar(elements.peerAvatar, peer.username);
 
   const messages = state.messageCache.get(peer.username) || [];
@@ -689,6 +725,92 @@ function ensureConversationEntry(username) {
   }
 }
 
+function buildTempMessage(peer, text) {
+  const tempId = `tmp-${Date.now()}-${++state.pendingSequence}`;
+  return {
+    id: tempId,
+    tempId,
+    from: state.me?.username || "",
+    to: peer,
+    peer,
+    mine: true,
+    text,
+    createdAt: Date.now(),
+    pending: true,
+    failed: false
+  };
+}
+
+function removePendingMessageFromCache(tempId) {
+  for (const [peer, messages] of state.messageCache) {
+    const next = messages.filter((message) => message.tempId !== tempId);
+    if (next.length !== messages.length) {
+      state.messageCache.set(peer, next);
+      return true;
+    }
+  }
+  return false;
+}
+
+function setPendingMessageState(tempId, failed) {
+  for (const [peer, messages] of state.messageCache) {
+    let changed = false;
+    const next = messages.map((message) => {
+      if (message.tempId !== tempId) {
+        return message;
+      }
+      changed = true;
+      return {
+        ...message,
+        pending: false,
+        failed: Boolean(failed)
+      };
+    });
+    if (changed) {
+      state.messageCache.set(peer, next);
+      return true;
+    }
+  }
+  return false;
+}
+
+function addPendingMessage(peer, text) {
+  const pending = buildTempMessage(peer, text);
+  const current = state.messageCache.get(peer) || [];
+  current.push(pending);
+  current.sort((left, right) => left.createdAt - right.createdAt);
+  state.messageCache.set(peer, current);
+  state.pendingMessages.set(pending.tempId, {
+    tempId: pending.tempId,
+    peer,
+    text,
+    createdAt: pending.createdAt
+  });
+  upsertConversation({
+    username: peer,
+    online: getConversation(peer)?.online || false,
+    avatarSeed: peer,
+    publicKey: state.peerKeys.get(peer) || "",
+    previewText: text,
+    lastAt: pending.createdAt
+  });
+  return pending.tempId;
+}
+
+function reconcilePendingMessage(peer, text, createdAt) {
+  for (const [tempId, pending] of state.pendingMessages) {
+    if (pending.peer !== peer || pending.text !== text) {
+      continue;
+    }
+    if (Math.abs((pending.createdAt || 0) - createdAt) > 60000) {
+      continue;
+    }
+    state.pendingMessages.delete(tempId);
+    removePendingMessageFromCache(tempId);
+    return;
+  }
+}
+
 async function openConversation(username) {
   if (!username) {
     return;
@@ -782,6 +904,10 @@ async function ingestEncryptedMessage(message) {
     };
   }
 
+  if (decrypted.mine) {
+    reconcilePendingMessage(peer, decrypted.text, decrypted.createdAt);
+  }
+
   const current = state.messageCache.get(peer) || [];
   current.push(decrypted);
   current.sort((left, right) => left.createdAt - right.createdAt);
@@ -818,12 +944,17 @@ async function ingestEncryptedMessage(message) {
 }
 
 function openEventStream() {
-  if (state.eventSource) {
-    state.eventSource.close();
-  }
-
+  closeEventStream();
+  state.connectionState = "connecting";
   const source = new EventSource(`/api/events?token=${encodeURIComponent(state.token)}`);
   state.eventSource = source;
+  state.manualEventSourceClose = false;
+
+  source.addEventListener("open", () => {
+    state.connectionState = "online";
+    state.reconnectAttempts = 0;
+    renderThread();
+  });
 
   source.addEventListener("ready", (event) => {
     const payload = JSON.parse(event.data);
@@ -840,6 +971,49 @@ function openEventStream() {
   source.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
     void ingestEncryptedMessage(payload);
+  });
+
+  source.addEventListener("error", () => {
+    if (state.manualEventSourceClose || !state.token) {
+      return;
+    }
+    if (state.eventSource) {
+      state.manualEventSourceClose = true;
+      state.eventSource.close();
+      state.eventSource = null;
+      state.manualEventSourceClose = false;
+    }
+    state.connectionState = "reconnecting";
+    renderThread();
+    if (state.reconnectTimer) {
+      return;
+    }
+    state.reconnectAttempts += 1;
+    const delay = Math.min(10000, 400 * 2 ** Math.max(0, state.reconnectAttempts - 1));
+    state.reconnectTimer = window.setTimeout(async () => {
+      state.reconnectTimer = 0;
+      if (!state.token) {
+        return;
+      }
+      try {
+        await api("/api/me");
+      } catch (error) {
+        if (!state.token) {
+          return;
+        }
+      }
+      openEventStream();
+      try {
+        await loadConversations();
+        if (state.activePeer) {
+          await openConversation(state.activePeer);
+        } else {
+          render();
+        }
+      } catch (error) {
+        // Ignore refresh failures during reconnect; next event tick will retry.
+      }
+    }, delay);
   });
 }
 
@@ -916,9 +1090,30 @@ async function logout() {
   clearSession(true);
 }
 
+async function sendMessageWithRetry(tempId, peer, text) {
+  try {
+    const payload = await api("/api/messages", {
+      method: "POST",
+      body: {
+        to: peer,
+        text
+      }
+    });
+    state.pendingMessages.delete(tempId);
+    removePendingMessageFromCache(tempId);
+    await ingestEncryptedMessage(payload.message);
+    return true;
+  } catch (error) {
+    setPendingMessageState(tempId, true);
+    renderThread();
+    showToast(error.message);
+    return false;
+  }
+}
+
 async function submitMessage(event) {
   event.preventDefault();
-  if (!state.activePeer || state.composerBusy) {
+  if (!state.activePeer) {
     return;
   }
 
@@ -927,23 +1122,22 @@ async function submitMessage(event) {
     return;
   }
 
-  setComposerBusy(true);
-  try {
-    const payload = await api("/api/messages", {
-      method: "POST",
-      body: {
-        to: state.activePeer,
-        text
-      }
-    });
-    await ingestEncryptedMessage(payload.message);
-    elements.messageInput.value = "";
-    autoResizeComposer();
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    setComposerBusy(false);
+  const peer = state.activePeer;
+  const tempId = addPendingMessage(peer, text);
+  elements.messageInput.value = "";
+  autoResizeComposer();
+  renderThread();
+  void sendMessageWithRetry(tempId, peer, text);
+}
+
+async function retryPendingMessage(tempId) {
+  const pending = state.pendingMessages.get(tempId);
+  if (!pending) {
+    return;
   }
+  setPendingMessageState(tempId, false);
+  renderThread();
+  void sendMessageWithRetry(tempId, pending.peer, pending.text);
 }
 
 function handleListClick(event) {
@@ -960,6 +1154,18 @@ function handleSearchInput() {
   queueSearch();
 }
 
+function handleMessageListClick(event) {
+  const retryButton = event.target.closest(".message-retry-button");
+  if (!retryButton) {
+    return;
+  }
+  const tempId = retryButton.dataset.tempId || "";
+  if (!tempId) {
+    return;
+  }
+  void retryPendingMessage(tempId);
+}
+
 function bindEvents() {
   elements.loginTab.addEventListener("click", () => setAuthMode("login"));
   elements.registerTab.addEventListener("click", () => setAuthMode("register"));
@@ -972,6 +1178,7 @@ function bindEvents() {
   elements.globalSearchInput.addEventListener("input", handleSearchInput);
   elements.conversationList.addEventListener("click", handleListClick);
   elements.searchResultList.addEventListener("click", handleListClick);
+  elements.messageList.addEventListener("click", handleMessageListClick);
   elements.composerForm.addEventListener("submit", (event) => {
     void submitMessage(event);
   });
@@ -986,8 +1193,26 @@ function bindEvents() {
   window.addEventListener("resize", render);
 }
 
+async function restoreSessionFromStorage() {
+  const token = localStorage.getItem(STORAGE.token);
+  if (!token) {
+    return false;
+  }
+  state.token = token;
+  try {
+    const payload = await api("/api/me", { skipAuthReset: true });
+    setSession(token, payload.user, null);
+    await afterLogin();
+    showToast("已恢复登录会话");
+    return true;
+  } catch (error) {
+    clearSession(true, true);
+    return false;
+  }
+}
+
 function boot() {
-  clearStoredSessionArtifacts();
+  clearStoredSessionArtifacts(false, false);
   setAuthMode(state.authMode);
   bindEvents();
   render();
@@ -995,7 +1220,10 @@ function boot() {
   if (!window.crypto?.subtle) {
     elements.authSubmitButton.disabled = true;
     elements.authTip.textContent = "当前环境缺少 Web Crypto。请用 HTTPS 或 localhost 打开此站点。";
+    return;
   }
+
+  void restoreSessionFromStorage();
 }
 
 boot();

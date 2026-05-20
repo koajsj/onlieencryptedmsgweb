@@ -7,12 +7,17 @@ const path = require("node:path");
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
+const SESSION_TTL_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.SESSION_TTL_MS || `${7 * 24 * 60 * 60 * 1000}`, 10) || 7 * 24 * 60 * 60 * 1000
+);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 
 const MAX_BODY_BYTES = 128 * 1024;
+const MAX_MESSAGE_TEXT_LENGTH = 4000;
 const RATE_WINDOW_MS = 60 * 1000;
 const MAX_AUTH_REQUESTS_PER_WINDOW = 40;
 const MAX_API_REQUESTS_PER_WINDOW = 240;
@@ -210,6 +215,15 @@ function cleanRateBuckets() {
   }
 }
 
+function cleanSessions() {
+  const now = Date.now();
+  for (const [token, session] of sessions) {
+    if (!session || session.expiresAt <= now) {
+      sessions.delete(token);
+    }
+  }
+}
+
 function rejectIfForbiddenOrLimited(req, res, key, limit, limitMessage) {
   if (!isSameOriginRequest(req)) {
     sendJson(res, 403, { error: "forbidden origin" });
@@ -241,6 +255,20 @@ function normalizePassword(value) {
     return "";
   }
   return value.trim();
+}
+
+function normalizeMessageText(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+  if (text.length > MAX_MESSAGE_TEXT_LENGTH) {
+    return { tooLong: true };
+  }
+  return { text };
 }
 
 function decodeBase64Blob(value) {
@@ -296,11 +324,16 @@ function hashPassword(password) {
 
 function verifyPassword(password, storedHash) {
   const [salt, hash] = String(storedHash || "").split(":");
-  if (!salt || !hash) {
+  if (!salt || !hash || !/^[a-f0-9]{128}$/i.test(hash)) {
     return false;
   }
-  const computed = crypto.scryptSync(password, salt, 64);
-  return crypto.timingSafeEqual(Buffer.from(hash, "hex"), computed);
+  try {
+    const expected = Buffer.from(hash, "hex");
+    const computed = crypto.scryptSync(password, salt, expected.length);
+    return crypto.timingSafeEqual(expected, computed);
+  } catch (error) {
+    return false;
+  }
 }
 
 function findUserByKey(usernameKey) {
@@ -314,10 +347,13 @@ function findUserByUsername(username) {
 
 function createSession(username) {
   const token = crypto.randomBytes(24).toString("hex");
+  const now = Date.now();
   sessions.set(token, {
     token,
     username,
-    createdAt: Date.now()
+    createdAt: now,
+    lastSeenAt: now,
+    expiresAt: now + SESSION_TTL_MS
   });
   return token;
 }
@@ -344,6 +380,14 @@ function requireSession(req, res, url) {
     sendJson(res, 401, { error: "unauthorized" });
     return null;
   }
+  const now = Date.now();
+  if (session.expiresAt <= now) {
+    sessions.delete(session.token);
+    sendJson(res, 401, { error: "session expired" });
+    return null;
+  }
+  session.lastSeenAt = now;
+  session.expiresAt = now + SESSION_TTL_MS;
   return session;
 }
 
@@ -523,19 +567,28 @@ function detachConnection(username, connection) {
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let tooLarge = false;
     const chunks = [];
 
     req.on("data", (chunk) => {
+      if (tooLarge) {
+        return;
+      }
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error("body too large"));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        req.resume();
         return;
       }
       chunks.push(chunk);
     });
 
     req.on("end", () => {
+      if (tooLarge) {
+        reject(new Error("body too large"));
+        return;
+      }
       try {
         const raw = Buffer.concat(chunks).toString("utf8");
         resolve(raw ? JSON.parse(raw) : {});
@@ -554,7 +607,7 @@ async function handleRegister(req, res) {
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `auth:${address}`,
+      `auth:register:${address}`,
       MAX_AUTH_REQUESTS_PER_WINDOW,
       "too many auth requests"
     )
@@ -643,7 +696,7 @@ async function handleLogin(req, res) {
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `auth:${address}`,
+      `auth:login:${address}`,
       MAX_AUTH_REQUESTS_PER_WINDOW,
       "too many auth requests"
     )
@@ -717,7 +770,7 @@ function handleUsers(req, res, url) {
     return;
   }
   const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `api:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
+  if (rejectIfForbiddenOrLimited(req, res, `api:users:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
     return;
   }
   const query = String(url.searchParams.get("q") || "");
@@ -732,7 +785,15 @@ function handleConversations(req, res, url) {
     return;
   }
   const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `api:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:conversations:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
     return;
   }
   sendJson(res, 200, {
@@ -746,7 +807,15 @@ function handleMessages(req, res, url) {
     return;
   }
   const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `api:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:messages:get:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
     return;
   }
 
@@ -775,7 +844,15 @@ async function handleSendMessage(req, res, url) {
     return;
   }
   const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `api:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:messages:post:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
     return;
   }
 
@@ -790,15 +867,20 @@ async function handleSendMessage(req, res, url) {
   }
 
   const peer = findUserByUsername(body.to);
-  const text = String(body.text || "").trim();
+  const normalizedText = normalizeMessageText(body.text);
   if (!peer || peer.username === session.username) {
     sendJson(res, 404, { error: "user not found" });
     return;
   }
-  if (!text) {
+  if (normalizedText?.tooLong) {
+    sendJson(res, 400, { error: `message text must be 1-${MAX_MESSAGE_TEXT_LENGTH} characters` });
+    return;
+  }
+  if (!normalizedText?.text) {
     sendJson(res, 400, { error: "message text is required" });
     return;
   }
+  const text = normalizedText.text;
 
   const encrypted = encryptMessageText(text, session.username, peer.username);
 
@@ -830,7 +912,15 @@ function handleEvents(req, res, url) {
     return;
   }
   const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `events:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many event connections")) {
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `events:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many event connections"
+    )
+  ) {
     return;
   }
 
@@ -895,6 +985,7 @@ function serveStatic(req, res, url) {
 
 loadData();
 setInterval(cleanRateBuckets, RATE_WINDOW_MS).unref();
+setInterval(cleanSessions, Math.min(5 * 60 * 1000, SESSION_TTL_MS)).unref();
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);

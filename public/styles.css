@@ -694,6 +694,31 @@ button {
   text-align: right;
 }
 
+.message.is-pending .bubble {
+  opacity: 0.82;
+}
+
+.message.is-failed .bubble {
+  box-shadow: inset 0 0 0 1px rgba(235, 87, 87, 0.35), var(--shadow-sm);
+}
+
+.message-state {
+  color: var(--muted);
+}
+
+.message-retry-button {
+  padding: 0;
+  border: 0;
+  color: var(--blue-deep);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.message-retry-button:hover {
+  text-decoration: underline;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

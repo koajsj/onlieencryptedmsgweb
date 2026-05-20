@@ -55,7 +55,7 @@ async function waitForHealth(port, serverProcess) {
   throw new Error("server did not become ready");
 }
 
-async function startServer() {
+async function startServer(envOverrides = {}) {
   const port = 3200 + Math.floor(Math.random() * 1200);
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-site-test-"));
   const serverProcess = spawn(process.execPath, [SERVER_PATH], {
@@ -64,7 +64,8 @@ async function startServer() {
       ...process.env,
       HOST: "127.0.0.1",
       PORT: String(port),
-      DATA_DIR: dataDir
+      DATA_DIR: dataDir,
+      ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -167,13 +168,6 @@ async function getJson(port, pathname, token = "") {
   };
 }
 
-function encryptedMessageEnvelope() {
-  return {
-    nonce: Buffer.alloc(12, 9).toString("base64"),
-    ciphertext: Buffer.alloc(64, 11).toString("base64")
-  };
-}
-
 test("register and login require unique usernames and return encrypted key bundles", async () => {
   const server = await startServer();
 
@@ -262,6 +256,62 @@ test("private messaging accepts plaintext and returns readable messages", async 
     assert.equal(sendBody.message.publicKey, SAMPLE_BUNDLES.Bob.publicKey);
     assert.equal(sendBody.conversation.latestMessage.text, "Hello Bob");
 
+    const bulkPayloads = Array.from({ length: 6 }, (_, index) => ({
+      to: "Bob",
+      text: `bulk-${index}`
+    }));
+    const bulkSends = await Promise.all(
+      bulkPayloads.map((body) => postJson(server.port, "/api/messages", body, aliceToken))
+    );
+    for (const response of bulkSends) {
+      assert.equal(response.status, 201);
+    }
+
+    const blankText = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        text: "   "
+      },
+      aliceToken
+    );
+    assert.equal(blankText.status, 400);
+    assert.equal((await blankText.json()).error, "message text is required");
+
+    const tooLongText = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        text: "a".repeat(4001)
+      },
+      aliceToken
+    );
+    assert.equal(tooLongText.status, 400);
+    assert.equal((await tooLongText.json()).error, "message text must be 1-4000 characters");
+
+    const hugePayload = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        text: "x".repeat(140000)
+      },
+      aliceToken
+    );
+    assert.equal(hugePayload.status, 413);
+    assert.equal((await hugePayload.json()).error, "body too large");
+
+    const crossOrigin = await fetch(`http://127.0.0.1:${server.port}/api/users?q=bo`, {
+      headers: {
+        Authorization: `Bearer ${aliceToken}`,
+        Origin: "https://evil.example"
+      }
+    });
+    assert.equal(crossOrigin.status, 403);
+    assert.equal((await crossOrigin.json()).error, "forbidden origin");
+
     const incoming = await waitForEvent(
       bobEvents,
       "message",
@@ -275,15 +325,80 @@ test("private messaging accepts plaintext and returns readable messages", async 
     const history = await getJson(server.port, "/api/messages?with=Alice", bobToken);
     assert.equal(history.response.status, 200);
     assert.equal(history.json.peer.publicKey, SAMPLE_BUNDLES.Alice.publicKey);
-    assert.equal(history.json.messages.length, 1);
+    assert.equal(history.json.messages.length, 7);
     assert.equal(history.json.messages[0].text, "Hello Bob");
+    assert.deepEqual(
+      history.json.messages.slice(1).map((item) => item.text).sort(),
+      bulkPayloads.map((item) => item.text).sort()
+    );
+
+    bobEvents.close();
+    await delay(80);
+    const missed = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        text: "missed while disconnected"
+      },
+      aliceToken
+    );
+    assert.equal(missed.status, 201);
+
+    const bobEventsAfterReconnect = openEvents(server.port, bobToken);
+    await bobEventsAfterReconnect.ready;
+    await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        text: "after reconnect"
+      },
+      aliceToken
+    );
+    const postReconnect = await waitForEvent(
+      bobEventsAfterReconnect,
+      "message",
+      (payload) => payload.text === "after reconnect"
+    );
+    assert.equal(postReconnect.from, "Alice");
+
+    const historyAfterReconnect = await getJson(server.port, "/api/messages?with=Alice", bobToken);
+    assert.equal(historyAfterReconnect.response.status, 200);
+    assert.ok(
+      historyAfterReconnect.json.messages.some((item) => item.text === "missed while disconnected")
+    );
+    bobEventsAfterReconnect.close();
 
     const conversations = await getJson(server.port, "/api/conversations", aliceToken);
     assert.equal(conversations.response.status, 200);
     assert.equal(conversations.json.conversations.length, 1);
     assert.equal(conversations.json.conversations[0].username, "Bob");
     assert.equal(conversations.json.conversations[0].publicKey, SAMPLE_BUNDLES.Bob.publicKey);
-    assert.equal(conversations.json.conversations[0].latestMessage.text, "Hello Bob");
+    assert.equal(conversations.json.conversations[0].latestMessage.text, "after reconnect");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("session expires and is rejected after ttl", async () => {
+  const server = await startServer({ SESSION_TTL_MS: "1200" });
+
+  try {
+    const register = await postJson(server.port, "/api/register", {
+      username: "Alice_2",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 21).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 22).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 23).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 24).toString("base64")
+    });
+    assert.equal(register.status, 201);
+    const { token } = await register.json();
+    await delay(1400);
+    const me = await getJson(server.port, "/api/me", token);
+    assert.equal(me.response.status, 401);
+    assert.equal(me.json.error, "session expired");
   } finally {
     await server.stop();
   }
