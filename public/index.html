@@ -3,266 +3,138 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#d7e9e2" />
-    <title>在线加密聊天</title>
+    <meta name="theme-color" content="#f4f8fd" />
+    <title>私聊消息</title>
     <link rel="stylesheet" href="./styles.min.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="setup-panel" aria-label="会话侧栏">
-        <div class="panel-header">
-          <div class="brand-mark" aria-hidden="true">密</div>
-          <div class="brand-copy">
-            <strong>在线加密聊天</strong>
-            <span>端到端加密，轻量直聊。</span>
+    <section class="auth-screen" id="authScreen" aria-label="注册和登录">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <div class="brand-badge">P</div>
+          <div>
+            <p class="eyebrow">Private Messaging</p>
+            <h1>注册后直接开始私聊</h1>
+            <p class="auth-copy">
+              只需用户名和密码。聊天全程自动加密。
+            </p>
           </div>
         </div>
 
-        <label class="sidebar-search" aria-label="搜索会话">
-          <span class="search-icon" aria-hidden="true">⌕</span>
-          <input id="conversationSearchInput" type="search" placeholder="搜索房间或最近消息" />
-        </label>
+        <div class="auth-tabs" role="tablist" aria-label="登录注册切换">
+          <button class="auth-tab is-active" id="loginTab" type="button" data-mode="login">登录</button>
+          <button class="auth-tab" id="registerTab" type="button" data-mode="register">注册</button>
+        </div>
 
-        <section class="sidebar-card conversation-section" aria-label="最近会话">
-          <div class="section-head">
-            <div>
-              <div class="section-label">最近会话</div>
-              <p class="section-subtitle">本机受保护记录。</p>
-            </div>
-          </div>
-          <div class="conversation-list" id="conversationList"></div>
-          <div class="sidebar-empty" id="conversationEmpty">还没有会话记录</div>
-        </section>
-
-        <form class="sidebar-card join-form" id="joinForm" aria-label="加入会话">
-          <div class="section-head">
-            <div>
-              <div class="section-label">加入会话</div>
-              <p class="section-subtitle">双方输入相同房间和口令。</p>
-            </div>
-          </div>
-
+        <form class="auth-form" id="authForm">
           <label class="field">
-            <span>昵称</span>
-            <input id="nameInput" name="name" maxlength="24" autocomplete="nickname" placeholder="你的名字" required />
-          </label>
-
-          <label class="field">
-            <span>房间号</span>
-            <input id="roomInput" name="room" maxlength="80" autocomplete="off" placeholder="例如 SECURE-A3F2" required />
-          </label>
-
-          <label class="field">
-            <span>会话口令</span>
+            <span>用户名</span>
             <input
-              id="secretInput"
-              name="secret"
-              type="password"
-              minlength="8"
-              autocomplete="new-password"
-              placeholder="双方输入相同口令"
+              id="authUsernameInput"
+              name="username"
+              autocomplete="username"
+              maxlength="24"
+              placeholder="3-24 位，仅限字母、数字、下划线"
               required
             />
           </label>
 
-          <div class="form-actions">
-            <button class="primary-button" id="joinButton" type="submit">进入会话</button>
-            <button class="ghost-button" id="randomRoomButton" type="button">随机房间</button>
-          </div>
-        </form>
-
-        <section class="sidebar-card session-card" aria-label="会话状态">
-          <div class="section-label">会话状态</div>
-          <div class="info-row">
-            <span>连接</span>
-            <strong data-role="connection-state">未连接</strong>
-          </div>
-          <div class="info-row">
-            <span>对方</span>
-            <strong data-role="peer-state">等待加入</strong>
-          </div>
-          <div class="info-row">
-            <span>加密</span>
-            <strong data-role="crypto-state">未建立</strong>
-          </div>
-        </section>
-      </aside>
-
-      <main class="chat-panel" aria-label="聊天窗口">
-        <header class="chat-header">
-          <div class="chat-header-main">
-            <div class="room-avatar" aria-hidden="true">#</div>
-            <div class="chat-header-copy">
-              <p class="eyebrow">加密会话</p>
-              <h1 id="roomTitle">尚未进入房间</h1>
-              <span class="subline" id="roomSubline">等待加入</span>
-            </div>
-          </div>
-
-          <div class="chat-header-actions">
-            <span class="chat-badge" id="connectionBadge">离线</span>
-            <span class="chat-badge is-secondary" id="peerBadge">未配对</span>
-            <button class="icon-button" id="toggleSearchButton" type="button" aria-label="搜索消息">⌕</button>
-            <button class="icon-button" id="openInfoButton" type="button" aria-label="会话信息">ⓘ</button>
-            <button class="ghost-button compact" id="leaveButton" type="button" disabled>离开</button>
-          </div>
-        </header>
-
-        <section class="security-strip" aria-live="polite">
-          <div class="security-copy">
-            <span class="status-dot" id="secureDot"></span>
-            <span id="secureText">输入房间号和口令后开始</span>
-          </div>
-
-          <div class="security-meta">
-            <span class="crypto-badge" id="cryptoBadge" title="密钥信息">E2EE</span>
-            <span class="chat-badge is-status" id="peerStatusBadge" hidden>对方在线</span>
-            <output class="safety-code" id="safetyCode">----</output>
-          </div>
-        </section>
-
-        <section class="message-search-bar" id="messageSearchBar" hidden aria-label="消息搜索">
-          <label class="message-search-field">
-            <span class="search-icon" aria-hidden="true">⌕</span>
-            <input id="messageSearchInput" type="search" placeholder="搜索消息内容、文件名或引用片段" />
+          <label class="field">
+            <span>密码</span>
+            <input
+              id="authPasswordInput"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              maxlength="72"
+              placeholder="至少 4 位"
+              required
+            />
           </label>
-          <div class="message-search-actions">
-            <span class="search-count" id="messageSearchCount">0 / 0</span>
-            <button class="icon-button" id="searchPrevButton" type="button" aria-label="上一个结果">↑</button>
-            <button class="icon-button" id="searchNextButton" type="button" aria-label="下一个结果">↓</button>
-            <button class="icon-button" id="closeSearchButton" type="button" aria-label="关闭搜索">×</button>
-          </div>
-        </section>
 
-        <section class="messages" id="messageList" aria-live="polite" aria-label="消息列表">
-          <div class="empty-state" id="emptyState">
-            <strong>还没有消息</strong>
-            <span>进入房间后开始聊天。</span>
-          </div>
-
-          <div class="typing-indicator" id="typingIndicator" hidden aria-label="对方正在输入">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-        </section>
-
-        <form class="composer" id="messageForm">
-          <div class="composer-card">
-            <div class="composer-meta" id="composerMeta" hidden>
-              <div class="composer-meta-copy">
-                <strong id="composerMetaTitle"></strong>
-                <span id="composerMetaText"></span>
-              </div>
-              <button class="icon-button" id="clearComposerMetaButton" type="button" aria-label="取消当前操作">×</button>
-            </div>
-
-            <div class="attachment-preview" id="attachmentPreview" hidden>
-              <div class="attachment-preview-media" id="attachmentPreviewMedia"></div>
-              <div class="attachment-preview-copy">
-                <strong id="attachmentPreviewName"></strong>
-                <span id="attachmentPreviewMeta"></span>
-              </div>
-              <button class="icon-button" id="removeAttachmentButton" type="button" aria-label="移除附件">×</button>
-            </div>
-
-            <div class="emoji-row" id="emojiRow">
-              <button class="emoji-chip" data-emoji="👍" type="button">👍</button>
-              <button class="emoji-chip" data-emoji="❤️" type="button">❤️</button>
-              <button class="emoji-chip" data-emoji="😂" type="button">😂</button>
-              <button class="emoji-chip" data-emoji="🎉" type="button">🎉</button>
-            </div>
-
-            <div class="composer-row">
-              <button class="icon-button attach-button" id="attachButton" type="button" aria-label="添加附件">＋</button>
-              <input id="attachmentInput" type="file" hidden />
-              <textarea
-                id="messageInput"
-                rows="1"
-                maxlength="1200"
-                placeholder="等待加密会话建立"
-                disabled
-              ></textarea>
-              <button class="primary-button send-button" id="sendButton" type="submit" disabled>发送</button>
-            </div>
-          </div>
+          <button class="primary-button auth-submit" id="authSubmitButton" type="submit">登录</button>
+          <p class="auth-tip" id="authTip">输入用户名和密码即可，其余流程全部自动完成。</p>
         </form>
-
-        <footer class="chat-footer">
-          <span data-role="connection-state">未连接</span>
-          <span class="footer-divider" aria-hidden="true"></span>
-          <span data-role="crypto-state">未建立</span>
-        </footer>
-      </main>
-    </div>
-
-    <aside class="info-drawer" id="infoDrawer" hidden aria-label="会话信息" role="dialog" aria-modal="true" aria-labelledby="infoDrawerTitle">
-      <div class="drawer-scrim" id="drawerScrim"></div>
-      <div class="drawer-panel" data-dialog-panel tabindex="-1">
-        <div class="drawer-head">
-          <div>
-            <div class="section-label">会话信息</div>
-            <h2 id="infoDrawerTitle">当前房间</h2>
-          </div>
-          <button class="icon-button" id="closeInfoButton" type="button" aria-label="关闭">×</button>
-        </div>
-
-        <div class="drawer-card">
-          <div class="info-row">
-            <span>房间号</span>
-            <strong id="infoRoom">-</strong>
-          </div>
-          <div class="info-row">
-            <span>对方昵称</span>
-            <strong id="infoPeer">-</strong>
-          </div>
-          <div class="info-row">
-            <span>安全码</span>
-            <strong id="infoSafety">----</strong>
-          </div>
-          <div class="info-row">
-            <span>本地消息</span>
-            <strong id="infoMessageCount">0</strong>
-          </div>
-        </div>
-
-        <div class="drawer-actions">
-          <button class="ghost-button" id="copyRoomButton" type="button">复制房间号</button>
-          <button class="ghost-button" id="rekeyButton" type="button">重新协商密钥</button>
-          <button class="ghost-button" id="clearLocalButton" type="button">清空本机记录</button>
-          <button class="primary-button" id="drawerLeaveButton" type="button">离开会话</button>
-        </div>
-      </div>
-    </aside>
-
-    <section class="history-dialog" id="historyDialog" hidden aria-label="编辑历史" role="dialog" aria-modal="true" aria-labelledby="historyDialogTitle">
-      <div class="dialog-scrim" id="historyScrim"></div>
-      <div class="dialog-panel" data-dialog-panel tabindex="-1">
-        <div class="drawer-head">
-          <div>
-            <div class="section-label">编辑历史</div>
-            <h2 id="historyDialogTitle">消息版本</h2>
-          </div>
-          <button class="icon-button" id="closeHistoryButton" type="button" aria-label="关闭">×</button>
-        </div>
-        <div class="history-list" id="historyList"></div>
       </div>
     </section>
 
-    <section class="confirm-dialog" id="confirmDialog" hidden aria-label="确认操作" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
-      <div class="dialog-scrim" id="confirmScrim"></div>
-      <div class="confirm-panel" data-dialog-panel tabindex="-1">
-        <div class="drawer-head">
+    <section class="workspace" id="workspace" hidden aria-label="私聊工作区">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <div class="brand-badge is-small">P</div>
           <div>
-            <div class="section-label">确认操作</div>
-            <h2 id="confirmTitle">请确认</h2>
+            <p class="eyebrow">Messenger</p>
+            <strong>私聊消息</strong>
           </div>
         </div>
-        <p class="confirm-text" id="confirmText"></p>
-        <div class="confirm-actions">
-          <button class="ghost-button" id="confirmCancelButton" type="button">取消</button>
-          <button class="primary-button" id="confirmConfirmButton" type="button">确认</button>
+
+        <label class="topbar-search" aria-label="搜索用户和会话">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="globalSearchInput" type="search" placeholder="搜索用户名..." />
+        </label>
+
+        <div class="topbar-user">
+          <div class="user-chip">
+            <div class="avatar avatar-tone-0" id="meAvatar">我</div>
+            <div class="user-chip-copy">
+              <strong id="meUsername">未登录</strong>
+              <span>自动加密</span>
+            </div>
+          </div>
+          <button class="ghost-button compact" id="logoutButton" type="button">退出</button>
         </div>
+      </header>
+
+      <div class="app-shell">
+        <aside class="sidebar" id="sidebar" aria-label="会话列表">
+          <div class="sidebar-block">
+            <div class="sidebar-head">
+              <h2>消息</h2>
+              <span id="sidebarMeta">0 个会话</span>
+            </div>
+
+            <div class="list-group" id="searchGroup" hidden>
+              <div class="group-title">搜索结果</div>
+              <div class="conversation-list" id="searchResultList"></div>
+            </div>
+
+            <div class="list-group">
+              <div class="group-title">最近私聊</div>
+              <div class="conversation-list" id="conversationList"></div>
+              <div class="sidebar-empty" id="conversationEmpty">还没有私聊，先搜索一个用户名开始聊天。</div>
+            </div>
+          </div>
+        </aside>
+
+        <main class="chat-panel" id="chatPanel" aria-label="聊天区域">
+          <section class="chat-empty" id="chatEmpty">
+            <div class="chat-empty-illustration">✦</div>
+            <h2>选择一个用户开始私聊</h2>
+            <p>上方可以直接搜索用户名。发送和接收的消息都会由浏览器自动完成端到端加密。</p>
+          </section>
+
+          <section class="chat-thread" id="chatThread" hidden>
+            <header class="thread-header">
+              <button class="icon-button mobile-back" id="mobileBackButton" type="button" aria-label="返回列表">←</button>
+              <div class="thread-user">
+                <div class="avatar avatar-tone-1" id="peerAvatar">A</div>
+                <div class="thread-copy">
+                  <strong id="peerName">未选择</strong>
+                  <span id="peerStatus">离线</span>
+                </div>
+              </div>
+            </header>
+
+            <div class="message-stream" id="messageList" aria-live="polite"></div>
+
+            <form class="composer" id="composerForm">
+              <label class="composer-field">
+                <textarea id="messageInput" rows="1" maxlength="4000" placeholder="输入消息..." required></textarea>
+              </label>
+              <button class="primary-button send-button" id="sendButton" type="submit">发送</button>
+            </form>
+          </section>
+        </main>
       </div>
     </section>
 
