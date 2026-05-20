@@ -38,16 +38,17 @@ npm.cmd test
 
 ### 2. 下载代码并后台运行
 
-复制执行以下命令来安装 Node 运行环境并启动代码：
+复制执行以下命令来安装运行环境并直接从 GitHub 拉取代码：
 
 ```bash
-# 1. 安装 Node.js 和后台管理工具 PM2
+# 1. 安装 Git、Node.js 和后台管理工具 PM2
 sudo apt update
-sudo apt install nodejs npm -y
+sudo apt install git nodejs npm -y
 sudo npm install -g pm2
 
-# 2. 进入你上传代码的目录（假设你传到了 /var/www/secure-chat）
-cd /var/www/secure-chat
+# 2. 直接从 GitHub 获取代码并进入目录
+git clone https://github.com/koajsj/onlieencryptedmsgweb.git
+cd onlieencryptedmsgweb
 
 # 3. 安装依赖并构建压缩文件
 npm install
