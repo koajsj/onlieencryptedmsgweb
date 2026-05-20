@@ -33,7 +33,7 @@ npm.cmd test
 
 ### 1. 准备工作
 
-- 把你的域名（如 `chat.yourdomain.com`）在 DNS 里解析到你云服务器的 IP 地址。
+- 把你的域名 `257823.xyz` 在 DNS 里解析（添加 A 记录）到你云服务器的 IP 地址。
 - 用 SSH 登录到你的云服务器（Debian / Ubuntu）。
 
 ### 2. 下载代码并后台运行
@@ -81,9 +81,9 @@ sudo apt update && sudo apt install caddy
 ```bash
 sudo nano /etc/caddy/Caddyfile
 ```
-**清空里面的所有内容**，只写下面这三行（**把第一行换成你的真实域名**）：
+**清空里面的所有内容**，只写下面这三行：
 ```text
-chat.yourdomain.com {
+257823.xyz {
     reverse_proxy localhost:3000
 }
 ```
@@ -95,7 +95,7 @@ sudo systemctl restart caddy
 ```
 
 **恭喜你，大功告成！🎉** 
-现在 Caddy 已经在后台秒速帮你申请好了免费的绿色安全锁（HTTPS），直接在浏览器打开 `https://chat.yourdomain.com` 就可以和朋友进行安全加密聊天了！
+现在 Caddy 已经在后台秒速帮你申请好了免费的绿色安全锁（HTTPS），直接在浏览器打开 `https://257823.xyz` 就可以和朋友进行安全加密聊天了！
 
 > **小白提示**：如果你对命令行存在恐惧，不介意多耗费一点服务器资源的话，最简单的方式是直接给服务器安装一个可视化管理面板（比如 [宝塔面板](https://www.bt.cn/) 或 [1Panel](https://1panel.cn/) ），只需要在浏览器里点点鼠标，就可以建站、代理、申请证书了。
 
