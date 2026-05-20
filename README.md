@@ -134,3 +134,22 @@ sudo certbot --nginx -d chat.yourdomain.com
 它会问你邮箱用来接收证书到期提醒，并问你是否强制将 HTTP 跳转 HTTPS（选 2 强制跳转即可）。
 
 **搞定！** 现在你就可以在浏览器里访问 `https://chat.yourdomain.com`，拉上小伙伴愉快地加密聊天了。
+
+## 更简单的方法：使用云平台（零服务器零配置）
+
+如果你不想弄服务器，也不想搞命令行、装 Nginx、申请域名证书等这些繁琐的步骤。最简单的方法是使用能够直接托管 GitHub 代码的 **PaaS 云平台**（比如 Render、Koyeb、Railway 等）。它们会**自动**分配免费域名并自带 HTTPS 加密。
+
+这里以 **Render** 为例（完全免费，极其适合新手）：
+
+1. **准备代码**：确保你已经把这个仓库 `fork` （派生）到了你自己的 GitHub 账号下。
+2. **注册账号**：访问 [Render.com](https://render.com/)，使用你的 GitHub 账号一键授权登录。
+3. **新建服务**：点击面板右上角的 `New` -> 选择 `Web Service`。
+4. **连接仓库**：在列表中找到你刚才放到自己账号下的那个聊天室仓库，点击 `Connect`。
+5. **填写简单配置**：
+   - Name: 随便起个名字 (比如 `my-secure-chat`)
+   - Environment: 选 `Node`
+   - Build Command (构建命令): 填 `npm install && npm run build`
+   - Start Command (启动命令): 填 `npm start`
+6. **点击部署**：选免费套餐 (Free tier)，点击 `Deploy Web Service`。
+
+**只要等 1-2 分钟代码自动构建完毕，Render 就会在左上角提供给你一个免费自带 HTTPS 的网址（比如 `https://my-secure-chat.onrender.com`），发给朋友直接就能用啦！** 完全不需要懂修电脑和敲命令行！
