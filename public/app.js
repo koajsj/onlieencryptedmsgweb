@@ -1996,23 +1996,45 @@ async function buildSession(peerPublicKeyB64) {
   await flushPendingSecureSignals();
 }
 
-async function sendSignal(type, payload) {
-  const response = await fetch("/signal", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      room: state.room,
-      clientId: state.clientId,
-      type,
-      payload
-    })
-  });
+async function sendSignal(type, payload, retries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch("/signal", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          room: state.room,
+          clientId: state.clientId,
+          type,
+          payload
+        })
+      });
 
-  if (!response.ok) {
-    throw new Error(`signal failed: ${response.status}`);
+      if (response.ok) {
+        return;
+      }
+      
+      // If it's a rate limit or 5xx or general error, we keep track of it
+      lastError = new Error(`signal failed: ${response.status}`);
+      
+      // Do not retry for bad requests or forbidden
+      if (response.status === 400 || response.status === 403) {
+        throw lastError;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    
+    // Fallback wait before retry
+    if (attempt < retries) {
+      await new Promise(resolve => window.setTimeout(resolve, 800 * (attempt + 1)));
+    }
   }
+  
+  throw lastError;
 }
 
 async function sendHello() {
@@ -3096,6 +3118,7 @@ function handleLongPressEnd(event) {
   node.style.transform = "";
 
   if (dx > 72 && Math.abs(dy) < 28) {
+    if (navigator.vibrate) navigator.vibrate(50);
     startReply(messageId);
   }
 
