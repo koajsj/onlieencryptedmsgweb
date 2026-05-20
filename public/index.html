@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#ece6dc" />
+    <meta name="theme-color" content="#d7e9e2" />
     <title>在线加密聊天</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -14,7 +14,7 @@
           <div class="brand-mark" aria-hidden="true">密</div>
           <div class="brand-copy">
             <strong>在线加密聊天</strong>
-            <span>默认不保存明文消息，只有元信息和受保护缓存会留在当前设备。</span>
+            <span>端到端加密，轻量直聊。</span>
           </div>
         </div>
 
@@ -27,7 +27,7 @@
           <div class="section-head">
             <div>
               <div class="section-label">最近会话</div>
-              <p class="section-subtitle">这里只显示房间、状态和受保护记录提示，不暴露消息正文。</p>
+              <p class="section-subtitle">本机受保护记录。</p>
             </div>
           </div>
           <div class="conversation-list" id="conversationList"></div>
@@ -38,7 +38,7 @@
           <div class="section-head">
             <div>
               <div class="section-label">加入会话</div>
-              <p class="section-subtitle">输入房间号和口令后，才会解锁当前设备上的受保护本地记录。</p>
+              <p class="section-subtitle">双方输入相同房间和口令。</p>
             </div>
           </div>
 
@@ -93,7 +93,7 @@
           <div class="chat-header-main">
             <div class="room-avatar" aria-hidden="true">#</div>
             <div class="chat-header-copy">
-              <p class="eyebrow">Secure room</p>
+              <p class="eyebrow">加密会话</p>
               <h1 id="roomTitle">尚未进入房间</h1>
               <span class="subline" id="roomSubline">等待加入</span>
             </div>
@@ -137,7 +137,7 @@
         <section class="messages" id="messageList" aria-live="polite" aria-label="消息列表">
           <div class="empty-state" id="emptyState">
             <strong>还没有消息</strong>
-            <span>进入房间后可以发送文本、图片和小文件，并在解锁后恢复本机上的受保护记录。</span>
+            <span>进入房间后开始聊天。</span>
           </div>
 
           <div class="typing-indicator" id="typingIndicator" hidden aria-label="对方正在输入">
@@ -196,13 +196,13 @@
       </main>
     </div>
 
-    <aside class="info-drawer" id="infoDrawer" hidden aria-label="会话信息">
+    <aside class="info-drawer" id="infoDrawer" hidden aria-label="会话信息" role="dialog" aria-modal="true" aria-labelledby="infoDrawerTitle">
       <div class="drawer-scrim" id="drawerScrim"></div>
-      <div class="drawer-panel">
+      <div class="drawer-panel" data-dialog-panel tabindex="-1">
         <div class="drawer-head">
           <div>
             <div class="section-label">会话信息</div>
-            <h2>当前房间</h2>
+            <h2 id="infoDrawerTitle">当前房间</h2>
           </div>
           <button class="icon-button" id="closeInfoButton" type="button" aria-label="关闭">×</button>
         </div>
@@ -229,15 +229,15 @@
         <div class="drawer-actions">
           <button class="ghost-button" id="copyRoomButton" type="button">复制房间号</button>
           <button class="ghost-button" id="rekeyButton" type="button">重新协商密钥</button>
-          <button class="ghost-button" id="clearLocalButton" type="button">清空受保护缓存</button>
+          <button class="ghost-button" id="clearLocalButton" type="button">清空本机记录</button>
           <button class="primary-button" id="drawerLeaveButton" type="button">离开会话</button>
         </div>
       </div>
     </aside>
 
-    <section class="history-dialog" id="historyDialog" hidden aria-label="编辑历史">
+    <section class="history-dialog" id="historyDialog" hidden aria-label="编辑历史" role="dialog" aria-modal="true" aria-labelledby="historyDialogTitle">
       <div class="dialog-scrim" id="historyScrim"></div>
-      <div class="dialog-panel">
+      <div class="dialog-panel" data-dialog-panel tabindex="-1">
         <div class="drawer-head">
           <div>
             <div class="section-label">编辑历史</div>
@@ -246,6 +246,23 @@
           <button class="icon-button" id="closeHistoryButton" type="button" aria-label="关闭">×</button>
         </div>
         <div class="history-list" id="historyList"></div>
+      </div>
+    </section>
+
+    <section class="confirm-dialog" id="confirmDialog" hidden aria-label="确认操作" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="dialog-scrim" id="confirmScrim"></div>
+      <div class="confirm-panel" data-dialog-panel tabindex="-1">
+        <div class="drawer-head">
+          <div>
+            <div class="section-label">确认操作</div>
+            <h2 id="confirmTitle">请确认</h2>
+          </div>
+        </div>
+        <p class="confirm-text" id="confirmText"></p>
+        <div class="confirm-actions">
+          <button class="ghost-button" id="confirmCancelButton" type="button">取消</button>
+          <button class="primary-button" id="confirmConfirmButton" type="button">确认</button>
+        </div>
       </div>
     </section>
 

@@ -6,7 +6,8 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js"
+    "check": "node --check server.js && node --check public/app.js && node --check tests/e2e.test.js",
+    "test": "node --test tests/e2e.test.js"
   },
   "engines": {
     "node": ">=18"

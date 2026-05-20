@@ -4,18 +4,35 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const urlParams = new URLSearchParams(window.location.search);
+const storageChannel = "BroadcastChannel" in window ? new BroadcastChannel("secure-chat-storage") : null;
 
 const STORAGE = {
-  clientId: "secure-chat-client-id",
+  clientIdLegacy: "secure-chat-client-id",
+  tabClientId: "secure-chat-tab-client-id",
+  deviceId: "secure-chat-device-id",
   name: "secure-chat-name",
   conversations: "secure-chat-conversations-v3",
   previewRoom: "secure-chat-preview-room-v1"
 };
 
+const DATABASE = {
+  name: "secure-chat-db",
+  version: 1,
+  store: "kv",
+  migrationKey: "migration:indexeddb:v1",
+  conversationsKey: "conversations",
+  previewRoomKey: "preview-room"
+};
+
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
-const MAX_ATTACHMENT_BYTES = 160 * 1024;
+const MAX_ATTACHMENT_BYTES = 512 * 1024;
+const MAX_IMAGE_DIMENSION = 1600;
+const IMAGE_EXPORT_QUALITY = 0.82;
 const MAX_SIGNAL_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+const RECONNECT_BASE_MS = 1200;
+const RECONNECT_MAX_MS = 10000;
 
 const elements = {
   joinForm: $("#joinForm"),
@@ -68,7 +85,6 @@ const elements = {
   emojiRow: $("#emojiRow"),
   infoDrawer: $("#infoDrawer"),
   drawerScrim: $("#drawerScrim"),
-  openInfoButtonRef: $("#openInfoButton"),
   closeInfoButton: $("#closeInfoButton"),
   infoRoom: $("#infoRoom"),
   infoPeer: $("#infoPeer"),
@@ -83,20 +99,33 @@ const elements = {
   closeHistoryButton: $("#closeHistoryButton"),
   historyDialogTitle: $("#historyDialogTitle"),
   historyList: $("#historyList"),
+  confirmDialog: $("#confirmDialog"),
+  confirmScrim: $("#confirmScrim"),
+  confirmTitle: $("#confirmTitle"),
+  confirmText: $("#confirmText"),
+  confirmCancelButton: $("#confirmCancelButton"),
+  confirmConfirmButton: $("#confirmConfirmButton"),
   toast: $("#toast")
 };
 
 const state = {
   clientId: loadClientId(),
+  deviceId: loadDeviceId(),
   room: "",
-  previewRoom: localStorage.getItem(STORAGE.previewRoom) || "",
+  previewRoom: "",
   name: "",
   secret: "",
   eventSource: null,
+  eventSourceReconnectTimer: 0,
+  reconnectAttempt: 0,
+  reconnecting: false,
+  shouldReconnect: false,
   keyPair: null,
   publicKeyB64: "",
   sessionKey: null,
   peer: null,
+  peerTrustState: "unknown",
+  peerTrustNote: "",
   peerOnline: false,
   peerLastSeenAt: 0,
   helloEchoedFor: new Set(),
@@ -123,29 +152,147 @@ const state = {
   sendInFlight: false,
   dragCounter: 0,
   vaultKeyCache: new Map(),
-  persistTimer: 0
+  persistTimer: 0,
+  db: null,
+  bootReady: false,
+  confirmResolver: null,
+  dialogStack: [],
+  lastFocusBeforeDialog: null
 };
 
 function loadClientId() {
-  const stored = localStorage.getItem(STORAGE.clientId);
+  const storageKey = STORAGE.tabClientId;
+  const stored = sessionStorage.getItem(storageKey);
   if (stored && /^[a-f0-9]{24,64}$/i.test(stored)) {
     return stored;
   }
 
   const next = randomHex(16);
-  localStorage.setItem(STORAGE.clientId, next);
+  sessionStorage.setItem(storageKey, next);
   return next;
 }
 
-function loadConversationSummaries() {
-  return readJson(STORAGE.conversations, []);
+function loadDeviceId() {
+  const stored = localStorage.getItem(STORAGE.deviceId);
+  if (stored && /^[a-f0-9]{24,64}$/i.test(stored)) {
+    return stored;
+  }
+
+  const next = randomHex(16);
+  localStorage.setItem(STORAGE.deviceId, next);
+  return next;
 }
 
 function conversationVaultKey(room) {
-  return `secure-chat-vault:${room}`;
+  return `vault:${room}`;
 }
 
-function readJson(key, fallback) {
+function peerPinKey(room) {
+  return `peer-pin:${room}`;
+}
+
+async function openDatabase() {
+  if (state.db) {
+    return state.db;
+  }
+
+  state.db = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(DATABASE.name, DATABASE.version);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DATABASE.store)) {
+        db.createObjectStore(DATABASE.store, { keyPath: "key" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("indexeddb open failed"));
+  });
+
+  return state.db;
+}
+
+async function withStore(mode, handler) {
+  const db = await openDatabase();
+  return await new Promise((resolve, reject) => {
+    const transaction = db.transaction(DATABASE.store, mode);
+    const store = transaction.objectStore(DATABASE.store);
+    let settled = false;
+
+    transaction.oncomplete = () => {
+      if (!settled) {
+        resolve(undefined);
+      }
+    };
+    transaction.onerror = () => reject(transaction.error || new Error("indexeddb transaction failed"));
+    transaction.onabort = () => reject(transaction.error || new Error("indexeddb transaction aborted"));
+
+    Promise.resolve(handler(store, resolve, reject))
+      .then((value) => {
+        if (value !== undefined && !settled) {
+          settled = true;
+          resolve(value);
+        }
+      })
+      .catch(reject);
+  });
+}
+
+async function readStoredValue(key, fallback = null) {
+  return await withStore("readonly", (store, resolve) => {
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result ? request.result.value : fallback);
+    request.onerror = () => resolve(fallback);
+  });
+}
+
+async function writeStoredValue(key, value) {
+  return await withStore("readwrite", (store, resolve, reject) => {
+    const request = store.put({ key, value });
+    request.onsuccess = () => resolve(true);
+    request.onerror = () => reject(request.error || new Error("indexeddb write failed"));
+  });
+}
+
+async function deleteStoredValue(key) {
+  return await withStore("readwrite", (store, resolve, reject) => {
+    const request = store.delete(key);
+    request.onsuccess = () => resolve(true);
+    request.onerror = () => reject(request.error || new Error("indexeddb delete failed"));
+  });
+}
+
+async function migrateLegacyStorage() {
+  const migrated = await readStoredValue(DATABASE.migrationKey, false);
+  if (migrated) {
+    return;
+  }
+
+  const legacyConversations = readJsonFromLocalStorage(STORAGE.conversations, []);
+  if (Array.isArray(legacyConversations) && legacyConversations.length) {
+    await writeStoredValue(DATABASE.conversationsKey, legacyConversations);
+  }
+
+  const legacyPreviewRoom = localStorage.getItem(STORAGE.previewRoom) || "";
+  if (legacyPreviewRoom) {
+    await writeStoredValue(DATABASE.previewRoomKey, legacyPreviewRoom);
+  }
+
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key || !key.startsWith("secure-chat-vault:")) {
+      continue;
+    }
+    const room = key.slice("secure-chat-vault:".length);
+    const value = readJsonFromLocalStorage(key, null);
+    if (value) {
+      await writeStoredValue(conversationVaultKey(room), value);
+    }
+  }
+
+  await writeStoredValue(DATABASE.migrationKey, true);
+}
+
+function readJsonFromLocalStorage(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : fallback;
@@ -154,8 +301,59 @@ function readJson(key, fallback) {
   }
 }
 
-function writeJson(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+function loadConversationSummaries() {
+  return [];
+}
+
+async function loadStorageState() {
+  await migrateLegacyStorage();
+  state.conversations = sortConversations(await readStoredValue(DATABASE.conversationsKey, []));
+  state.previewRoom = (await readStoredValue(DATABASE.previewRoomKey, "")) || "";
+}
+
+function broadcastStorageUpdate(type, payload = {}) {
+  if (storageChannel) {
+    storageChannel.postMessage({ type, payload });
+  }
+}
+
+function setPreviewRoom(room) {
+  state.previewRoom = room || "";
+  void writeStoredValue(DATABASE.previewRoomKey, state.previewRoom);
+  broadcastStorageUpdate("preview-room", { room: state.previewRoom });
+}
+
+function clearPreviewRoom() {
+  state.previewRoom = "";
+  void deleteStoredValue(DATABASE.previewRoomKey);
+  broadcastStorageUpdate("preview-room", { room: "" });
+}
+
+async function readPeerPin(room) {
+  return await readStoredValue(peerPinKey(room), null);
+}
+
+async function writePeerPin(room, value) {
+  await writeStoredValue(peerPinKey(room), value);
+}
+
+async function fingerprintPublicKey(publicKeyB64) {
+  const digest = await sha256(base64ToBytes(publicKeyB64));
+  return formatSafetyCode(digest);
+}
+
+function sanitizeAttachment(attachment) {
+  if (!attachment) {
+    return null;
+  }
+  const { previewUrl, ...rest } = attachment;
+  return rest;
+}
+
+function revokeAttachmentPreview(attachment) {
+  if (attachment?.previewUrl?.startsWith("blob:")) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
 }
 
 function randomHex(byteLength) {
@@ -368,7 +566,28 @@ function setTypingIndicator(visible) {
 
 function setPeerOnlineStatus(online) {
   state.peerOnline = online;
+  if (state.peerTrustNote) {
+    elements.peerStatusBadge.hidden = false;
+    return;
+  }
   elements.peerStatusBadge.hidden = !online;
+  if (online) {
+    setBadge(elements.peerStatusBadge, "对方在线", "secure");
+  }
+}
+
+function setPeerTrustState(stateName, text = "") {
+  state.peerTrustState = stateName;
+  state.peerTrustNote = text;
+  elements.peerStatusBadge.hidden = !text && !state.peerOnline;
+
+  if (text) {
+    setBadge(elements.peerStatusBadge, text, stateName);
+    elements.peerStatusBadge.hidden = false;
+  } else if (state.peerOnline) {
+    setBadge(elements.peerStatusBadge, "对方在线", "secure");
+    elements.peerStatusBadge.hidden = false;
+  }
 }
 
 function setComposerEnabled(enabled) {
@@ -504,7 +723,7 @@ async function encryptVaultPayload(room, secret, payload) {
 }
 
 async function decryptVaultPayload(room, secret) {
-  const stored = readJson(conversationVaultKey(room), null);
+  const stored = await readStoredValue(conversationVaultKey(room), null);
   if (!stored || stored.v !== 1 || typeof stored.nonce !== "string" || typeof stored.ciphertext !== "string") {
     return null;
   }
@@ -543,13 +762,13 @@ async function persistProtectedVault(room) {
         .map(serializeMessage),
       draft: {
         text: elements.messageInput.value,
-        attachment: state.attachmentDraft
+        attachment: sanitizeAttachment(state.attachmentDraft)
       },
       seenSignalIds: [...state.seenSignalIds].slice(-800)
     };
 
     const sealed = await encryptVaultPayload(room, state.secret, payload);
-    writeJson(conversationVaultKey(room), sealed);
+    await writeStoredValue(conversationVaultKey(room), sealed);
 
     const latest = latestPersistableMessageSummary();
     upsertConversationSummary({
@@ -598,8 +817,9 @@ async function loadProtectedVault(room, secret) {
   }
 }
 
-function clearConversationStorage(room) {
-  localStorage.removeItem(conversationVaultKey(room));
+async function clearConversationStorage(room) {
+  await deleteStoredValue(conversationVaultKey(room));
+  await deleteStoredValue(peerPinKey(room));
   state.conversations = state.conversations.filter((conversation) => conversation.room !== room);
   saveConversationSummaries();
   renderConversationList();
@@ -616,13 +836,14 @@ function serializeMessage(message) {
     deleted: Boolean(message.deleted),
     status: message.status || "sent",
     replyTo: message.replyTo || null,
-    attachment: message.attachment || null,
+    attachment: sanitizeAttachment(message.attachment),
     editHistory: message.editHistory || []
   };
 }
 
 function saveConversationSummaries() {
-  writeJson(STORAGE.conversations, state.conversations);
+  void writeStoredValue(DATABASE.conversationsKey, state.conversations);
+  broadcastStorageUpdate("conversations");
 }
 
 function sortConversations(list) {
@@ -760,13 +981,102 @@ function updateInfoDrawer() {
   elements.infoMessageCount.textContent = String(messageCount);
 }
 
+function getOpenDialogPanel() {
+  const root = state.dialogStack[state.dialogStack.length - 1];
+  return root ? root.querySelector("[data-dialog-panel]") : null;
+}
+
+function getFocusableNodes(root) {
+  return [...root.querySelectorAll("button, [href], input, textarea, select, details, summary, [tabindex]:not([tabindex='-1'])")].filter(
+    (node) => !node.disabled && !node.hidden && node.getClientRects().length > 0
+  );
+}
+
+function trapDialogFocus(event) {
+  if (event.key === "Escape") {
+    const activeRoot = state.dialogStack[state.dialogStack.length - 1];
+    if (activeRoot === elements.confirmDialog) {
+      resolveConfirmDialog(false);
+      event.preventDefault();
+    } else if (activeRoot === elements.historyDialog) {
+      closeHistoryDialog();
+      event.preventDefault();
+    } else if (activeRoot === elements.infoDrawer) {
+      closeInfoDrawer();
+      event.preventDefault();
+    }
+    return;
+  }
+
+  if (event.key !== "Tab") {
+    return;
+  }
+
+  const panel = getOpenDialogPanel();
+  if (!panel) {
+    return;
+  }
+
+  const focusables = getFocusableNodes(panel);
+  if (!focusables.length) {
+    panel.focus();
+    event.preventDefault();
+    return;
+  }
+
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    last.focus();
+    event.preventDefault();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    first.focus();
+    event.preventDefault();
+  }
+}
+
+function ensureDialogTrap() {
+  if (state.dialogStack.length === 1) {
+    document.addEventListener("keydown", trapDialogFocus);
+  }
+}
+
+function releaseDialogTrapIfNeeded() {
+  if (!state.dialogStack.length) {
+    document.removeEventListener("keydown", trapDialogFocus);
+    if (state.lastFocusBeforeDialog?.focus) {
+      state.lastFocusBeforeDialog.focus();
+    }
+    state.lastFocusBeforeDialog = null;
+  }
+}
+
+function openDialog(root, panel, initialFocus = null) {
+  if (!state.dialogStack.includes(root)) {
+    if (!state.dialogStack.length) {
+      state.lastFocusBeforeDialog = document.activeElement;
+    }
+    state.dialogStack.push(root);
+  }
+  root.hidden = false;
+  ensureDialogTrap();
+  const focusTarget = initialFocus || getFocusableNodes(panel)[0] || panel;
+  window.setTimeout(() => focusTarget.focus(), 0);
+}
+
+function closeDialog(root) {
+  root.hidden = true;
+  state.dialogStack = state.dialogStack.filter((item) => item !== root);
+  releaseDialogTrapIfNeeded();
+}
+
 function openInfoDrawer() {
   updateInfoDrawer();
-  elements.infoDrawer.hidden = false;
+  openDialog(elements.infoDrawer, elements.infoDrawer.querySelector("[data-dialog-panel]"), elements.closeInfoButton);
 }
 
 function closeInfoDrawer() {
-  elements.infoDrawer.hidden = true;
+  closeDialog(elements.infoDrawer);
 }
 
 function openHistoryDialog(message) {
@@ -787,11 +1097,33 @@ function openHistoryDialog(message) {
     elements.historyList.append(item);
   }
 
-  elements.historyDialog.hidden = false;
+  openDialog(elements.historyDialog, elements.historyDialog.querySelector("[data-dialog-panel]"), elements.closeHistoryButton);
 }
 
 function closeHistoryDialog() {
-  elements.historyDialog.hidden = true;
+  closeDialog(elements.historyDialog);
+}
+
+function resolveConfirmDialog(result) {
+  if (state.confirmResolver) {
+    state.confirmResolver(result);
+    state.confirmResolver = null;
+  }
+  closeDialog(elements.confirmDialog);
+}
+
+async function confirmAction(title, text, confirmLabel = "确认") {
+  if (window.__secureChatTestBypassConfirm) {
+    window.__secureChatTestBypassConfirm = false;
+    return true;
+  }
+  elements.confirmTitle.textContent = title;
+  elements.confirmText.textContent = text;
+  elements.confirmConfirmButton.textContent = confirmLabel;
+  openDialog(elements.confirmDialog, elements.confirmDialog.querySelector("[data-dialog-panel]"), elements.confirmCancelButton);
+  return await new Promise((resolve) => {
+    state.confirmResolver = resolve;
+  });
 }
 
 function createMessageNode(message) {
@@ -991,6 +1323,10 @@ function updateMessageNode(message) {
     menuPanel.append(buildMessageAction("引用选中", "quote-selection", message.id));
   }
 
+  if (message.mine && message.status === "failed") {
+    menuPanel.append(buildMessageAction("重发", "retry", message.id));
+  }
+
   if (message.mine && Date.now() - message.sentAt <= EDIT_WINDOW_MS) {
     menuPanel.append(buildMessageAction("编辑", "edit", message.id));
   }
@@ -1054,6 +1390,9 @@ function upsertMessage(message, options = {}) {
 }
 
 function clearRenderedMessages() {
+  for (const message of state.messageStore.values()) {
+    revokeAttachmentPreview(message.attachment);
+  }
   for (const node of $$(".message")) {
     node.remove();
   }
@@ -1321,7 +1660,74 @@ function stepSearch(direction) {
   highlightCurrentSearchResult();
 }
 
+async function readFileAsDataUrl(fileOrBlob) {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("读取附件失败"));
+    reader.readAsDataURL(fileOrBlob);
+  });
+}
+
+async function optimizeImageFile(file) {
+  const previewUrl = URL.createObjectURL(file);
+
+  if (!("createImageBitmap" in window)) {
+    return {
+      file,
+      dataUrl: await readFileAsDataUrl(file),
+      previewUrl
+    };
+  }
+
+  try {
+    const image = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(image.width, image.height));
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    context.drawImage(image, 0, 0, width, height);
+    image.close();
+
+    const optimizedBlob = await new Promise((resolve) => {
+      canvas.toBlob(
+        (blob) => resolve(blob || file),
+        file.type === "image/png" ? "image/png" : "image/webp",
+        IMAGE_EXPORT_QUALITY
+      );
+    });
+
+    if (optimizedBlob.size >= file.size) {
+      return {
+        file,
+        dataUrl: await readFileAsDataUrl(file),
+        previewUrl
+      };
+    }
+
+    return {
+      file: new File([optimizedBlob], file.name, {
+        type: optimizedBlob.type || file.type,
+        lastModified: Date.now()
+      }),
+      dataUrl: await readFileAsDataUrl(optimizedBlob),
+      previewUrl
+    };
+  } catch (error) {
+    URL.revokeObjectURL(previewUrl);
+    return {
+      file,
+      dataUrl: await readFileAsDataUrl(file),
+      previewUrl: URL.createObjectURL(file)
+    };
+  }
+}
+
 function setAttachmentDraft(attachment, shouldPersist = true) {
+  revokeAttachmentPreview(state.attachmentDraft);
   state.attachmentDraft = attachment;
   elements.attachmentPreview.hidden = !attachment;
   elements.attachmentPreviewMedia.textContent = "";
@@ -1329,7 +1735,7 @@ function setAttachmentDraft(attachment, shouldPersist = true) {
   if (attachment) {
     if (attachment.kind === "image") {
       const image = document.createElement("img");
-      image.src = attachment.dataUrl;
+      image.src = attachment.previewUrl || attachment.dataUrl;
       image.alt = attachment.name || "图片";
       elements.attachmentPreviewMedia.append(image);
     } else {
@@ -1370,15 +1776,27 @@ async function fileToAttachment(file) {
     throw new Error(`附件超过 ${formatFileSize(MAX_ATTACHMENT_BYTES)} 限制`);
   }
 
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("读取附件失败"));
-    reader.readAsDataURL(file);
-  });
+  if (file.type.startsWith("image/")) {
+    const optimized = await optimizeImageFile(file);
+    if (optimized.file.size > MAX_ATTACHMENT_BYTES) {
+      revokeAttachmentPreview({ previewUrl: optimized.previewUrl });
+      throw new Error(`图片压缩后仍超过 ${formatFileSize(MAX_ATTACHMENT_BYTES)} 限制`);
+    }
+
+    return {
+      kind: "image",
+      name: optimized.file.name,
+      size: optimized.file.size,
+      mime: optimized.file.type || file.type || "image/webp",
+      dataUrl: optimized.dataUrl,
+      previewUrl: optimized.previewUrl
+    };
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
 
   return {
-    kind: file.type.startsWith("image/") ? "image" : "file",
+    kind: "file",
     name: file.name,
     size: file.size,
     mime: file.type || "application/octet-stream",
@@ -1408,6 +1826,7 @@ function resetChatSurfaceToBlank() {
   elements.safetyCode.textContent = "----";
   elements.cryptoBadge.textContent = "E2EE";
   elements.cryptoBadge.title = "密钥信息";
+  setPeerTrustState("idle", "");
   updateInfoDrawer();
 }
 
@@ -1416,6 +1835,7 @@ function resetSessionUi() {
   setConnectionState("未连接");
   setPeerState("等待加入");
   setCryptoState("未建立");
+  setPeerTrustState("idle", "");
   elements.secretInput.placeholder = "双方输入相同口令";
   setBadge(elements.connectionBadge, "离线", "idle");
   setBadge(elements.peerBadge, "未配对", "idle");
@@ -1535,6 +1955,7 @@ async function buildSession(peerPublicKeyB64) {
   );
 
   const safetyDigest = await sha256(concatBytes([encoder.encode("SecureRoom SAS v1|"), ikm]));
+  const peerFingerprint = await fingerprintPublicKey(peerPublicKeyB64);
   elements.safetyCode.textContent = formatSafetyCode(safetyDigest);
   elements.secureText.textContent = "加密会话已建立，可开始发送消息";
   elements.cryptoBadge.textContent = "AES-256";
@@ -1547,6 +1968,23 @@ async function buildSession(peerPublicKeyB64) {
   updateComposerMeta();
   setTypingIndicator(false);
   updateInfoDrawer();
+
+  const existingPin = await readPeerPin(state.room);
+  if (!existingPin || existingPin.fingerprint !== peerFingerprint) {
+    await writePeerPin(state.room, {
+      room: state.room,
+      deviceId: state.deviceId,
+      peerName: state.peer?.name || "",
+      fingerprint: peerFingerprint,
+      updatedAt: Date.now()
+    });
+  }
+
+  if (state.peerTrustState === "error") {
+    elements.secureText.textContent = "安全码已更新，请先核对后再继续";
+  } else if (state.peerTrustState === "pending") {
+    setPeerTrustState("secure", "设备已记住");
+  }
 
   if (!hadSession) {
     renderSystemMessage("安全会话已建立");
@@ -1609,6 +2047,17 @@ async function handleHello(from, payload) {
     peerName: state.peer.name,
     updatedAt: Date.now()
   });
+  const nextFingerprint = await fingerprintPublicKey(payload.publicKey);
+  const existingPin = await readPeerPin(state.room);
+  if (!existingPin) {
+    setPeerTrustState("pending", "首次设备");
+  } else if (existingPin.fingerprint !== nextFingerprint) {
+    setPeerTrustState("error", "密钥已变更");
+    elements.secureText.textContent = "检测到对端设备密钥变更";
+    showToast("检测到房间对端密钥变更，请重新核对安全码");
+  } else {
+    setPeerTrustState("secure", "设备已记住");
+  }
   await buildSession(payload.publicKey);
 
   if (!state.helloEchoedFor.has(from)) {
@@ -1629,14 +2078,14 @@ function buildPayloadAad(payload) {
   });
 }
 
-async function encryptSecurePayload(type, body, { refId = "" } = {}) {
+async function encryptSecurePayload(type, body, { refId = "", id = randomHex(12), sentAt = Date.now() } = {}) {
   const payload = {
     v: 1,
     room: state.room,
     from: state.clientId,
     type,
-    id: randomHex(12),
-    sentAt: Date.now(),
+    id,
+    sentAt,
     refId
   };
 
@@ -1683,13 +2132,19 @@ async function decryptSecurePayload(payload) {
   return JSON.parse(decoder.decode(plaintext));
 }
 
+async function sendSecureSignal(type, body, options = {}) {
+  const payload = await encryptSecurePayload(type, body, options);
+  await sendSignal(type, payload);
+  return payload;
+}
+
 async function sendTypingIndicator() {
   if (!state.sessionKey || !state.room) {
     return;
   }
 
   try {
-    await sendSignal("typing", { active: true });
+    await sendSecureSignal("typing", { active: true });
   } catch (error) {
     // Ignore transient typing failures.
   }
@@ -1701,7 +2156,7 @@ async function sendStatusUpdate() {
   }
 
   try {
-    await sendSignal("status", { online: true });
+    await sendSecureSignal("status", { online: true });
   } catch (error) {
     // Ignore transient status failures.
   }
@@ -1713,7 +2168,7 @@ async function markMessageAsRead(messageId) {
   }
 
   try {
-    await sendSignal("read", { messageId });
+    await sendSecureSignal("read", { messageId }, { refId: messageId });
   } catch (error) {
     // Ignore transient read-receipt failures.
   }
@@ -1799,6 +2254,121 @@ async function handleIncomingEdit(payload) {
   }
 }
 
+async function handleIncomingTyping(payload) {
+  if (!payload || typeof payload.id !== "string" || state.seenSignalIds.has(payload.id)) {
+    return;
+  }
+
+  if (!isFreshSignalTimestamp(payload.sentAt)) {
+    return;
+  }
+
+  if (!state.sessionKey) {
+    state.pendingSecureSignals.push({ type: "typing", payload });
+    return;
+  }
+
+  try {
+    const body = await decryptSecurePayload(payload);
+    state.seenSignalIds.add(payload.id);
+    if (body.active === true) {
+      setTypingIndicator(true);
+      window.clearTimeout(state.typingHideTimer);
+      state.typingHideTimer = window.setTimeout(() => {
+        setTypingIndicator(false);
+      }, 2200);
+    }
+  } catch (error) {
+    // Ignore unverifiable transient typing signals.
+  }
+}
+
+async function handleIncomingRead(payload) {
+  if (!payload || typeof payload.id !== "string" || state.seenSignalIds.has(payload.id)) {
+    return;
+  }
+
+  if (!isFreshSignalTimestamp(payload.sentAt)) {
+    return;
+  }
+
+  if (!state.sessionKey) {
+    state.pendingSecureSignals.push({ type: "read", payload });
+    return;
+  }
+
+  try {
+    const body = await decryptSecurePayload(payload);
+    state.seenSignalIds.add(payload.id);
+    if (typeof body.messageId !== "string") {
+      return;
+    }
+    state.messageReadStatus.add(body.messageId);
+    const message = state.messageStore.get(body.messageId);
+    if (message) {
+      message.status = "read";
+      updateMessageNode(message);
+      if (state.room) {
+        scheduleProtectedPersist(state.room);
+      }
+    }
+  } catch (error) {
+    // Ignore unverifiable read receipts.
+  }
+}
+
+async function handleIncomingDelete(payload) {
+  if (!payload || typeof payload.id !== "string" || state.seenSignalIds.has(payload.id)) {
+    return;
+  }
+
+  if (!isFreshSignalTimestamp(payload.sentAt)) {
+    return;
+  }
+
+  if (!state.sessionKey) {
+    state.pendingSecureSignals.push({ type: "delete", payload });
+    return;
+  }
+
+  try {
+    const body = await decryptSecurePayload(payload);
+    state.seenSignalIds.add(payload.id);
+    if (typeof body.messageId === "string") {
+      applyDeleteMessage(body.messageId);
+    }
+  } catch (error) {
+    showToast("同步删除失败");
+  }
+}
+
+async function handleIncomingStatus(payload) {
+  if (!payload || typeof payload.id !== "string" || state.seenSignalIds.has(payload.id)) {
+    return;
+  }
+
+  if (!isFreshSignalTimestamp(payload.sentAt)) {
+    return;
+  }
+
+  if (!state.sessionKey) {
+    state.pendingSecureSignals.push({ type: "status", payload });
+    return;
+  }
+
+  try {
+    const body = await decryptSecurePayload(payload);
+    state.seenSignalIds.add(payload.id);
+    setPeerOnlineStatus(body.online === true);
+    if (state.peerOnline) {
+      state.peerLastSeenAt = 0;
+    }
+    updateRoomSubline();
+  } catch (error) {
+    // Ignore unverifiable presence details; coarse presence still comes from SSE.
+  }
+}
+
 async function flushPendingSecureSignals() {
   const pendingSignals = state.pendingSecureSignals.splice(0);
 
@@ -1807,6 +2377,14 @@ async function flushPendingSecureSignals() {
       await handleIncomingChat(signal.payload);
     } else if (signal.type === "edit") {
       await handleIncomingEdit(signal.payload);
+    } else if (signal.type === "typing") {
+      await handleIncomingTyping(signal.payload);
+    } else if (signal.type === "read") {
+      await handleIncomingRead(signal.payload);
+    } else if (signal.type === "delete") {
+      await handleIncomingDelete(signal.payload);
+    } else if (signal.type === "status") {
+      await handleIncomingStatus(signal.payload);
     }
   }
 }
@@ -1817,16 +2395,51 @@ async function deleteMessage(messageId) {
     return;
   }
 
-  if (!window.confirm("删除后双方都会看到“这条消息已删除”，是否继续？")) {
+  if (!(await confirmAction("删除消息", "删除后双方都会看到“这条消息已删除”。", "删除"))) {
     return;
   }
 
   try {
-    await sendSignal("delete", { messageId });
+    await sendSecureSignal("delete", { messageId }, { refId: messageId });
     applyDeleteMessage(messageId);
     showToast("消息已删除");
   } catch (error) {
     showToast("删除失败");
+  }
+}
+
+async function retryFailedMessage(messageId) {
+  const message = state.messageStore.get(messageId);
+  if (!message || !message.mine || message.deleted || message.status !== "failed" || !state.sessionKey) {
+    return;
+  }
+
+  message.status = "sending";
+  state.messageStore.set(messageId, message);
+  updateMessageNode(message);
+
+  try {
+    await sendSecureSignal(
+      "chat",
+      {
+        text: message.text,
+        name: state.name,
+        replyTo: message.replyTo,
+        attachment: sanitizeAttachment(message.attachment)
+      },
+      { id: message.id, sentAt: message.sentAt }
+    );
+    message.status = "sent";
+    state.messageStore.set(messageId, message);
+    updateMessageNode(message);
+    scheduleProtectedPersist(state.room);
+    syncConversationSummary();
+    showToast("消息已重发");
+  } catch (error) {
+    message.status = "failed";
+    state.messageStore.set(messageId, message);
+    updateMessageNode(message);
+    showToast("重发失败");
   }
 }
 
@@ -1838,8 +2451,7 @@ async function submitEdit(text) {
   }
 
   try {
-    const payload = await encryptSecurePayload("edit", { text, editedAt: Date.now() }, { refId: message.id });
-    await sendSignal("edit", payload);
+    const payload = await sendSecureSignal("edit", { text, editedAt: Date.now() }, { refId: message.id });
     applyEditedMessage(message.id, text, payload.sentAt);
     resetMessageComposer();
     showToast("消息已更新");
@@ -1870,41 +2482,19 @@ async function handleSignalEvent(event) {
         await handleIncomingChat(signal.payload);
         break;
       case "typing":
-        if (signal.payload?.active === true) {
-          setTypingIndicator(true);
-          window.clearTimeout(state.typingHideTimer);
-          state.typingHideTimer = window.setTimeout(() => {
-            setTypingIndicator(false);
-          }, 2200);
-        }
+        await handleIncomingTyping(signal.payload);
         break;
       case "read":
-        if (typeof signal.payload?.messageId === "string") {
-          state.messageReadStatus.add(signal.payload.messageId);
-          const message = state.messageStore.get(signal.payload.messageId);
-          if (message) {
-            message.status = "read";
-            updateMessageNode(message);
-            if (state.room) {
-              scheduleProtectedPersist(state.room);
-            }
-          }
-        }
+        await handleIncomingRead(signal.payload);
         break;
       case "edit":
         await handleIncomingEdit(signal.payload);
         break;
       case "delete":
-        if (typeof signal.payload?.messageId === "string") {
-          applyDeleteMessage(signal.payload.messageId);
-        }
+        await handleIncomingDelete(signal.payload);
         break;
       case "status":
-        setPeerOnlineStatus(signal.payload?.online === true);
-        if (state.peerOnline) {
-          state.peerLastSeenAt = 0;
-        }
-        updateRoomSubline();
+        await handleIncomingStatus(signal.payload);
         break;
       default:
         break;
@@ -1958,6 +2548,110 @@ function handlePresence(event) {
   }
 }
 
+function clearReconnectTimer() {
+  window.clearTimeout(state.eventSourceReconnectTimer);
+  state.eventSourceReconnectTimer = 0;
+}
+
+function updateReconnectUi(delayMs = 0) {
+  state.reconnecting = true;
+  setConnectionState("重连中");
+  elements.secureText.textContent = delayMs ? `连接中断，${Math.ceil(delayMs / 1000)} 秒后重试` : "连接中断，正在重试";
+  setBadge(elements.connectionBadge, "重连中", "pending");
+  setDot("pending");
+}
+
+function scheduleReconnect(room) {
+  if (!state.shouldReconnect || !room || state.room !== room) {
+    return;
+  }
+
+  clearReconnectTimer();
+  state.reconnectAttempt += 1;
+  const delayMs = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, state.reconnectAttempt - 1), RECONNECT_MAX_MS);
+  updateReconnectUi(delayMs);
+  state.eventSourceReconnectTimer = window.setTimeout(() => {
+    void openRoomEventStream(room);
+  }, delayMs);
+}
+
+async function openRoomEventStream(room) {
+  if (!state.shouldReconnect || !room || state.room !== room) {
+    return;
+  }
+
+  clearReconnectTimer();
+  if (state.eventSource) {
+    state.eventSource.close();
+  }
+
+  const source = new EventSource(`/events?room=${encodeURIComponent(room)}&client=${encodeURIComponent(state.clientId)}`);
+  state.eventSource = source;
+
+  source.onopen = () => {
+    if (state.eventSource !== source) {
+      return;
+    }
+    setConnectionState("连接中");
+    setBadge(elements.connectionBadge, "连接中", "pending");
+  };
+
+  source.addEventListener("ready", async () => {
+    if (state.eventSource !== source) {
+      return;
+    }
+
+    const wasReconnecting = state.reconnecting;
+    const isFirstReady = !state.readyReceived;
+    state.readyReceived = true;
+    state.reconnecting = false;
+    state.reconnectAttempt = 0;
+    setConnectedUi();
+    updateRoomSubline();
+
+    if (isFirstReady && !state.messageOrder.length) {
+      renderSystemMessage(`已进入房间 ${room}`);
+    } else if (wasReconnecting) {
+      showToast("连接已恢复");
+    }
+
+    upsertConversationSummary({
+      room,
+      name: state.name,
+      unreadCount: 0,
+      updatedAt: Date.now()
+    });
+
+    try {
+      await sendHello();
+    } catch (error) {
+      showToast("握手发送失败");
+    }
+  });
+
+  source.addEventListener("presence", handlePresence);
+  source.addEventListener("signal", handleSignalEvent);
+  source.addEventListener("room-full", () => {
+    if (state.eventSource === source) {
+      state.shouldReconnect = false;
+      clearReconnectTimer();
+    }
+    showToast("房间已满，请更换房间号");
+    leaveRoom(false, { keepPreview: false });
+    setPeerState("房间已满");
+    setBadge(elements.peerBadge, "已满", "error");
+  });
+
+  source.onerror = () => {
+    if (state.eventSource !== source || !state.shouldReconnect) {
+      return;
+    }
+    source.close();
+    state.eventSource = null;
+    scheduleReconnect(room);
+  };
+}
+
 function syncConversationSummary() {
   const room = state.room || state.previewRoom;
   if (!room) {
@@ -1982,8 +2676,7 @@ function syncConversationSummary() {
 
 function showProtectedConversationPlaceholder(room) {
   clearRenderedMessages();
-  state.previewRoom = room;
-  localStorage.setItem(STORAGE.previewRoom, room);
+  setPreviewRoom(room);
   elements.roomTitle.textContent = room;
   elements.secureText.textContent = "本地记录已加密保存，输入正确口令后恢复";
   elements.safetyCode.textContent = "----";
@@ -1992,6 +2685,7 @@ function showProtectedConversationPlaceholder(room) {
   setConnectionState("未连接");
   setPeerState(getConversationSummary(room)?.peerName || "等待加入");
   setCryptoState("待解锁");
+  setPeerTrustState("idle", "");
   setBadge(elements.connectionBadge, "离线", "idle");
   setBadge(elements.peerBadge, getConversationSummary(room)?.peerName || "未配对", "idle");
   setPeerOnlineStatus(false);
@@ -2019,11 +2713,17 @@ function clearConnectionStateOnly() {
     state.eventSource.close();
   }
 
+  clearReconnectTimer();
   state.eventSource = null;
+  state.reconnectAttempt = 0;
+  state.reconnecting = false;
+  state.shouldReconnect = false;
   state.keyPair = null;
   state.publicKeyB64 = "";
   state.sessionKey = null;
   state.peer = null;
+  state.peerTrustState = "unknown";
+  state.peerTrustNote = "";
   state.peerOnline = false;
   state.peerLastSeenAt = 0;
   state.secret = "";
@@ -2048,12 +2748,12 @@ async function connectToRoom({ name, room, secret, restoreHistory = true }) {
   clearRenderedMessages();
 
   state.room = room;
-  state.previewRoom = room;
-  localStorage.setItem(STORAGE.previewRoom, room);
+  setPreviewRoom(room);
   state.name = name.slice(0, 24);
   state.secret = secret;
   state.readyReceived = false;
   state.activeConversationRoom = room;
+  state.shouldReconnect = true;
   localStorage.setItem(STORAGE.name, state.name);
   elements.secretInput.value = "";
 
@@ -2092,53 +2792,7 @@ async function connectToRoom({ name, room, secret, restoreHistory = true }) {
 
   try {
     await createKeyPair();
-
-    const source = new EventSource(`/events?room=${encodeURIComponent(room)}&client=${encodeURIComponent(state.clientId)}`);
-    state.eventSource = source;
-
-    source.addEventListener("ready", async () => {
-      const isFirstReady = !state.readyReceived;
-      state.readyReceived = true;
-      setConnectedUi();
-      updateRoomSubline();
-
-      if (isFirstReady && !state.messageOrder.length) {
-        renderSystemMessage(`已进入房间 ${room}`);
-      }
-
-      upsertConversationSummary({
-        room,
-        name: state.name,
-        unreadCount: 0,
-        updatedAt: Date.now()
-      });
-
-      try {
-        await sendHello();
-      } catch (error) {
-        showToast("握手发送失败");
-      }
-    });
-
-    source.addEventListener("presence", handlePresence);
-    source.addEventListener("signal", handleSignalEvent);
-    source.addEventListener("room-full", () => {
-      showToast("房间已满，请更换房间号");
-      leaveRoom(false, { keepPreview: false });
-      setPeerState("房间已满");
-      setBadge(elements.peerBadge, "已满", "error");
-    });
-
-    source.onerror = () => {
-      if (!state.eventSource) {
-        return;
-      }
-
-      setConnectionState("重连中");
-      elements.secureText.textContent = "连接短暂中断，正在重连";
-      setBadge(elements.connectionBadge, "重连中", "pending");
-      setDot("pending");
-    };
+    await openRoomEventStream(room);
   } catch (error) {
     showToast("进入会话失败");
     leaveRoom(false, { keepPreview: true });
@@ -2185,6 +2839,7 @@ async function sendMessage(event) {
 
   const replyTo = getReplySnapshot(state.replyingToMessageId, state.replyingQuoteText);
   const draftAttachment = state.attachmentDraft ? { ...state.attachmentDraft } : null;
+  const payloadAttachment = sanitizeAttachment(draftAttachment);
   const messageId = randomHex(12);
   const sentAt = Date.now();
   const optimisticMessage = upsertMessage({
@@ -2194,7 +2849,7 @@ async function sendMessage(event) {
     mine: true,
     sentAt,
     replyTo,
-    attachment: draftAttachment,
+    attachment: payloadAttachment,
     editedAt: 0,
     deleted: false,
     status: "sending"
@@ -2208,15 +2863,16 @@ async function sendMessage(event) {
   clearAttachmentDraft(false);
 
   try {
-    const payload = await encryptSecurePayload("chat", {
-      text,
-      name: state.name,
-      replyTo,
-      attachment: draftAttachment
-    });
-    payload.id = messageId;
-    payload.sentAt = sentAt;
-    await sendSignal("chat", payload);
+    await sendSecureSignal(
+      "chat",
+      {
+        text,
+        name: state.name,
+        replyTo,
+        attachment: payloadAttachment
+      },
+      { id: messageId, sentAt }
+    );
 
     optimisticMessage.status = "sent";
     optimisticMessage.sentAt = sentAt;
@@ -2242,6 +2898,10 @@ function leaveRoom(showMessage = true, options = {}) {
   clearConnectionStateOnly();
   state.room = "";
   resetSessionUi();
+  elements.messageInput.value = "";
+  autoResizeMessageInput();
+  clearAttachmentDraft(false);
+  clearComposerMetaState();
   closeInfoDrawer();
   updateInfoDrawer();
 
@@ -2249,8 +2909,7 @@ function leaveRoom(showMessage = true, options = {}) {
     populateJoinForm(roomBeforeLeave);
     showProtectedConversationPlaceholder(roomBeforeLeave);
   } else {
-    state.previewRoom = "";
-    localStorage.removeItem(STORAGE.previewRoom);
+    clearPreviewRoom();
     resetChatSurfaceToBlank();
     renderConversationList();
   }
@@ -2277,7 +2936,7 @@ function generateRoomCode() {
   elements.roomInput.value = `SECURE-${randomHex(2).toUpperCase()}-${randomHex(2).toUpperCase()}`;
 }
 
-function handleConversationListClick(event) {
+async function handleConversationListClick(event) {
   const pinButton = event.target.closest("[data-action='toggle-pin']");
   if (pinButton) {
     toggleConversationPin(pinButton.dataset.room);
@@ -2295,7 +2954,7 @@ function handleConversationListClick(event) {
   }
 
   if (state.room && state.room !== room) {
-    if (!window.confirm("切换会话前会先离开当前房间，是否继续？")) {
+    if (!(await confirmAction("切换会话", "切换前会先离开当前房间。", "继续"))) {
       return;
     }
     leaveRoom(false, { keepPreview: true });
@@ -2345,6 +3004,9 @@ function handleMessageListClick(event) {
     }
     case "copy":
       void copyMessage(messageId);
+      break;
+    case "retry":
+      void retryFailedMessage(messageId);
       break;
     case "edit":
       startEdit(messageId);
@@ -2473,10 +3135,47 @@ function handleDropAreaActive(active) {
 }
 
 function handleVisibilityOrFocus() {
+  if (document.hidden) {
+    if (state.room && state.secret) {
+      void persistProtectedVault(state.room);
+    }
+    return;
+  }
+
   if (!document.hidden) {
     syncCurrentRoomReadState();
   }
 }
+
+function handlePageHide() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  clearReconnectTimer();
+  if (state.room && state.secret) {
+    void persistProtectedVault(state.room);
+  }
+  saveCurrentDraft();
+}
+
+async function handleStorageChannelMessage(event) {
+  const { type, payload } = event.data || {};
+  if (type === "conversations") {
+    state.conversations = sortConversations(await readStoredValue(DATABASE.conversationsKey, []));
+    renderConversationList();
+  } else if (type === "preview-room" && !state.room) {
+    state.previewRoom = payload?.room || "";
+    if (state.previewRoom) {
+      bootFromPreview();
+    } else {
+      resetChatSurfaceToBlank();
+      renderConversationList();
+    }
+  }
+}
+
+
 
 function bootFromPreview() {
   if (!state.previewRoom) {
@@ -2488,11 +3187,17 @@ function bootFromPreview() {
   showProtectedConversationPlaceholder(state.previewRoom);
 }
 
-function boot() {
+async function boot() {
+  try {
+    await loadStorageState();
+  } catch (error) {
+    showToast("本地存储初始化失败，将继续使用当前页面");
+  }
   elements.nameInput.value = localStorage.getItem(STORAGE.name) || "";
   resetSessionUi();
   renderConversationList();
   bootFromPreview();
+  state.bootReady = true;
 
   elements.joinForm.addEventListener("submit", (event) => {
     void joinRoom(event);
@@ -2522,7 +3227,9 @@ function boot() {
     state.conversationSearchQuery = elements.conversationSearchInput.value;
     renderConversationList();
   });
-  elements.conversationList.addEventListener("click", handleConversationListClick);
+  elements.conversationList.addEventListener("click", (event) => {
+    void handleConversationListClick(event);
+  });
 
   elements.toggleSearchButton.addEventListener("click", () => {
     if (elements.messageSearchBar.hidden) {
@@ -2544,6 +3251,9 @@ function boot() {
   elements.drawerScrim.addEventListener("click", closeInfoDrawer);
   elements.historyScrim.addEventListener("click", closeHistoryDialog);
   elements.closeHistoryButton.addEventListener("click", closeHistoryDialog);
+  elements.confirmScrim.addEventListener("click", () => resolveConfirmDialog(false));
+  elements.confirmCancelButton.addEventListener("click", () => resolveConfirmDialog(false));
+  elements.confirmConfirmButton.addEventListener("click", () => resolveConfirmDialog(true));
   elements.copyRoomButton.addEventListener("click", async () => {
     const room = state.room || state.previewRoom;
     if (!room) {
@@ -2559,20 +3269,19 @@ function boot() {
   elements.rekeyButton.addEventListener("click", () => {
     void rekeyConversation();
   });
-  elements.clearLocalButton.addEventListener("click", () => {
+  elements.clearLocalButton.addEventListener("click", async () => {
     const room = state.room || state.previewRoom;
     if (!room) {
       return;
     }
-    if (!window.confirm("这会删除当前房间在本机上的消息、草稿和会话入口，是否继续？")) {
+    if (!(await confirmAction("清空本机记录", "这会删除当前房间在本机上的消息、草稿和会话入口。", "清空"))) {
       return;
     }
-    clearConversationStorage(room);
+    await clearConversationStorage(room);
     if (state.room === room) {
       leaveRoom(false, { keepPreview: false });
     } else if (state.previewRoom === room) {
-      state.previewRoom = "";
-      localStorage.removeItem(STORAGE.previewRoom);
+      clearPreviewRoom();
       resetChatSurfaceToBlank();
     }
     showToast("本地记录已清空");
@@ -2652,15 +3361,21 @@ function boot() {
 
   window.addEventListener("focus", handleVisibilityOrFocus);
   document.addEventListener("visibilitychange", handleVisibilityOrFocus);
-  window.addEventListener("beforeunload", () => {
-    if (state.eventSource) {
-      state.eventSource.close();
+  window.addEventListener("pagehide", handlePageHide);
+  window.addEventListener("beforeunload", handlePageHide);
+  window.addEventListener("pageshow", () => {
+    if (state.room && state.shouldReconnect && !state.eventSource) {
+      void openRoomEventStream(state.room);
     }
-    if (state.room && state.secret) {
-      void persistProtectedVault(state.room);
-    }
-    saveCurrentDraft();
   });
+
+  if (storageChannel) {
+    storageChannel.addEventListener("message", (event) => {
+      void handleStorageChannelMessage(event);
+    });
+  }
+
+
 }
 
-boot();
+void boot();
