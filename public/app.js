@@ -140,6 +140,7 @@ const state = {
   typingHideTimer: 0,
   toastTimer: 0,
   readyReceived: false,
+  lastHeartbeatAt: 0,
   attachmentDraft: null,
   conversationSearchQuery: "",
   conversations: loadConversationSummaries(),
@@ -2587,6 +2588,7 @@ async function openRoomEventStream(room) {
 
   const source = new EventSource(`/events?room=${encodeURIComponent(room)}&client=${encodeURIComponent(state.clientId)}`);
   state.eventSource = source;
+  state.lastHeartbeatAt = Date.now(); // Reset immediately to give it a 25s grace period
 
   source.onopen = () => {
     if (state.eventSource !== source) {
@@ -2595,6 +2597,12 @@ async function openRoomEventStream(room) {
     setConnectionState("连接中");
     setBadge(elements.connectionBadge, "连接中", "pending");
   };
+
+  source.addEventListener("heartbeat", () => {
+    if (state.eventSource === source) {
+      state.lastHeartbeatAt = Date.now();
+    }
+  });
 
   source.addEventListener("ready", async () => {
     if (state.eventSource !== source) {
@@ -2606,6 +2614,7 @@ async function openRoomEventStream(room) {
     state.readyReceived = true;
     state.reconnecting = false;
     state.reconnectAttempt = 0;
+    state.lastHeartbeatAt = Date.now();
     setConnectedUi();
     updateRoomSubline();
 
@@ -3143,6 +3152,15 @@ function handleVisibilityOrFocus() {
   }
 
   if (!document.hidden) {
+    if (state.room && state.shouldReconnect) {
+      const isStale = state.eventSource && state.lastHeartbeatAt && (Date.now() - state.lastHeartbeatAt > 25000);
+      const isClosed = !state.eventSource || state.eventSource.readyState === EventSource.CLOSED;
+      if (isStale || isClosed) {
+        clearReconnectTimer();
+        state.reconnectAttempt = 0;
+        void openRoomEventStream(state.room);
+      }
+    }
     syncCurrentRoomReadState();
   }
 }
@@ -3375,7 +3393,15 @@ async function boot() {
     });
   }
 
-
+  window.setInterval(() => {
+    if (!document.hidden && state.room && state.shouldReconnect && state.eventSource) {
+      if (state.lastHeartbeatAt && (Date.now() - state.lastHeartbeatAt > 25000)) {
+        clearReconnectTimer();
+        state.reconnectAttempt = 0;
+        void openRoomEventStream(state.room);
+      }
+    }
+  }, 10000);
 }
 
 void boot();
