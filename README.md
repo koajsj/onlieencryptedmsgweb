@@ -25,115 +25,79 @@ npm.cmd test
 - 本地记录以口令派生密钥加密后保存。
 - 外网或手机访问必须使用 HTTPS；GitHub Pages 不能单独运行实时聊天，因为需要 `server.js`。
 
-## Debian 服务器 + 域名 部署指南（大白话版）
+## 极简自建部署指南（拥有自己的服务器和域名）
 
-想让任何人在外网通过手机或电脑访问这个聊天室，你需要一台云服务器和一个绑定好 HTTPS 的域名（因为苹果和安卓手机要求必须有 HTTPS，否则没法使用加密功能）。
+如果你拥有自己的服务器和域名，但觉得手动配置 Nginx 和申请 HTTPS 证书太长、太复杂，强烈推荐使用 **Caddy** 替代 Nginx。
 
-下面这是给新手看的简易教程：
+**Caddy 是什么？** 它是目前最适合小白的 Web 服务器，能**全自动为你申请和续期 HTTPS 证书**，而且天生支持实时长连接，完全不需要写一堆复杂的配置代码！
 
 ### 1. 准备工作
 
-- **一台云服务器**：系统选择 `Debian`（Ubuntu 也可以）。
-- **一个域名**：在域名提供商那里，把你的域名（比如 `chat.yourdomain.com`）解析（A记录）到这台云服务器的 IP 地址。
-- 用 SSH 登录到你的云服务器。
+- 把你的域名（如 `chat.yourdomain.com`）在 DNS 里解析到你云服务器的 IP 地址。
+- 用 SSH 登录到你的云服务器（Debian / Ubuntu）。
 
-### 2. 安装必要环境 (Node.js 和 Nginx)
+### 2. 下载代码并后台运行
 
-在服务器命令行里一行行复制执行：
+复制执行以下命令来安装 Node 运行环境并启动代码：
 
 ```bash
-# 更新系统软件源
+# 1. 安装 Node.js 和后台管理工具 PM2
 sudo apt update
-
-# 安装 Nginx (用来做反向代理和 HTTPS，也就是外网网关)
-sudo apt install nginx -y
-
-# 安装 Node.js (用来跑我们这个聊天室的 server.js)
 sudo apt install nodejs npm -y
-
-# 安装 PM2 (一个后台运行工具，保证聊天室即便你关了命令行也不会停止)
 sudo npm install -g pm2
-```
 
-### 3. 上传代码并启动聊天室
-
-把这个项目的文件上传到服务器（比如传到 `/var/www/secure-chat` 文件夹中），然后在那个文件夹下操作：
-
-```bash
-# 进入代码目录
+# 2. 进入你上传代码的目录（假设你传到了 /var/www/secure-chat）
 cd /var/www/secure-chat
 
-# 安装所需要的依赖包然后进行构建 (也就是生成 min js/css)
+# 3. 安装依赖并构建压缩文件
 npm install
 npm run build
 
-# 使用 PM2 启动服务（在后台跑起来，端口默认 3000）
+# 4. 让聊天室在后台永久运行
 pm2 start server.js --name "secure-chat"
-
-# 保存 PM2 状态，让它开机自启
 pm2 save
 pm2 startup
 ```
 
-### 4. 给域名配置 Nginx 并加锁 (HTTPS)
+### 3. 安装 Caddy 并自动配置 HTTPS
 
-如果不用 HTTPS 是没法聊天的，最稳妥的是用 `Certbot` 来自动申请免费的安全证书。
-
-```bash
-# 安装 Certbot
-sudo apt install certbot python3-certbot-nginx -y
-```
-
-接着，我们要告诉 Nginx，把访问 `chat.yourdomain.com` 的请求全部交给里面的 3000 端口（我们的聊天室）：
+执行官方这三段命令来安装 Caddy：
 
 ```bash
-# 创建或者编辑 Nginx 配置
-sudo nano /etc/nginx/sites-available/secure-chat
-```
-粘贴下面的内容进去（**别忘了把 `chat.yourdomain.com` 换成你自己的域名**）：
-```nginx
-server {
-    listen 80;
-    server_name chat.yourdomain.com;
+# 安装基础依赖
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
 
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        
-        # 支持长连接 (SSE 必须需要这些配置)
-        proxy_set_header Connection '';
-        proxy_http_version 1.1;
-        chunked_transfer_encoding off;
-        proxy_buffering off;
-        proxy_cache off;
-    }
+# 添加 Caddy 下载源
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+
+# 安装 Caddy
+sudo apt update && sudo apt install caddy
+```
+
+### 4. 三行配置搞定外网访问！
+
+使用简单编辑器打开 Caddy 的配置文件：
+```bash
+sudo nano /etc/caddy/Caddyfile
+```
+**清空里面的所有内容**，只写下面这三行（**把第一行换成你的真实域名**）：
+```text
+chat.yourdomain.com {
+    reverse_proxy localhost:3000
 }
 ```
-保存并退出配置后（按 `Ctrl+X`, 再按 `Y`, 然后回车确认）。
+保存并退出（按 `Ctrl+X`，按 `Y`，再按 `Enter`）。
 
-然后执行下面几个命令激活配置：
+最后，重启 Caddy 让配置生效：
 ```bash
-# 激活你的配置
-sudo ln -s /etc/nginx/sites-available/secure-chat /etc/nginx/sites-enabled/
-
-# 测试一下 Nginx 配置有没有写错
-sudo nginx -t
-
-# 重新加载 Nginx
-sudo systemctl reload nginx
+sudo systemctl restart caddy
 ```
 
-### 5. 申请免费域名的 HTTPS 证书
+**恭喜你，大功告成！🎉** 
+现在 Caddy 已经在后台秒速帮你申请好了免费的绿色安全锁（HTTPS），直接在浏览器打开 `https://chat.yourdomain.com` 就可以和朋友进行安全加密聊天了！
 
-配置好上面的之后，执行这一句“一键加密”命令：
-```bash
-sudo certbot --nginx -d chat.yourdomain.com
-```
-它会问你邮箱用来接收证书到期提醒，并问你是否强制将 HTTP 跳转 HTTPS（选 2 强制跳转即可）。
-
-**搞定！** 现在你就可以在浏览器里访问 `https://chat.yourdomain.com`，拉上小伙伴愉快地加密聊天了。
+> **小白提示**：如果你对命令行存在恐惧，不介意多耗费一点服务器资源的话，最简单的方式是直接给服务器安装一个可视化管理面板（比如 [宝塔面板](https://www.bt.cn/) 或 [1Panel](https://1panel.cn/) ），只需要在浏览器里点点鼠标，就可以建站、代理、申请证书了。
 
 ## 更简单的方法：使用云平台（零服务器零配置）
 
