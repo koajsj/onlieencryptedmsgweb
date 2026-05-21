@@ -586,9 +586,9 @@ test("admin can login, view stats/messages and ban users", async () => {
   }
 });
 
-test("admin roles enforce permissions and readonly cannot mutate", async () => {
+test("all configured admin accounts have full privileges", async () => {
   const server = await startServer({
-    ADMIN_ACCOUNTS: "root:rootpass:superadmin,op:oppass:operator,ro:ropass:readonly"
+    ADMIN_ACCOUNTS: "root:rootpass,op:oppass,ro:ropass"
   });
 
   try {
@@ -614,7 +614,7 @@ test("admin roles enforce permissions and readonly cannot mutate", async () => {
       },
       body: JSON.stringify({ banned: true, bannedReason: "nope" })
     });
-    assert.equal(roPatch.status, 403);
+    assert.equal(roPatch.status, 200);
 
     const roAudit = await getJson(server.port, "/api/admin/audit?limit=20", roToken);
     assert.equal(roAudit.response.status, 200);
@@ -623,10 +623,11 @@ test("admin roles enforce permissions and readonly cannot mutate", async () => {
     assert.equal(opLogin.status, 200);
     const opToken = (await opLogin.json()).token;
 
-    const opAudit = await fetch(`http://127.0.0.1:${server.port}/api/admin/audit?limit=20`, {
-      headers: { Authorization: `Bearer ${opToken}` }
-    });
-    assert.equal(opAudit.status, 403);
+    const opAudit = await getJson(server.port, "/api/admin/audit?limit=20", opToken);
+    assert.equal(opAudit.response.status, 200);
+
+    const opExport = await getJson(server.port, "/api/admin/messages/export?reason=permission-check", opToken);
+    assert.equal(opExport.response.status, 200);
   } finally {
     await server.stop();
   }

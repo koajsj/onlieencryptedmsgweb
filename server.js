@@ -36,7 +36,7 @@ const HSTS_MAX_AGE_SECONDS = Math.max(0, Number.parseInt(process.env.HSTS_MAX_AG
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "qwer@1234";
 const ADMIN_ACCOUNTS = String(
-  process.env.ADMIN_ACCOUNTS || `${ADMIN_USERNAME}:${ADMIN_PASSWORD}:superadmin`
+  process.env.ADMIN_ACCOUNTS || `${ADMIN_USERNAME}:${ADMIN_PASSWORD}`
 )
   .split(",")
   .map((item) => item.trim())
@@ -82,19 +82,6 @@ let adminAuditLastHash = "GENESIS";
 let pendingMessagesPersistTimer = null;
 let messagesDirty = false;
 
-const ADMIN_ROLE_PERMISSIONS = {
-  superadmin: new Set([
-    "admin:read",
-    "admin:user:update",
-    "admin:user:batch",
-    "admin:messages:read",
-    "admin:messages:export",
-    "admin:audit:read"
-  ]),
-  operator: new Set(["admin:read", "admin:user:update", "admin:user:batch", "admin:messages:read", "admin:messages:export"]),
-  readonly: new Set(["admin:read", "admin:messages:read", "admin:audit:read"])
-};
-
 function ensureDataFiles() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(USERS_FILE)) {
@@ -111,15 +98,15 @@ function ensureDataFiles() {
 function parseAdminAccounts() {
   const accounts = [];
   for (const item of ADMIN_ACCOUNTS) {
-    const [username, password, roleRaw] = item.split(":");
-    const role = String(roleRaw || "readonly").trim().toLowerCase();
-    if (!username || !password || !ADMIN_ROLE_PERMISSIONS[role]) {
+    const segments = item.split(":");
+    const username = String(segments[0] || "").trim();
+    const password = String(segments[1] || "");
+    if (!username || !password) {
       continue;
     }
     accounts.push({
       username: username.trim(),
-      password: String(password),
-      role
+      password
     });
   }
   return accounts;
@@ -129,14 +116,6 @@ const adminAccounts = parseAdminAccounts();
 
 function findAdminAccount(username) {
   return adminAccounts.find((account) => account.username === username) || null;
-}
-
-function sessionHasPermission(session, permission) {
-  if (!session || session.role === "admin") {
-    return true;
-  }
-  const granted = ADMIN_ROLE_PERMISSIONS[session.role];
-  return Boolean(granted?.has(permission));
 }
 
 function applyAuditTextRetention() {
@@ -589,20 +568,16 @@ function requireAdminSession(req, res, url) {
   if (!session) {
     return null;
   }
-  if (!ADMIN_ROLE_PERMISSIONS[session.role]) {
+  if (session.role !== "admin") {
     sendJson(res, 403, { error: "admin required" });
     return null;
   }
   return session;
 }
 
-function requireAdminPermission(req, res, url, permission) {
+function requireAdminPermission(req, res, url) {
   const session = requireAdminSession(req, res, url);
   if (!session) {
-    return null;
-  }
-  if (!sessionHasPermission(session, permission)) {
-    sendJson(res, 403, { error: "permission denied" });
     return null;
   }
   return session;
@@ -1175,13 +1150,13 @@ async function handleAdminLogin(req, res) {
     sendJson(res, 401, { error: "invalid admin credentials" });
     return;
   }
-  const token = createSession(account.username, account.role);
-  recordAdminAction("admin_login", { username: account.username, role: account.role }, req, {});
+  const token = createSession(account.username, "admin");
+  recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
     token,
     admin: {
       username: account.username,
-      role: account.role
+      role: "admin"
     }
   });
 }
@@ -1210,7 +1185,7 @@ function handleAdminMe(req, res, url) {
 }
 
 function handleAdminStats(req, res, url) {
-  const session = requireAdminPermission(req, res, url, "admin:read");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1232,7 +1207,7 @@ function handleAdminStats(req, res, url) {
 }
 
 function handleAdminUsers(req, res, url) {
-  const session = requireAdminPermission(req, res, url, "admin:read");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1288,7 +1263,7 @@ function handleAdminUsers(req, res, url) {
 }
 
 async function handleAdminUserPatch(req, res, url, pathname) {
-  const session = requireAdminPermission(req, res, url, "admin:user:update");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1399,7 +1374,7 @@ async function handleAdminUserPatch(req, res, url, pathname) {
 }
 
 async function handleAdminUsersBatch(req, res, url) {
-  const session = requireAdminPermission(req, res, url, "admin:user:batch");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1453,7 +1428,7 @@ async function handleAdminUsersBatch(req, res, url) {
 }
 
 function handleAdminAuditLogs(req, res, url) {
-  const session = requireAdminPermission(req, res, url, "admin:audit:read");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1487,7 +1462,7 @@ function handleAdminAuditLogs(req, res, url) {
 }
 
 function handleAdminExportMessages(req, res, url) {
-  const session = requireAdminPermission(req, res, url, "admin:messages:export");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1520,7 +1495,7 @@ function handleAdminExportMessages(req, res, url) {
     .filter((message) => !keyword || String(message.auditText || "").toLowerCase().includes(keyword))
     .slice(-5000);
   const contentRows = rows.map((message) => {
-    const text = session.role === "superadmin" ? String(message.auditText || "") : maskAuditText(message.auditText || "");
+    const text = String(message.auditText || "");
     return `[${new Date(message.createdAt).toISOString()}] ${message.from} -> ${message.to} : ${text}`;
   });
   recordAdminAction("admin_messages_export", session, req, {
@@ -1536,7 +1511,7 @@ function handleAdminExportMessages(req, res, url) {
 }
 
 function handleAdminMessages(req, res, url) {
-  const session = requireAdminPermission(req, res, url, "admin:messages:read");
+  const session = requireAdminPermission(req, res, url);
   if (!session) {
     return;
   }
@@ -1559,7 +1534,7 @@ function handleAdminMessages(req, res, url) {
   const keyword = String(url.searchParams.get("q") || "").trim().toLowerCase();
   const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
   const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
-  const mask = session.role === "superadmin" ? String(url.searchParams.get("mask") || "1") !== "0" : true;
+  const mask = String(url.searchParams.get("mask") || "1") !== "0";
   const allMessages = [...messages]
     .filter((message) => (!fromFilter || message.from === fromFilter) && (!toFilter || message.to === toFilter))
     .filter((message) => (!since || Number(message.createdAt) >= since) && (!until || Number(message.createdAt) <= until))

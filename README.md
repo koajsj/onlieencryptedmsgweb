@@ -113,7 +113,7 @@ Environment=MESSAGE_PERSIST_DEBOUNCE_MS=180
 Environment=HSTS_MAX_AGE_SECONDS=31536000
 Environment=ADMIN_USERNAME=你的管理员账号
 Environment=ADMIN_PASSWORD=你的管理员密码
-Environment=ADMIN_ACCOUNTS=superadmin账号:密码:superadmin,operator账号:密码:operator,readonly账号:密码:readonly
+Environment=ADMIN_ACCOUNTS=admin账号1:密码1,admin账号2:密码2
 Environment=AUDIT_TEXT_RETENTION_DAYS=30
 ```
 

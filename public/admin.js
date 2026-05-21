@@ -37,15 +37,9 @@ const elements = {
   toast: document.querySelector("#toast")
 };
 
-const ROLE_PERMISSIONS = {
-  superadmin: new Set(["admin:read", "admin:user:update", "admin:user:batch", "admin:messages:read", "admin:messages:export", "admin:audit:read"]),
-  operator: new Set(["admin:read", "admin:user:update", "admin:user:batch", "admin:messages:read", "admin:messages:export"]),
-  readonly: new Set(["admin:read", "admin:messages:read", "admin:audit:read"])
-};
-
 const state = {
   token: localStorage.getItem(STORAGE_KEY) || "",
-  admin: { username: "", role: "readonly" },
+  admin: { username: "", role: "admin" },
   stats: {},
   users: [],
   usersPage: 1,
@@ -68,8 +62,7 @@ function escapeHtml(value) {
 }
 
 function hasPermission(permission) {
-  const grants = ROLE_PERMISSIONS[state.admin.role] || new Set();
-  return grants.has(permission);
+  return Boolean(state.token && permission);
 }
 
 function showToast(message) {
@@ -282,7 +275,7 @@ async function login(username, password) {
   state.token = payload.token || "";
   state.admin = {
     username: payload.admin?.username || "管理员",
-    role: payload.admin?.role || "readonly"
+    role: payload.admin?.role || "admin"
   };
   localStorage.setItem(STORAGE_KEY, state.token);
   elements.adminMeta.textContent = `${state.admin.username} | ${state.admin.role}`;
@@ -297,7 +290,7 @@ async function logout() {
     // ignore
   }
   state.token = "";
-  state.admin = { username: "", role: "readonly" };
+  state.admin = { username: "", role: "admin" };
   localStorage.removeItem(STORAGE_KEY);
   setLoggedIn(false);
 }
@@ -551,7 +544,7 @@ async function boot() {
     const payload = await api("/api/admin/me");
     state.admin = {
       username: payload.admin?.username || "管理员",
-      role: payload.admin?.role || "readonly"
+      role: payload.admin?.role || "admin"
     };
     elements.adminMeta.textContent = `${state.admin.username} | ${state.admin.role}`;
     setLoggedIn(true);
