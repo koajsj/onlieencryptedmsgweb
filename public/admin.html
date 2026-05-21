@@ -3,26 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#13181d" />
+    <meta name="theme-color" content="#1c2628" />
     <title>管理后台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="./admin.css" />
   </head>
   <body>
     <main class="admin-root">
       <section class="login-card" id="loginCard">
-        <h1>管理后台登录</h1>
+        <div class="login-mark">Secure Console</div>
+        <h1>管理员登录</h1>
         <form id="loginForm">
           <label><span>账号</span><input id="usernameInput" autocomplete="username" required /></label>
           <label><span>密码</span><input id="passwordInput" type="password" autocomplete="current-password" required /></label>
-          <button type="submit">登录</button>
+          <button type="submit">进入后台</button>
         </form>
-        <p class="hint">管理员凭据由服务端环境变量控制。</p>
       </section>
 
       <section class="dashboard" id="dashboard" hidden>
         <header class="topbar">
           <div>
-            <h2>管理控制台</h2>
+            <h2><span class="sec-icon" aria-hidden="true">◉</span>管理控制台</h2>
             <p id="adminMeta">管理员</p>
           </div>
           <div class="toolbar">
@@ -35,7 +41,7 @@
 
         <section class="panel users-panel">
           <div class="panel-head">
-            <h3>用户管理</h3>
+            <h3><span class="sec-icon" aria-hidden="true">▦</span>用户管理</h3>
             <div class="filters">
               <input id="userSearchInput" placeholder="搜索用户名" />
               <select id="userStatusSelect">
@@ -80,7 +86,7 @@
 
         <section class="panel messages-panel">
           <div class="panel-head">
-            <h3>全站聊天审计</h3>
+            <h3><span class="sec-icon" aria-hidden="true">◈</span>全站聊天审计</h3>
             <div class="filters">
               <input id="msgFromInput" placeholder="发送者" />
               <input id="msgToInput" placeholder="接收者" />
@@ -99,7 +105,7 @@
 
         <section class="panel audit-panel">
           <div class="panel-head">
-            <h3>管理员审计日志</h3>
+            <h3><span class="sec-icon" aria-hidden="true">◎</span>管理员审计日志</h3>
             <button id="refreshAuditButton" type="button" class="tiny">刷新日志</button>
           </div>
           <div class="messages-list" id="auditList"></div>
