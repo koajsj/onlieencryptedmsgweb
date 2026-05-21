@@ -1,32 +1,32 @@
-﻿# 在线加密聊天网站（Debian + 域名部署教程）
+﻿# 在线加密聊天网站（Debian + 个人域名部署说明）
 
-这份 README 的目标是让你直接把网站部署上线，并且后续能稳定更新。
+这份文档只讲两件事：
+1. 用你自己的域名 `257823.xyz` 把这个项目部署到 Debian 云服务器。
+2. 以后怎么把服务器代码更新到 GitHub 最新版本。
 
-默认示例：
-- 域名：`257823.xyz`
-- 仓库：`https://github.com/koajsj/onlieencryptedmsgweb.git`
-- 系统：Debian 12
+不讲复杂理论，按步骤做就行。
 
-## 0. 部署前检查清单
+## 0. 先准备好这些
 
-- 已有可 SSH 登录的 Debian 服务器（有 `sudo` 权限）
-- 域名 DNS 可改（至少能添加 `A` 记录）
-- 服务器安全组/防火墙已放行 `22`、`80`、`443`
-- 确认服务器时间正确（证书申请依赖系统时间）
+- 一台 Debian 云服务器（建议 Debian 12）
+- 一个域名：`257823.xyz`
+- 这个项目的 GitHub 仓库地址：
+  `https://github.com/koajsj/onlieencryptedmsgweb.git`
+- 你可以 SSH 登录服务器（有 sudo 权限）
 
 ---
 
-## 1. 首次部署（一次做完可长期用）
+## 1. 第一次部署（从 0 到可访问）
 
-### 1.1 登录服务器
+### 第 1 步：登录服务器
 
 ```bash
 ssh root@你的服务器IP
 ```
 
-如果你不是 `root`，后文命令前加 `sudo`。
+如果你不是 root，就用你自己的用户登录，后面命令前面加 `sudo`。
 
-### 1.2 安装依赖（Node.js 20 + Git + Caddy）
+### 第 2 步：安装 Node.js 18+、Git、Caddy
 
 ```bash
 apt update
@@ -41,7 +41,7 @@ apt update
 apt install -y caddy
 ```
 
-验证安装：
+检查版本：
 
 ```bash
 node -v
@@ -50,26 +50,31 @@ git --version
 caddy version
 ```
 
-### 1.3 拉取项目并构建
+### 第 3 步：拉代码到服务器
 
 ```bash
 mkdir -p /var/www
 cd /var/www
 git clone https://github.com/koajsj/onlieencryptedmsgweb.git
 cd onlieencryptedmsgweb
+```
+
+### 第 4 步：安装依赖并构建
+
+```bash
 npm install
 npm run build
 ```
 
-### 1.4 配置 systemd 服务（后台常驻）
+### 第 5 步：创建 systemd 服务（让它后台常驻）
 
-创建服务文件：
+新建服务文件：
 
 ```bash
 nano /etc/systemd/system/secure-chat.service
 ```
 
-写入：
+粘贴下面内容：
 
 ```ini
 [Unit]
@@ -81,17 +86,10 @@ Type=simple
 WorkingDirectory=/var/www/onlieencryptedmsgweb
 Environment=HOST=127.0.0.1
 Environment=PORT=3000
-Environment=DATA_DIR=/var/www/onlieencryptedmsgweb/data
 Environment=TRUST_PROXY=1
 Environment=TRUSTED_ORIGINS=https://257823.xyz,https://www.257823.xyz
-Environment=SESSION_TTL_MS=604800000
 Environment=MAX_MESSAGES_PER_CONVERSATION_WINDOW=60
-Environment=MESSAGE_PERSIST_DEBOUNCE_MS=180
 Environment=HSTS_MAX_AGE_SECONDS=31536000
-Environment=ADMIN_USERNAME=你的管理员账号
-Environment=ADMIN_PASSWORD=你的管理员密码
-Environment=ADMIN_ACCOUNTS=admin账号1:密码1,admin账号2:密码2
-Environment=AUDIT_TEXT_RETENTION_DAYS=30
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5
@@ -102,26 +100,43 @@ Group=www-data
 WantedBy=multi-user.target
 ```
 
-生效并启动：
+推荐环境变量（用于生产）：
+
+```ini
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=TRUST_PROXY=1
+Environment=TRUSTED_ORIGINS=https://257823.xyz,https://www.257823.xyz
+Environment=SESSION_TTL_MS=604800000
+Environment=MAX_MESSAGES_PER_CONVERSATION_WINDOW=60
+Environment=MESSAGE_PERSIST_DEBOUNCE_MS=180
+Environment=HSTS_MAX_AGE_SECONDS=31536000
+Environment=ADMIN_USERNAME=你的管理员账号
+Environment=ADMIN_PASSWORD=你的管理员密码
+Environment=ADMIN_ACCOUNTS=admin账号1:密码1,admin账号2:密码2
+Environment=AUDIT_TEXT_RETENTION_DAYS=30
+```
+
+启动并设为开机自启：
 
 ```bash
 systemctl daemon-reload
 systemctl enable secure-chat
 systemctl start secure-chat
-systemctl status secure-chat --no-pager
+systemctl status secure-chat
 ```
 
-看到 `active (running)` 说明应用已正常运行。
+如果看到 `active (running)` 就是正常。
 
-### 1.5 配置域名反代和 HTTPS（Caddy）
+### 第 6 步：配置 Caddy 反向代理 + HTTPS
 
-编辑配置：
+编辑 Caddy 配置：
 
 ```bash
 nano /etc/caddy/Caddyfile
 ```
 
-写入：
+写成这样：
 
 ```caddy
 257823.xyz, www.257823.xyz {
@@ -129,20 +144,22 @@ nano /etc/caddy/Caddyfile
 }
 ```
 
-检查并重载：
+重载 Caddy：
 
 ```bash
 caddy validate --config /etc/caddy/Caddyfile
 systemctl reload caddy
-systemctl status caddy --no-pager
+systemctl status caddy
 ```
 
-### 1.6 DNS 解析
+Caddy 会自动申请 HTTPS 证书。
 
-到域名面板添加：
+### 第 7 步：在域名 DNS 里加解析
 
-- `A` 记录：`@` -> 服务器公网 IP
-- `A` 记录：`www` -> 服务器公网 IP
+去你的 DNS 管理面板（比如 Cloudflare）：
+
+- `A` 记录：`@` -> 你的服务器公网 IP
+- `A` 记录：`www` -> 你的服务器公网 IP
 
 等解析生效后访问：
 
@@ -151,9 +168,9 @@ systemctl status caddy --no-pager
 
 ---
 
-## 2. 更新网站到最新代码（后续常用）
+## 2. 以后如何更新到最新仓库代码
 
-每次你把本地改动推到 GitHub 后，在服务器执行：
+每次你改完代码并推到 GitHub 后，服务器只要跑下面这几步。
 
 ```bash
 cd /var/www/onlieencryptedmsgweb
@@ -164,13 +181,14 @@ systemctl restart secure-chat
 systemctl status secure-chat --no-pager
 ```
 
-说明：
-- 即使只改前端，也建议执行 `npm run build`，避免线上仍是旧的压缩文件。
-- 如果 `npm start` 报构建过期，先运行 `npm run build` 再重启服务。
+就这么简单。
+
+如果你只改了前端静态文件，也建议照样跑一遍 `npm run build`，避免线上文件不是最新压缩版本。
+现在 `npm start` 会自动检查构建产物是否过期；如果报错，先执行 `npm run build` 再启动。
 
 ---
 
-## 2.1 会话恢复说明
+## 2.1 会话恢复说明（新）
 
 - 页面刷新后会尝试恢复登录 token。
 - 为了继续解密历史消息，页面会要求你再输入一次密码来解锁本地私钥。
@@ -178,27 +196,27 @@ systemctl status secure-chat --no-pager
 
 ---
 
-## 3. 常用排错命令
+## 3. 常用排错命令（出问题先看这里）
 
-查看应用日志：
+看服务日志：
 
 ```bash
 journalctl -u secure-chat -n 200 --no-pager
 ```
 
-实时追踪应用日志：
+实时看日志：
 
 ```bash
 journalctl -u secure-chat -f
 ```
 
-查看 Caddy 日志：
+看 Caddy 日志：
 
 ```bash
 journalctl -u caddy -n 200 --no-pager
 ```
 
-检查 3000 端口监听：
+看 3000 端口是否监听：
 
 ```bash
 ss -lntp | grep 3000
@@ -208,8 +226,8 @@ ss -lntp | grep 3000
 
 ## 4. 一句话总结
 
-- 首次部署：装环境 -> 拉代码 -> 构建 -> systemd 启服务 -> Caddy 绑定域名与 HTTPS。
-- 日常更新：`git pull` -> `npm install` -> `npm run build` -> `systemctl restart secure-chat`。
+- 第一次部署：装环境 -> 拉代码 -> build -> systemd 启服务 -> Caddy 绑域名和 HTTPS。
+- 日常更新：`git pull` -> `npm install` -> `npm run build` -> `systemctl restart`。
 
 ---
 
@@ -217,5 +235,4 @@ ss -lntp | grep 3000
 
 - 后台地址：`https://你的域名/admin.html`
 - 账号密码：由服务器环境变量 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 控制
-- 多管理员账号：由 `ADMIN_ACCOUNTS` 控制，格式 `账号1:密码1,账号2:密码2`
-- 支持：站点统计、用户筛选分页、批量封禁/解封、改用户名、改密码、查看聊天审计、审计日志链路、水印导出。
+- 支持：站点统计、用户列表筛选分页、批量封禁/解封、改用户名、改密码、查看全站聊天审计、审计日志链路、水印导出。
