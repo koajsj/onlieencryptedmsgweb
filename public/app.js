@@ -44,6 +44,13 @@ const elements = {
   pinPeerButton: document.querySelector("#pinPeerButton"),
   mutePeerButton: document.querySelector("#mutePeerButton"),
   exportPeerButton: document.querySelector("#exportPeerButton"),
+  threadSearchInput: document.querySelector("#threadSearchInput"),
+  threadSearchMeta: document.querySelector("#threadSearchMeta"),
+  composerReplyBar: document.querySelector("#composerReplyBar"),
+  replyPreviewAuthor: document.querySelector("#replyPreviewAuthor"),
+  replyPreviewText: document.querySelector("#replyPreviewText"),
+  cancelReplyButton: document.querySelector("#cancelReplyButton"),
+  logoutAllButton: document.querySelector("#logoutAllButton"),
   peerAvatar: document.querySelector("#peerAvatar"),
   peerName: document.querySelector("#peerName"),
   peerStatus: document.querySelector("#peerStatus"),
@@ -60,8 +67,10 @@ const state = {
   identity: null,
   authMode: localStorage.getItem(STORAGE.authMode) || "login",
   searchQuery: "",
+  threadSearchQuery: "",
   authBusy: false,
   composerBusy: false,
+  replyTarget: null,
   conversations: [],
   searchResults: [],
   activePeer: "",
@@ -206,6 +215,41 @@ function messagePreview(text) {
   return normalized.length > 34 ? `${normalized.slice(0, 34)}...` : normalized;
 }
 
+function replyPreviewText(message) {
+  const normalized = String(message?.text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "消息内容为空";
+  }
+  return normalized.length > 96 ? `${normalized.slice(0, 96)}...` : normalized;
+}
+
+function buildReplyTarget(message) {
+  if (!message?.id) {
+    return null;
+  }
+  return {
+    id: String(message.id),
+    from: String(message.from || ""),
+    text: String(message.text || ""),
+    createdAt: Number(message.createdAt) || Date.now()
+  };
+}
+
+function threadMessageMatchesQuery(message, query) {
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  if (!normalizedQuery) {
+    return true;
+  }
+  const haystacks = [
+    message.text,
+    message.from,
+    message.to,
+    message.replyTo?.from,
+    message.replyTo?.text
+  ];
+  return haystacks.some((value) => String(value || "").toLowerCase().includes(normalizedQuery));
+}
+
 function bytesToBase64(bytes) {
   let binary = "";
   for (let index = 0; index < bytes.length; index += 1) {
@@ -271,6 +315,8 @@ function normalizePendingOutboxEntry(entry) {
   const clientId = String(entry?.clientId || tempId || "").trim();
   const peer = String(entry?.peer || "").trim();
   const text = String(entry?.text || "");
+  const replyToId = String(entry?.replyToId || "").trim();
+  const replyTo = buildReplyTarget(entry?.replyTo);
   const createdAt = Number(entry?.createdAt) || Date.now();
   if (!tempId || !clientId || !peer || !text) {
     return null;
@@ -280,6 +326,8 @@ function normalizePendingOutboxEntry(entry) {
     clientId,
     peer,
     text: text.slice(0, 4000),
+    replyToId,
+    replyTo,
     createdAt,
     attempts: Math.max(0, Number(entry?.attempts) || 0),
     failed: Boolean(entry?.failed),
@@ -300,6 +348,8 @@ function syncPendingMessagesFromOutbox() {
         clientId: entry.clientId,
         peer: entry.peer,
         text: entry.text,
+        replyToId: entry.replyToId || "",
+        replyTo: entry.replyTo || null,
         createdAt: entry.createdAt,
         attempts: entry.attempts,
         failed: entry.failed,
@@ -579,6 +629,8 @@ function clearSession(showAuth = true, clearToken = true) {
   state.me = null;
   state.identity = null;
   state.searchQuery = "";
+  state.threadSearchQuery = "";
+  state.replyTarget = null;
   state.conversations = [];
   state.searchResults = [];
   state.activePeer = "";
@@ -598,8 +650,10 @@ function clearSession(showAuth = true, clearToken = true) {
 
   clearStoredSessionArtifacts(clearToken, true);
   elements.globalSearchInput.value = "";
+  elements.threadSearchInput.value = "";
   elements.messageInput.value = "";
   elements.messageInput.style.height = "auto";
+  syncReplyState();
   updateWorkspaceStatus();
   render();
   if (showAuth) {
@@ -619,6 +673,10 @@ function setSession(token, user, identity) {
   elements.meUsername.textContent = user.username;
   setAvatar(elements.meAvatar, user.username);
   cachePeerInfo(user);
+  state.threadSearchQuery = "";
+  state.replyTarget = null;
+  elements.threadSearchInput.value = "";
+  syncReplyState();
   updateWorkspaceStatus();
 }
 
@@ -936,20 +994,30 @@ function renderListItem(item, isSearchResult) {
 }
 function renderMessage(message) {
   const article = document.createElement("article");
-  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}`;
+  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}`;
   article.dataset.messageId = message.id;
   article.dataset.messageText = message.text;
+  const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || "")}">回复</button>`;
   const statusAction = message.pending
     ? '<span class="message-state">发送中</span>'
     : message.failed
       ? `<button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">重试</button>`
       : "";
   const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || "")}">复制</button>`;
+  const replyMarkup = message.replyTo
+    ? `
+      <div class="message-reply">
+        <span>回复 ${escapeHtml(message.replyTo.from || "消息")}</span>
+        <p>${escapeHtml(replyPreviewText(message.replyTo))}</p>
+      </div>
+    `
+    : "";
   article.innerHTML = `
     ${message.mine ? "" : `<div class="message-avatar avatar avatar-tone-${avatarTone(message.from)}">${escapeHtml(avatarInitial(message.from))}</div>`}
     <div class="message-body">
+      ${replyMarkup}
       <div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>
-      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}${statusAction ? ` | ${statusAction}` : ""} | ${copyAction}</div>
+      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}${statusAction ? ` | ${statusAction}` : ""} | ${replyAction} | ${copyAction}</div>
     </div>
   `;
   return article;
@@ -975,6 +1043,9 @@ function renderThread(options = {}) {
 
   const previousScrollHeight = elements.messageList.scrollHeight;
   const previousScrollTop = elements.messageList.scrollTop;
+  if (elements.threadSearchInput && elements.threadSearchInput.value !== state.threadSearchQuery) {
+    elements.threadSearchInput.value = state.threadSearchQuery;
+  }
   elements.peerName.textContent = peer.username;
   let connectionLabel = "";
   if (state.connectionState === "reconnecting") {
@@ -990,18 +1061,25 @@ function renderThread(options = {}) {
   if (prefs.muted) {
     statusTags.push("静音");
   }
+  const threadQuery = state.threadSearchQuery.trim().toLowerCase();
   const statusSuffix = statusTags.length ? ` | ${statusTags.join(" · ")}` : "";
   elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} | 自动端到端加密${connectionLabel}${statusSuffix}`;
   setAvatar(elements.peerAvatar, peer.username);
 
   const messages = state.messageCache.get(peer.username) || [];
+  const visibleMessages = messages.filter((message) => threadMessageMatchesQuery(message, threadQuery));
   const paging = pageStateForPeer(peer.username);
   const virtualWindow = buildMessageVirtualWindow(
-    messages,
+    visibleMessages,
     previousScrollTop,
     elements.messageList.clientHeight || 0,
     scrollBehavior === "bottom" ? "bottom" : "scroll"
   );
+  if (elements.threadSearchMeta) {
+    elements.threadSearchMeta.textContent = threadQuery
+      ? `匹配 ${visibleMessages.length} / ${messages.length} 条`
+      : `共 ${messages.length} 条消息`;
+  }
   elements.messageList.textContent = "";
 
   if (paging.hasMore) {
@@ -1022,11 +1100,16 @@ function renderThread(options = {}) {
     empty.className = "message-empty";
     empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>还没有消息。输入第一句，程序会自动完成加密和发送。</span>`;
     elements.messageList.append(empty);
+  } else if (visibleMessages.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "message-empty";
+    empty.innerHTML = `<strong>没有匹配的消息</strong><span>试试更短的关键词，或者清空会话内搜索。</span>`;
+    elements.messageList.append(empty);
   } else {
     if (virtualWindow && virtualWindow.start > 0) {
       elements.messageList.append(createSpacer(virtualWindow.topSpacer));
     }
-    const slice = virtualWindow ? messages.slice(virtualWindow.start, virtualWindow.end) : messages;
+    const slice = virtualWindow ? visibleMessages.slice(virtualWindow.start, virtualWindow.end) : visibleMessages;
     for (const message of slice) {
       elements.messageList.append(renderMessage(message));
     }
@@ -1052,6 +1135,7 @@ function renderThread(options = {}) {
   if (previousScrollHeight > 0) {
     elements.messageList.scrollTop = previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight);
   }
+  syncReplyState();
 }
 
 function render() {
@@ -1063,6 +1147,39 @@ function render() {
 function autoResizeComposer() {
   elements.messageInput.style.height = "auto";
   elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, 180)}px`;
+}
+
+function syncReplyState() {
+  if (!elements.composerReplyBar) {
+    return;
+  }
+  const target = state.replyTarget;
+  elements.composerReplyBar.hidden = !target;
+  if (!target) {
+    return;
+  }
+  elements.replyPreviewAuthor.textContent = target.from || "消息";
+  elements.replyPreviewText.textContent = replyPreviewText(target);
+}
+
+function clearReplyTarget() {
+  state.replyTarget = null;
+  syncReplyState();
+}
+
+function setReplyTarget(message) {
+  const target = buildReplyTarget(message);
+  if (!target) {
+    return;
+  }
+  state.replyTarget = target;
+  syncReplyState();
+  elements.messageInput.focus();
+}
+
+function setThreadSearchQuery(value) {
+  state.threadSearchQuery = String(value || "");
+  renderThread({ scrollBehavior: "preserve" });
 }
 
 async function derivePasswordKey(password, saltBytes) {
@@ -1422,8 +1539,9 @@ function ensureConversationEntry(username) {
   }
 }
 
-function buildTempMessage(peer, text) {
+function buildTempMessage(peer, text, replyTo = null) {
   const tempId = crypto.randomUUID();
+  const nextReplyTo = replyTo ? buildReplyTarget(replyTo) : null;
   return {
     id: tempId,
     tempId,
@@ -1435,7 +1553,9 @@ function buildTempMessage(peer, text) {
     text,
     createdAt: Date.now(),
     pending: true,
-    failed: false
+    failed: false,
+    replyToId: nextReplyTo?.id || "",
+    replyTo: nextReplyTo
   };
 }
 
@@ -1489,8 +1609,8 @@ function setPendingMessageState(tempId, failed, lastError = "") {
   return false;
 }
 
-function addPendingMessage(peer, text) {
-  const pending = buildTempMessage(peer, text);
+function addPendingMessage(peer, text, replyTo = null) {
+  const pending = buildTempMessage(peer, text, replyTo);
   const current = state.messageCache.get(peer) || [];
   current.push(pending);
   current.sort((left, right) => left.createdAt - right.createdAt);
@@ -1500,6 +1620,8 @@ function addPendingMessage(peer, text) {
     clientId: pending.clientId,
     peer,
     text,
+    replyToId: pending.replyToId || "",
+    replyTo: pending.replyTo || null,
     createdAt: pending.createdAt,
     attempts: 0,
     failed: false,
@@ -1510,6 +1632,8 @@ function addPendingMessage(peer, text) {
     clientId: pending.clientId,
     peer,
     text,
+    replyToId: pending.replyToId || "",
+    replyTo: pending.replyTo || null,
     createdAt: pending.createdAt,
     attempts: 0,
     failed: false,
@@ -1575,7 +1699,9 @@ function mergePendingMessagesIntoConversation(peer) {
       text: pending.text,
       createdAt: pending.createdAt,
       pending: !pending.failed,
-      failed: pending.failed
+      failed: pending.failed,
+      replyToId: pending.replyToId || "",
+      replyTo: pending.replyTo || null
     });
     changed = true;
   }
@@ -1604,7 +1730,9 @@ function hydratePendingMessagesIntoCache() {
       text: entry.text,
       createdAt: entry.createdAt,
       pending: !entry.failed,
-      failed: entry.failed
+      failed: entry.failed,
+      replyToId: entry.replyToId || "",
+      replyTo: entry.replyTo || null
     });
     current.sort((left, right) => left.createdAt - right.createdAt);
     state.messageCache.set(entry.peer, current);
@@ -1630,7 +1758,14 @@ async function flushPendingOutbox() {
       if (!entry.failed && entry.attempts > 0) {
         continue;
       }
-      await sendMessageWithRetry(entry.tempId, entry.peer, entry.text, entry.clientId, true);
+      await sendMessageWithRetry(
+        entry.tempId,
+        entry.peer,
+        entry.text,
+        entry.clientId,
+        true,
+        entry.replyToId || ""
+      );
     }
   } finally {
     state.outboxFlushing = false;
@@ -1645,6 +1780,9 @@ async function openConversation(username) {
   ensureConversationEntry(username);
   state.activePeer = username;
   localStorage.setItem(STORAGE.activePeer, username);
+  clearReplyTarget();
+  state.threadSearchQuery = "";
+  elements.threadSearchInput.value = "";
   elements.messageInput.value = draftTextForPeer(username);
   autoResizeComposer();
   const conversation = getConversation(username);
@@ -2016,7 +2154,17 @@ async function logout() {
   clearSession(true);
 }
 
-async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silent = false) {
+async function logoutAllDevices() {
+  try {
+    await api("/api/logout-all", { method: "POST" });
+  } catch (error) {
+    // Ignore logout-all errors and clear local state.
+  }
+  clearSession(true);
+  showToast("已退出全部设备");
+}
+
+async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silent = false, replyToId = "") {
   try {
     const encrypted = await encryptOutboundMessage(peer, text);
     const payload = await api("/api/messages", {
@@ -2025,6 +2173,7 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
         to: peer,
         text,
         clientId,
+        replyToId,
         nonce: encrypted.nonce,
         ciphertext: encrypted.ciphertext
       }
@@ -2033,6 +2182,9 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     removePendingMessageFromCache(tempId);
     removePendingOutboxEntry(tempId);
     await ingestEncryptedMessage(payload.message);
+    if (state.replyTarget?.id === replyToId) {
+      clearReplyTarget();
+    }
     return true;
   } catch (error) {
     setPendingMessageState(tempId, true, error.message);
@@ -2056,12 +2208,13 @@ async function submitMessage(event) {
   }
 
   const peer = state.activePeer;
-  const tempId = addPendingMessage(peer, text);
+  const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
+  const tempId = addPendingMessage(peer, text, replyTo);
   setDraftForPeer(peer, "");
   elements.messageInput.value = "";
   autoResizeComposer();
   renderThread({ scrollBehavior: "bottom" });
-  void sendMessageWithRetry(tempId, peer, text, tempId);
+  void sendMessageWithRetry(tempId, peer, text, tempId, false, replyTo?.id || "");
 }
 
 async function retryPendingMessage(tempId) {
@@ -2071,7 +2224,14 @@ async function retryPendingMessage(tempId) {
   }
   setPendingMessageState(tempId, false);
   renderThread({ scrollBehavior: "bottom" });
-  void sendMessageWithRetry(tempId, pending.peer, pending.text, pending.clientId || tempId);
+  void sendMessageWithRetry(
+    tempId,
+    pending.peer,
+    pending.text,
+    pending.clientId || tempId,
+    false,
+    pending.replyToId || ""
+  );
 }
 
 function handleListClick(event) {
@@ -2086,6 +2246,11 @@ function handleSearchInput() {
   state.searchQuery = elements.globalSearchInput.value;
   renderSidebar();
   queueSearch();
+}
+
+function handleThreadSearchInput() {
+  state.threadSearchQuery = elements.threadSearchInput.value;
+  renderThread({ scrollBehavior: "preserve" });
 }
 
 function handleComposerInput() {
@@ -2118,6 +2283,16 @@ function handleMessageListClick(event) {
   if (loadOlderButton) {
     const peer = loadOlderButton.dataset.loadOlderPeer || "";
     void loadOlderMessages(peer);
+    return;
+  }
+  const replyButton = event.target.closest(".message-reply-button");
+  if (replyButton) {
+    const messageId = replyButton.dataset.replyId || "";
+    const peer = state.activePeer;
+    const message = (state.messageCache.get(peer) || []).find((item) => item.id === messageId || item.tempId === messageId);
+    if (message) {
+      setReplyTarget(message);
+    }
     return;
   }
   const copyButton = event.target.closest(".message-copy-button");
@@ -2167,6 +2342,22 @@ function handleGlobalKeydown(event) {
     exportActiveConversation();
     return;
   }
+  if (event.key === "Escape" && elements.threadSearchInput && document.activeElement === elements.threadSearchInput) {
+    elements.threadSearchInput.value = "";
+    state.threadSearchQuery = "";
+    renderThread({ scrollBehavior: "preserve" });
+    return;
+  }
+  if (event.key === "Escape" && document.activeElement === elements.messageInput) {
+    elements.messageInput.value = "";
+    setDraftForPeer(state.activePeer, "");
+    autoResizeComposer();
+    return;
+  }
+  if (event.key === "Escape" && state.replyTarget) {
+    clearReplyTarget();
+    return;
+  }
   if (isMeta && event.key === "Enter") {
     if (!state.activePeer) {
       return;
@@ -2174,11 +2365,6 @@ function handleGlobalKeydown(event) {
     event.preventDefault();
     elements.composerForm.requestSubmit();
     return;
-  }
-  if (event.key === "Escape" && document.activeElement === elements.messageInput) {
-    elements.messageInput.value = "";
-    setDraftForPeer(state.activePeer, "");
-    autoResizeComposer();
   }
 }
 
@@ -2191,7 +2377,11 @@ function bindEvents() {
   elements.logoutButton.addEventListener("click", () => {
     void logout();
   });
+  elements.logoutAllButton.addEventListener("click", () => {
+    void logoutAllDevices();
+  });
   elements.globalSearchInput.addEventListener("input", handleSearchInput);
+  elements.threadSearchInput.addEventListener("input", handleThreadSearchInput);
   elements.conversationList.addEventListener("click", handleListClick);
   elements.searchResultList.addEventListener("click", handleListClick);
   elements.messageList.addEventListener("click", handleMessageListClick);
@@ -2214,6 +2404,9 @@ function bindEvents() {
   });
   elements.messageInput.addEventListener("input", handleComposerInput);
   elements.mobileBackButton.addEventListener("click", closeConversationOnMobile);
+  elements.cancelReplyButton.addEventListener("click", () => {
+    clearReplyTarget();
+  });
   elements.messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();

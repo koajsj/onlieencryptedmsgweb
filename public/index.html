@@ -85,6 +85,7 @@
               <span id="meStatus" aria-live="polite">连接中</span>
             </div>
           </div>
+          <button class="ghost-button compact" id="logoutAllButton" type="button">退出所有设备</button>
           <button class="ghost-button compact" id="logoutButton" type="button">退出</button>
         </div>
       </header>
@@ -134,9 +135,24 @@
               </div>
             </header>
 
+            <div class="thread-tools">
+              <label class="thread-search" aria-label="搜索当前会话">
+                <span class="search-icon" aria-hidden="true">⌕</span>
+                <input id="threadSearchInput" type="search" placeholder="搜索当前会话..." />
+              </label>
+              <div class="thread-search-meta" id="threadSearchMeta">显示全部消息</div>
+            </div>
+
             <div class="message-stream" id="messageList" aria-live="polite"></div>
 
             <form class="composer" id="composerForm">
+              <div class="composer-reply" id="composerReplyBar" hidden>
+                <div class="composer-reply-copy">
+                  <span>回复 <strong id="replyPreviewAuthor"></strong></span>
+                  <p id="replyPreviewText"></p>
+                </div>
+                <button id="cancelReplyButton" type="button" class="ghost-button compact">取消</button>
+              </div>
               <label class="composer-field">
                 <textarea id="messageInput" rows="1" maxlength="4000" placeholder="输入消息..." required></textarea>
               </label>

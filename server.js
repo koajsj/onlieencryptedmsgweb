@@ -605,6 +605,24 @@ function requireAdminPermission(req, res, url) {
   return session;
 }
 
+function deleteSessionsForUsername(username, role = null) {
+  let deleted = 0;
+  for (const [token, session] of sessions) {
+    if (!session) {
+      continue;
+    }
+    if (session.username !== username) {
+      continue;
+    }
+    if (role !== null && session.role !== role) {
+      continue;
+    }
+    sessions.delete(token);
+    deleted += 1;
+  }
+  return deleted;
+}
+
 function createEventTicketForSession(session) {
   const ticket = crypto.randomBytes(24).toString("base64url");
   eventTickets.set(ticket, {
@@ -667,8 +685,35 @@ function adminMessageView(message) {
     nonce: message.nonce,
     ciphertext: message.ciphertext,
     auditText: String(message.auditText || ""),
+    replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     createdAt: message.createdAt
   };
+}
+
+function normalizeReplyTargetView(replyTo) {
+  if (!replyTo || !replyTo.id) {
+    return null;
+  }
+  return {
+    id: String(replyTo.id),
+    from: String(replyTo.from || ""),
+    text: typeof replyTo.text === "string" ? replyTo.text : "",
+    createdAt: Number(replyTo.createdAt) || 0
+  };
+}
+
+function messagesForPair(leftUser, rightUser) {
+  const key = conversationBucketKey(leftUser, rightUser);
+  return messageBuckets.get(key) || [];
+}
+
+function resolveReplyTarget(leftUser, rightUser, replyToId) {
+  const id = String(replyToId || "").trim();
+  if (!id) {
+    return null;
+  }
+  const message = messagesForPair(leftUser, rightUser).find((item) => item.id === id);
+  return normalizeReplyTargetView(message || null);
 }
 
 function listAdminMessagesPage(limit, beforeCursor) {
@@ -703,6 +748,7 @@ function createMessageView(message, viewer) {
     mine: message.from === viewer,
     publicKey: peerUser?.publicKey || "",
     text: typeof message.text === "string" ? message.text : null,
+    replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     nonce: message.nonce,
     ciphertext: message.ciphertext,
     createdAt: message.createdAt
@@ -723,12 +769,13 @@ function buildConversationSummary(viewer, peer) {
     online: isUserOnline(peer),
     avatarSeed: makeAvatarSeed(peer),
     publicKey: peerUser.publicKey,
-    latestMessage: latest
+      latestMessage: latest
       ? {
           id: latest.id,
           from: latest.from,
           to: latest.to,
           text: typeof latest.text === "string" ? latest.text : null,
+          replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
           nonce: latest.nonce,
           ciphertext: latest.ciphertext,
           createdAt: latest.createdAt
@@ -1097,6 +1144,18 @@ function handleLogout(req, res, url) {
   }
   sessions.delete(session.token);
   sendJson(res, 200, { ok: true });
+}
+
+function handleLogoutAll(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const revoked = deleteSessionsForUsername(session.username, session.role);
+  sendJson(res, 200, {
+    ok: true,
+    revoked
+  });
 }
 
 function handleMe(req, res, url) {
@@ -1695,6 +1754,7 @@ async function handleSendMessage(req, res, url) {
   const ciphertext = String(body.ciphertext || "").trim();
   const auditText = normalizeMessageText(body.text);
   const clientId = normalizeClientId(body.clientId);
+  const replyToId = String(body.replyToId || "").trim();
   if (!peer || peer.username === session.username) {
     sendJson(res, 404, { error: "user not found" });
     return;
@@ -1736,6 +1796,11 @@ async function handleSendMessage(req, res, url) {
     sendJson(res, 400, { error: "message text too long" });
     return;
   }
+  const replyTo = resolveReplyTarget(session.username, peer.username, replyToId);
+  if (replyToId && !replyTo) {
+    sendJson(res, 400, { error: "reply target not found" });
+    return;
+  }
 
   const message = {
     id: crypto.randomUUID(),
@@ -1745,7 +1810,9 @@ async function handleSendMessage(req, res, url) {
     nonce,
     ciphertext,
     auditText,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    replyToId: replyTo?.id || "",
+    replyTo
   };
   messages.push(message);
   appendMessageBucket(message);
@@ -1948,6 +2015,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && pathname === "/api/logout") {
     handleLogout(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/logout-all") {
+    handleLogoutAll(req, res, url);
     return;
   }
   if (req.method === "GET" && pathname === "/api/me") {

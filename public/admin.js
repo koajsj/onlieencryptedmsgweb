@@ -27,8 +27,11 @@ const elements = {
   msgFromInput: document.querySelector("#msgFromInput"),
   msgToInput: document.querySelector("#msgToInput"),
   msgKeywordInput: document.querySelector("#msgKeywordInput"),
+  msgSinceInput: document.querySelector("#msgSinceInput"),
+  msgUntilInput: document.querySelector("#msgUntilInput"),
   msgMaskCheckbox: document.querySelector("#msgMaskCheckbox"),
   applyMsgFilterButton: document.querySelector("#applyMsgFilterButton"),
+  resetMsgFilterButton: document.querySelector("#resetMsgFilterButton"),
   loadMoreMessagesButton: document.querySelector("#loadMoreMessagesButton"),
   exportReasonInput: document.querySelector("#exportReasonInput"),
   exportMessagesButton: document.querySelector("#exportMessagesButton"),
@@ -209,6 +212,24 @@ function parseSortValue() {
   };
 }
 
+function dateInputToStartMs(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return 0;
+  }
+  const parsed = new Date(`${raw}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
+function dateInputToEndMs(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return 0;
+  }
+  const parsed = new Date(`${raw}T23:59:59.999`);
+  return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
 function renderStats() {
   const stats = state.stats;
   const items = [
@@ -346,9 +367,34 @@ function messageFilterQuery(reset) {
   const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
   const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
   const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
+  const since = dateInputToStartMs(elements.msgSinceInput.value);
+  const until = dateInputToEndMs(elements.msgUntilInput.value);
   const mask = elements.msgMaskCheckbox.checked ? "1" : "0";
   const before = !reset && state.nextBefore ? `&before=${encodeURIComponent(state.nextBefore)}` : "";
-  return `/api/admin/messages?limit=120&from=${from}&to=${to}&q=${q}&mask=${mask}${before}`;
+  const sinceParam = since ? `&since=${since}` : "";
+  const untilParam = until ? `&until=${until}` : "";
+  return `/api/admin/messages?limit=120&from=${from}&to=${to}&q=${q}&mask=${mask}${sinceParam}${untilParam}${before}`;
+}
+
+function buildMessageExportQuery(reasonValue) {
+  const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
+  const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
+  const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
+  const since = dateInputToStartMs(elements.msgSinceInput.value);
+  const until = dateInputToEndMs(elements.msgUntilInput.value);
+  const reason = encodeURIComponent(String(reasonValue || "").trim());
+  const sinceParam = since ? `&since=${since}` : "";
+  const untilParam = until ? `&until=${until}` : "";
+  return `/api/admin/messages/export?reason=${reason}&from=${from}&to=${to}&q=${q}${sinceParam}${untilParam}`;
+}
+
+function resetMessageFilters() {
+  elements.msgFromInput.value = "";
+  elements.msgToInput.value = "";
+  elements.msgKeywordInput.value = "";
+  elements.msgSinceInput.value = "";
+  elements.msgUntilInput.value = "";
+  elements.msgMaskCheckbox.checked = true;
 }
 
 async function loadMessages(reset = false) {
@@ -481,10 +527,7 @@ async function exportMessages() {
   if (!confirmed) {
     return;
   }
-  const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
-  const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
-  const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
-  const payload = await api(`/api/admin/messages/export?reason=${encodeURIComponent(reason)}&from=${from}&to=${to}&q=${q}`);
+  const payload = await api(buildMessageExportQuery(reason));
   const blob = new Blob([String(payload.content || "")], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -726,6 +769,15 @@ function bindEvents() {
     }
   });
 
+  elements.resetMsgFilterButton.addEventListener("click", async () => {
+    resetMessageFilters();
+    try {
+      await loadMessages(true);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
   elements.loadMoreMessagesButton.addEventListener("click", async () => {
     try {
       await loadMessages(false);
@@ -750,6 +802,22 @@ function bindEvents() {
       showToast(error.message);
     }
   });
+
+  for (const input of [
+    elements.msgFromInput,
+    elements.msgToInput,
+    elements.msgKeywordInput,
+    elements.msgSinceInput,
+    elements.msgUntilInput
+  ]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      elements.applyMsgFilterButton.click();
+    });
+  }
 }
 
 function syncPermissionUi() {
