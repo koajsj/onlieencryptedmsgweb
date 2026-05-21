@@ -1,23 +1,27 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#f4f8fd" />
+    <meta name="theme-color" content="#0e1418" />
     <title>私聊消息</title>
     <link rel="stylesheet" href="./styles.min.css" />
   </head>
   <body>
+    <div class="ambient-layer" aria-hidden="true">
+      <i class="ambient-beam beam-1"></i>
+      <i class="ambient-beam beam-2"></i>
+      <i class="ambient-grid"></i>
+    </div>
+
     <section class="auth-screen" id="authScreen" aria-label="注册和登录">
       <div class="auth-card">
         <div class="auth-brand">
           <div class="brand-badge">P</div>
           <div>
-            <p class="eyebrow">Private Messaging</p>
-            <h1>注册后直接开始私聊</h1>
-            <p class="auth-copy">
-              只需用户名和密码。聊天全程自动加密。
-            </p>
+            <p class="eyebrow">Private Line</p>
+            <h1>注册</h1>
+            <p class="auth-copy">仅需用户名和密码。消息在浏览器端自动加密后发送。</p>
           </div>
         </div>
 
@@ -63,7 +67,7 @@
         <div class="topbar-brand">
           <div class="brand-badge is-small">P</div>
           <div>
-            <p class="eyebrow">Messenger</p>
+            <p class="eyebrow">Signal Desk</p>
             <strong>私聊消息</strong>
           </div>
         </div>
@@ -74,6 +78,7 @@
         </label>
 
         <div class="topbar-user">
+          <a class="ghost-button compact" href="./admin.html" target="_blank" rel="noopener">后台</a>
           <div class="user-chip">
             <div class="avatar avatar-tone-0" id="meAvatar">我</div>
             <div class="user-chip-copy">
@@ -89,7 +94,7 @@
         <aside class="sidebar" id="sidebar" aria-label="会话列表">
           <div class="sidebar-block">
             <div class="sidebar-head">
-              <h2>消息</h2>
+              <h2>会话</h2>
               <span id="sidebarMeta">0 个会话</span>
             </div>
 
@@ -108,9 +113,9 @@
 
         <main class="chat-panel" id="chatPanel" aria-label="聊天区域">
           <section class="chat-empty" id="chatEmpty">
-            <div class="chat-empty-illustration">✦</div>
+            <div class="chat-empty-illustration">⟡</div>
             <h2>选择一个用户开始私聊</h2>
-            <p>上方可以直接搜索用户名。发送和接收的消息都会由浏览器自动完成端到端加密。</p>
+            <p>上方可以直接搜索用户名。发送与接收消息均在浏览器端自动完成加密处理。</p>
           </section>
 
           <section class="chat-thread" id="chatThread" hidden>
@@ -122,6 +127,12 @@
                   <strong id="peerName">未选择</strong>
                   <span id="peerStatus">离线</span>
                 </div>
+              </div>
+              <div class="thread-actions">
+                <button class="ghost-button compact thread-action" id="pinPeerButton" type="button">置顶</button>
+                <button class="ghost-button compact thread-action" id="mutePeerButton" type="button">静音</button>
+                <button class="ghost-button compact thread-action" id="archivePeerButton" type="button">归档</button>
+                <button class="ghost-button compact thread-action" id="exportPeerButton" type="button">导出</button>
               </div>
             </header>
 

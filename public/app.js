@@ -1,9 +1,12 @@
-"use strict";
+﻿"use strict";
 
 const STORAGE = {
   token: "private-chat-token",
   activePeer: "private-chat-active-peer",
-  authMode: "private-chat-auth-mode"
+  authMode: "private-chat-auth-mode",
+  conversationPrefs: "private-chat-conversation-prefs",
+  drafts: "private-chat-drafts",
+  showArchived: "private-chat-show-archived"
 };
 
 const AVATAR_TONES = 6;
@@ -34,6 +37,10 @@ const elements = {
   chatEmpty: document.querySelector("#chatEmpty"),
   chatThread: document.querySelector("#chatThread"),
   mobileBackButton: document.querySelector("#mobileBackButton"),
+  pinPeerButton: document.querySelector("#pinPeerButton"),
+  mutePeerButton: document.querySelector("#mutePeerButton"),
+  archivePeerButton: document.querySelector("#archivePeerButton"),
+  exportPeerButton: document.querySelector("#exportPeerButton"),
   peerAvatar: document.querySelector("#peerAvatar"),
   peerName: document.querySelector("#peerName"),
   peerStatus: document.querySelector("#peerStatus"),
@@ -60,6 +67,7 @@ const state = {
   importedPeerKeys: new Map(),
   conversationKeys: new Map(),
   pendingMessages: new Map(),
+  messagePageState: new Map(),
   pendingSequence: 0,
   eventSource: null,
   reconnectTimer: 0,
@@ -68,8 +76,28 @@ const state = {
   connectionState: "offline",
   searchTimer: 0,
   toastTimer: 0,
-  openConversationRequest: 0
+  openConversationRequest: 0,
+  conversationPrefs: {},
+  drafts: {},
+  showArchived: localStorage.getItem(STORAGE.showArchived) === "1"
 };
+
+function readJsonStorage(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -159,6 +187,43 @@ function base64ToBytes(value) {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+function resetLocalConversationState() {
+  state.conversationPrefs = readJsonStorage(STORAGE.conversationPrefs, {});
+  state.drafts = readJsonStorage(STORAGE.drafts, {});
+}
+
+function saveConversationPrefs() {
+  writeJsonStorage(STORAGE.conversationPrefs, state.conversationPrefs);
+}
+
+function saveDrafts() {
+  writeJsonStorage(STORAGE.drafts, state.drafts);
+}
+
+function peerPrefs(username) {
+  if (!username) {
+    return { pinned: false, muted: false, archived: false };
+  }
+  const prefs = state.conversationPrefs[username];
+  return {
+    pinned: Boolean(prefs?.pinned),
+    muted: Boolean(prefs?.muted),
+    archived: Boolean(prefs?.archived)
+  };
+}
+
+function updatePeerPrefs(username, patch) {
+  if (!username) {
+    return;
+  }
+  const next = {
+    ...peerPrefs(username),
+    ...patch
+  };
+  state.conversationPrefs[username] = next;
+  saveConversationPrefs();
 }
 
 function setAuthMode(mode) {
@@ -269,6 +334,7 @@ function clearSession(showAuth = true, clearToken = true) {
   state.importedPeerKeys.clear();
   state.conversationKeys.clear();
   state.pendingMessages.clear();
+  state.messagePageState.clear();
   state.pendingSequence = 0;
   state.openConversationRequest += 1;
 
@@ -287,12 +353,27 @@ function setSession(token, user, identity) {
   state.token = token;
   state.me = user;
   state.identity = identity;
+  resetLocalConversationState();
   localStorage.setItem(STORAGE.token, token);
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
   elements.meUsername.textContent = user.username;
   setAvatar(elements.meAvatar, user.username);
   cachePeerInfo(user);
+}
+
+function pageStateForPeer(username) {
+  const existing = state.messagePageState.get(username);
+  if (existing) {
+    return existing;
+  }
+  const created = {
+    hasMore: false,
+    nextBefore: "",
+    loadingOlder: false
+  };
+  state.messagePageState.set(username, created);
+  return created;
 }
 
 function cachePeerInfo(item) {
@@ -307,6 +388,11 @@ function getConversation(username) {
 
 function sortConversations() {
   state.conversations.sort((left, right) => {
+    const leftPrefs = peerPrefs(left.username);
+    const rightPrefs = peerPrefs(right.username);
+    if (Number(rightPrefs.pinned) !== Number(leftPrefs.pinned)) {
+      return Number(rightPrefs.pinned) - Number(leftPrefs.pinned);
+    }
     if (right.lastAt !== left.lastAt) {
       return right.lastAt - left.lastAt;
     }
@@ -354,9 +440,86 @@ function activePeerMeta() {
   );
 }
 
+function draftTextForPeer(username) {
+  return String(state.drafts[username] || "");
+}
+
+function setDraftForPeer(username, text) {
+  if (!username) {
+    return;
+  }
+  const next = String(text || "");
+  if (!next.trim()) {
+    delete state.drafts[username];
+  } else {
+    state.drafts[username] = next.slice(0, 4000);
+  }
+  saveDrafts();
+}
+
+function applyThreadActionState(peer) {
+  const prefs = peerPrefs(peer || "");
+  const hasPeer = Boolean(peer);
+  elements.pinPeerButton.disabled = !hasPeer;
+  elements.mutePeerButton.disabled = !hasPeer;
+  elements.archivePeerButton.disabled = !hasPeer;
+  elements.exportPeerButton.disabled = !hasPeer;
+  elements.pinPeerButton.textContent = prefs.pinned ? "取消置顶" : "置顶";
+  elements.mutePeerButton.textContent = prefs.muted ? "取消静音" : "静音";
+  elements.archivePeerButton.textContent = prefs.archived ? "取消归档" : "归档";
+}
+
+function togglePeerPref(peer, key) {
+  if (!peer) {
+    return;
+  }
+  const prefs = peerPrefs(peer);
+  updatePeerPrefs(peer, { [key]: !prefs[key] });
+  sortConversations();
+  render();
+}
+
+function toggleArchivedView() {
+  state.showArchived = !state.showArchived;
+  localStorage.setItem(STORAGE.showArchived, state.showArchived ? "1" : "0");
+  renderSidebar();
+  showToast(state.showArchived ? "已显示归档会话" : "已隐藏归档会话");
+}
+
+function exportActiveConversation() {
+  const peer = state.activePeer;
+  if (!peer) {
+    return;
+  }
+  const messages = state.messageCache.get(peer) || [];
+  if (messages.length === 0) {
+    showToast("当前会话没有可导出的消息");
+    return;
+  }
+  const lines = messages.map((message) => {
+    const who = message.mine ? "我" : message.from;
+    return `[${new Date(message.createdAt).toLocaleString()}] ${who}: ${message.text}`;
+  });
+  const content = lines.join("\n");
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `chat-${peer}-${Date.now()}.txt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function renderSidebar() {
   const query = state.searchQuery.trim().toLowerCase();
+  const archivedHiddenCount = state.conversations.filter((item) => peerPrefs(item.username).archived).length;
   const conversations = state.conversations.filter((item) => {
+    const prefs = peerPrefs(item.username);
+    if (!state.showArchived && prefs.archived) {
+      return false;
+    }
     if (!query) {
       return true;
     }
@@ -366,7 +529,9 @@ function renderSidebar() {
     );
   });
 
-  elements.sidebarMeta.textContent = `${state.conversations.length} 个会话`;
+  const visibleCount = conversations.length;
+  const archiveHint = archivedHiddenCount && !state.showArchived ? ` | 已隐藏 ${archivedHiddenCount}` : "";
+  elements.sidebarMeta.textContent = `${visibleCount} 个会话${archiveHint} | 双击切换归档`;
   elements.searchGroup.hidden = !query;
 
   elements.searchResultList.textContent = "";
@@ -389,13 +554,19 @@ function renderSidebar() {
     elements.conversationList.append(renderListItem(conversation, false));
   }
 }
-
 function renderListItem(item, isSearchResult) {
+  const prefs = peerPrefs(item.username);
   const button = document.createElement("button");
   button.type = "button";
   button.className = "list-item";
   if (item.username === state.activePeer) {
     button.classList.add("is-active");
+  }
+  if (prefs.pinned) {
+    button.classList.add("is-pinned");
+  }
+  if (prefs.archived) {
+    button.classList.add("is-archived");
   }
   button.dataset.username = item.username;
 
@@ -411,27 +582,48 @@ function renderListItem(item, isSearchResult) {
     </div>
     <div class="list-row is-subtle">
       <span>${escapeHtml(isSearchResult ? "点击开始私聊" : messagePreview(item.previewText || "已加密消息"))}</span>
-      ${!isSearchResult && item.unread ? `<b class="unread-badge">${item.unread}</b>` : item.online ? '<i class="online-dot"></i>' : ""}
+      ${!isSearchResult && item.unread && !prefs.muted ? `<b class="unread-badge">${item.unread}</b>` : item.online ? '<i class="online-dot"></i>' : ""}
     </div>
   `;
+
+  if (!isSearchResult) {
+    const flags = [];
+    if (prefs.pinned) {
+      flags.push('<em class="list-flag">置顶</em>');
+    }
+    if (prefs.muted) {
+      flags.push('<em class="list-flag">静音</em>');
+    }
+    if (prefs.archived) {
+      flags.push('<em class="list-flag">归档</em>');
+    }
+    if (flags.length > 0) {
+      const flagRow = document.createElement("div");
+      flagRow.className = "list-flags";
+      flagRow.innerHTML = flags.join("");
+      meta.append(flagRow);
+    }
+  }
 
   button.append(avatar, meta);
   return button;
 }
-
 function renderMessage(message) {
   const article = document.createElement("article");
   article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}`;
+  article.dataset.messageId = message.id;
+  article.dataset.messageText = message.text;
   const statusAction = message.pending
     ? '<span class="message-state">发送中</span>'
     : message.failed
       ? `<button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">重试</button>`
       : "";
+  const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || "")}">复制</button>`;
   article.innerHTML = `
     ${message.mine ? "" : `<div class="message-avatar avatar avatar-tone-${avatarTone(message.from)}">${escapeHtml(avatarInitial(message.from))}</div>`}
     <div class="message-body">
       <div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>
-      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}${statusAction ? ` · ${statusAction}` : ""}</div>
+      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}${statusAction ? ` | ${statusAction}` : ""} | ${copyAction}</div>
     </div>
   `;
   return article;
@@ -447,6 +639,7 @@ function renderThread() {
 
   elements.chatEmpty.hidden = hasPeer;
   elements.chatThread.hidden = !hasPeer;
+  applyThreadActionState(hasPeer ? peer.username : "");
 
   if (!peer) {
     return;
@@ -455,15 +648,41 @@ function renderThread() {
   elements.peerName.textContent = peer.username;
   let connectionLabel = "";
   if (state.connectionState === "reconnecting") {
-    connectionLabel = " · 连接重试中";
+    connectionLabel = " | 连接重试中";
   } else if (state.connectionState === "offline") {
-    connectionLabel = " · 连接未建立";
+    connectionLabel = " | 连接未建立";
   }
-  elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} · 自动端到端加密${connectionLabel}`;
+  const prefs = peerPrefs(peer.username);
+  const statusTags = [];
+  if (prefs.pinned) {
+    statusTags.push("置顶");
+  }
+  if (prefs.muted) {
+    statusTags.push("静音");
+  }
+  if (prefs.archived) {
+    statusTags.push("归档");
+  }
+  const statusSuffix = statusTags.length ? ` | ${statusTags.join(" · ")}` : "";
+  elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} | 自动端到端加密${connectionLabel}${statusSuffix}`;
   setAvatar(elements.peerAvatar, peer.username);
 
   const messages = state.messageCache.get(peer.username) || [];
+  const paging = pageStateForPeer(peer.username);
   elements.messageList.textContent = "";
+
+  if (paging.hasMore) {
+    const loadOlderWrap = document.createElement("div");
+    loadOlderWrap.className = "message-load-older-wrap";
+    const loadOlderButton = document.createElement("button");
+    loadOlderButton.type = "button";
+    loadOlderButton.className = "message-load-older-button";
+    loadOlderButton.dataset.loadOlderPeer = peer.username;
+    loadOlderButton.textContent = paging.loadingOlder ? "加载中..." : "加载更早消息";
+    loadOlderButton.disabled = paging.loadingOlder;
+    loadOlderWrap.append(loadOlderButton);
+    elements.messageList.append(loadOlderWrap);
+  }
 
   if (messages.length === 0) {
     const empty = document.createElement("div");
@@ -476,6 +695,11 @@ function renderThread() {
     }
   }
 
+  if (state.activePeer === peer.username && document.activeElement !== elements.messageInput) {
+    const draft = draftTextForPeer(peer.username);
+    elements.messageInput.value = draft;
+    autoResizeComposer();
+  }
   setComposerBusy(false);
   scrollMessagesToBottom();
 }
@@ -597,7 +821,7 @@ async function restoreIdentity(username, password, keyBundle) {
       publicKeyBase64: keyBundle.publicKey
     };
   } catch (error) {
-    throw new Error("无法解锁该账号的本地密钥");
+    throw new Error("鏃犳硶瑙ｉ攣璇ヨ处鍙风殑鏈湴瀵嗛挜");
   }
 }
 
@@ -607,7 +831,7 @@ async function getConversationKey(peerUsername, peerPublicKeyBase64) {
   }
   const rawPeerKey = peerPublicKeyBase64 || state.peerKeys.get(peerUsername);
   if (!rawPeerKey) {
-    throw new Error("缺少对端公钥");
+    throw new Error("缂哄皯瀵圭鍏挜");
   }
 
   const cacheKey = `${peerUsername}:${rawPeerKey}`;
@@ -649,14 +873,78 @@ function aadBytes(from, to) {
   return textEncoder.encode(JSON.stringify({ from, to }));
 }
 
-async function decryptMessageView(message, peerPublicKeyBase64) {
+function peerFromMessage(message, fallbackPeer = "") {
+  if (fallbackPeer) {
+    return fallbackPeer;
+  }
+  if (message?.peer) {
+    return message.peer;
+  }
+  if (message?.from && message?.to && state.me?.username) {
+    return message.from === state.me.username ? message.to : message.from;
+  }
+  return "";
+}
+
+async function encryptOutboundMessage(peerUsername, text) {
+  const peerPublicKey = state.peerKeys.get(peerUsername);
+  if (!peerPublicKey) {
+    throw new Error("缂哄皯瀵圭鍏挜");
+  }
+  const conversationKey = await getConversationKey(peerUsername, peerPublicKey);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: nonce,
+      additionalData: aadBytes(state.me.username, peerUsername)
+    },
+    conversationKey,
+    textEncoder.encode(text)
+  );
+  return {
+    nonce: bytesToBase64(nonce),
+    ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+  };
+}
+
+async function decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPeer = "") {
+  const peerUsername = peerFromMessage(message, fallbackPeer);
+  if (!peerUsername) {
+    throw new Error("缂哄皯瀵圭鏍囪瘑");
+  }
+  const conversationKey = await getConversationKey(peerUsername, peerPublicKeyBase64);
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: base64ToBytes(message.nonce),
+      additionalData: aadBytes(message.from, message.to)
+    },
+    conversationKey,
+    base64ToBytes(message.ciphertext)
+  );
+  return textDecoder.decode(plaintext);
+}
+
+async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "") {
+  let text = "";
+  if (typeof message.text === "string" && !message.ciphertext) {
+    text = message.text;
+  } else {
+    try {
+      text = await decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPeer);
+    } catch (error) {
+      text = "[鏃犳硶瑙ｅ瘑]";
+    }
+  }
+
   return {
     id: message.id,
     from: message.from,
     to: message.to,
-    peer: message.peer,
+    peer: peerFromMessage(message, fallbackPeer),
     mine: message.mine,
-    text: String(message.text || ""),
+    text,
     createdAt: message.createdAt
   };
 }
@@ -665,7 +953,16 @@ async function decryptPreview(conversation) {
   if (!conversation.latestMessage) {
     return "";
   }
-  return String(conversation.latestMessage.text || "");
+  const preview = await decryptMessageView(
+    {
+      ...conversation.latestMessage,
+      peer: conversation.username,
+      mine: conversation.latestMessage.from === state.me?.username
+    },
+    conversation.publicKey,
+    conversation.username
+  );
+  return preview.text;
 }
 
 async function loadConversations() {
@@ -819,6 +1116,8 @@ async function openConversation(username) {
   ensureConversationEntry(username);
   state.activePeer = username;
   localStorage.setItem(STORAGE.activePeer, username);
+  elements.messageInput.value = draftTextForPeer(username);
+  autoResizeComposer();
   const conversation = getConversation(username);
   if (conversation) {
     conversation.unread = 0;
@@ -827,7 +1126,7 @@ async function openConversation(username) {
 
   const requestId = ++state.openConversationRequest;
   try {
-    const payload = await api(`/api/messages?with=${encodeURIComponent(username)}`);
+    const payload = await api(`/api/messages?with=${encodeURIComponent(username)}&limit=50`);
     if (requestId !== state.openConversationRequest) {
       return;
     }
@@ -836,11 +1135,16 @@ async function openConversation(username) {
     const decryptedMessages = [];
     for (const message of payload.messages) {
       const peerPublicKey = message.publicKey || payload.peer.publicKey;
-      const decrypted = await decryptMessageView(message, peerPublicKey);
+      const decrypted = await decryptMessageView(message, peerPublicKey, payload.peer.username);
       decryptedMessages.push(decrypted);
     }
 
     state.messageCache.set(username, decryptedMessages);
+    state.messagePageState.set(username, {
+      hasMore: Boolean(payload.hasMore),
+      nextBefore: String(payload.nextBefore || ""),
+      loadingOlder: false
+    });
     upsertConversation({
       username: payload.peer.username,
       online: payload.peer.online,
@@ -852,6 +1156,51 @@ async function openConversation(username) {
     });
     render();
   } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function loadOlderMessages(peer) {
+  if (!peer || state.activePeer !== peer) {
+    return;
+  }
+  const paging = pageStateForPeer(peer);
+  if (!paging.hasMore || paging.loadingOlder || !paging.nextBefore) {
+    return;
+  }
+
+  paging.loadingOlder = true;
+  renderThread();
+  const requestId = ++state.openConversationRequest;
+  const previous = state.messageCache.get(peer) || [];
+
+  try {
+    const payload = await api(
+      `/api/messages?with=${encodeURIComponent(peer)}&limit=50&before=${encodeURIComponent(paging.nextBefore)}`
+    );
+    if (requestId !== state.openConversationRequest) {
+      return;
+    }
+    cachePeerInfo(payload.peer);
+    const olderMessages = [];
+    for (const message of payload.messages) {
+      const peerPublicKey = message.publicKey || payload.peer.publicKey;
+      const decrypted = await decryptMessageView(message, peerPublicKey, payload.peer.username);
+      olderMessages.push(decrypted);
+    }
+    const knownIds = new Set(previous.map((message) => message.id));
+    const merged = [...olderMessages.filter((message) => !knownIds.has(message.id)), ...previous];
+    merged.sort((left, right) => left.createdAt - right.createdAt);
+    state.messageCache.set(peer, merged);
+    state.messagePageState.set(peer, {
+      hasMore: Boolean(payload.hasMore),
+      nextBefore: String(payload.nextBefore || ""),
+      loadingOlder: false
+    });
+    renderThread();
+  } catch (error) {
+    paging.loadingOlder = false;
+    renderThread();
     showToast(error.message);
   }
 }
@@ -891,7 +1240,7 @@ async function ingestEncryptedMessage(message) {
 
   let decrypted;
   try {
-    decrypted = await decryptMessageView(message, peerPublicKey);
+    decrypted = await decryptMessageView(message, peerPublicKey, peer);
   } catch (error) {
     decrypted = {
       id: message.id,
@@ -899,7 +1248,7 @@ async function ingestEncryptedMessage(message) {
       to: message.to,
       peer,
       mine: message.mine,
-      text: String(message.text || "[无法解密]"),
+      text: String(message.text || "[鏃犳硶瑙ｅ瘑]"),
       createdAt: message.createdAt
     };
   }
@@ -914,8 +1263,9 @@ async function ingestEncryptedMessage(message) {
   state.messageCache.set(peer, current);
 
   const previous = getConversation(peer);
+  const muted = peerPrefs(peer).muted;
   const unread =
-    !decrypted.mine && state.activePeer !== peer ? (previous?.unread || 0) + 1 : 0;
+    !decrypted.mine && state.activePeer !== peer && !muted ? (previous?.unread || 0) + 1 : 0;
 
   upsertConversation({
     username: peer,
@@ -943,10 +1293,35 @@ async function ingestEncryptedMessage(message) {
   }
 }
 
-function openEventStream() {
+async function createEventTicket() {
+  const payload = await api("/api/events/token", { method: "POST" });
+  if (!payload?.ticket) {
+    throw new Error("鏃犳硶鍒涘缓瀹炴椂杩炴帴绁ㄦ嵁");
+  }
+  return payload.ticket;
+}
+
+function startEventStream(silent = false) {
+  void openEventStream().catch((error) => {
+    state.connectionState = "offline";
+    renderThread();
+    if (!silent) {
+      showToast(error.message || "瀹炴椂杩炴帴澶辫触");
+    }
+  });
+}
+
+async function openEventStream() {
   closeEventStream();
   state.connectionState = "connecting";
-  const source = new EventSource(`/api/events?token=${encodeURIComponent(state.token)}`);
+  renderThread();
+
+  const ticket = await createEventTicket();
+  if (!state.token) {
+    return;
+  }
+
+  const source = new EventSource(`/api/events?ticket=${encodeURIComponent(ticket)}`);
   state.eventSource = source;
   state.manualEventSourceClose = false;
 
@@ -1002,7 +1377,7 @@ function openEventStream() {
           return;
         }
       }
-      openEventStream();
+      startEventStream(true);
       try {
         await loadConversations();
         if (state.activePeer) {
@@ -1019,11 +1394,11 @@ function openEventStream() {
 
 async function afterLogin() {
   await loadConversations();
-  openEventStream();
+  startEventStream();
 
   const savedPeer = localStorage.getItem(STORAGE.activePeer) || "";
   render();
-  if (savedPeer && state.peerKeys.has(savedPeer)) {
+  if (savedPeer && state.peerKeys.has(savedPeer) && (state.showArchived || !peerPrefs(savedPeer).archived)) {
     await openConversation(savedPeer);
   }
 }
@@ -1042,7 +1417,7 @@ async function submitAuth(event) {
   }
 
   if (!window.crypto?.subtle) {
-    showToast("当前环境不支持 Web Crypto，请使用 HTTPS 或 localhost");
+    showToast("褰撳墠鐜涓嶆敮鎸?Web Crypto锛岃浣跨敤 HTTPS 鎴?localhost");
     return;
   }
 
@@ -1073,9 +1448,9 @@ async function submitAuth(event) {
     setSession(payload.token, payload.user, identity);
     elements.authPasswordInput.value = "";
     await afterLogin();
-    showToast(state.authMode === "login" ? "登录成功，已自动解锁加密会话" : "注册成功，已自动创建加密会话");
+    showToast(state.authMode === "login" ? "鐧诲綍鎴愬姛锛屽凡鑷姩瑙ｉ攣鍔犲瘑浼氳瘽" : "娉ㄥ唽鎴愬姛锛屽凡鑷姩鍒涘缓鍔犲瘑浼氳瘽");
   } catch (error) {
-    showToast(error.message || "认证失败");
+    showToast(error.message || "璁よ瘉澶辫触");
   } finally {
     setAuthBusy(false);
   }
@@ -1092,11 +1467,14 @@ async function logout() {
 
 async function sendMessageWithRetry(tempId, peer, text) {
   try {
+    const encrypted = await encryptOutboundMessage(peer, text);
     const payload = await api("/api/messages", {
       method: "POST",
       body: {
         to: peer,
-        text
+        text,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
       }
     });
     state.pendingMessages.delete(tempId);
@@ -1124,6 +1502,7 @@ async function submitMessage(event) {
 
   const peer = state.activePeer;
   const tempId = addPendingMessage(peer, text);
+  setDraftForPeer(peer, "");
   elements.messageInput.value = "";
   autoResizeComposer();
   renderThread();
@@ -1154,7 +1533,43 @@ function handleSearchInput() {
   queueSearch();
 }
 
+function handleComposerInput() {
+  autoResizeComposer();
+  if (state.activePeer) {
+    setDraftForPeer(state.activePeer, elements.messageInput.value);
+  }
+}
+
+async function copyMessageFromButton(copyButton) {
+  const container = copyButton.closest(".message");
+  if (!container) {
+    return;
+  }
+  const text = container.dataset.messageText || "";
+  if (!text) {
+    showToast("没有可复制的内容");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast("消息已复制");
+  } catch (error) {
+    showToast("复制失败");
+  }
+}
+
 function handleMessageListClick(event) {
+  const loadOlderButton = event.target.closest(".message-load-older-button");
+  if (loadOlderButton) {
+    const peer = loadOlderButton.dataset.loadOlderPeer || "";
+    void loadOlderMessages(peer);
+    return;
+  }
+  const copyButton = event.target.closest(".message-copy-button");
+  if (copyButton) {
+    void copyMessageFromButton(copyButton);
+    return;
+  }
   const retryButton = event.target.closest(".message-retry-button");
   if (!retryButton) {
     return;
@@ -1166,6 +1581,70 @@ function handleMessageListClick(event) {
   void retryPendingMessage(tempId);
 }
 
+function handleThreadActionsClick(action) {
+  const peer = state.activePeer;
+  if (!peer) {
+    return;
+  }
+  if (action === "pin") {
+    togglePeerPref(peer, "pinned");
+    return;
+  }
+  if (action === "mute") {
+    togglePeerPref(peer, "muted");
+    return;
+  }
+  if (action === "archive") {
+    const willArchive = !peerPrefs(peer).archived;
+    togglePeerPref(peer, "archived");
+    if (willArchive && !state.showArchived) {
+      closeConversationOnMobile();
+      if (state.activePeer === peer) {
+        state.activePeer = "";
+        localStorage.removeItem(STORAGE.activePeer);
+      }
+      render();
+    }
+    return;
+  }
+  if (action === "export") {
+    exportActiveConversation();
+  }
+}
+
+function handleGlobalKeydown(event) {
+  const isMeta = event.ctrlKey || event.metaKey;
+  if (isMeta && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    elements.globalSearchInput.focus();
+    elements.globalSearchInput.select();
+    return;
+  }
+  if (isMeta && event.key.toLowerCase() === "e") {
+    event.preventDefault();
+    exportActiveConversation();
+    return;
+  }
+  if (isMeta && event.shiftKey && event.key.toLowerCase() === "a") {
+    event.preventDefault();
+    toggleArchivedView();
+    return;
+  }
+  if (isMeta && event.key === "Enter") {
+    if (!state.activePeer) {
+      return;
+    }
+    event.preventDefault();
+    elements.composerForm.requestSubmit();
+    return;
+  }
+  if (event.key === "Escape" && document.activeElement === elements.messageInput) {
+    elements.messageInput.value = "";
+    setDraftForPeer(state.activePeer, "");
+    autoResizeComposer();
+  }
+}
+
 function bindEvents() {
   elements.loginTab.addEventListener("click", () => setAuthMode("login"));
   elements.registerTab.addEventListener("click", () => setAuthMode("register"));
@@ -1175,14 +1654,21 @@ function bindEvents() {
   elements.logoutButton.addEventListener("click", () => {
     void logout();
   });
+  elements.sidebarMeta.addEventListener("dblclick", () => {
+    toggleArchivedView();
+  });
   elements.globalSearchInput.addEventListener("input", handleSearchInput);
   elements.conversationList.addEventListener("click", handleListClick);
   elements.searchResultList.addEventListener("click", handleListClick);
   elements.messageList.addEventListener("click", handleMessageListClick);
+  elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
+  elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
+  elements.archivePeerButton.addEventListener("click", () => handleThreadActionsClick("archive"));
+  elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
   elements.composerForm.addEventListener("submit", (event) => {
     void submitMessage(event);
   });
-  elements.messageInput.addEventListener("input", autoResizeComposer);
+  elements.messageInput.addEventListener("input", handleComposerInput);
   elements.mobileBackButton.addEventListener("click", closeConversationOnMobile);
   elements.messageInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -1190,6 +1676,7 @@ function bindEvents() {
       elements.composerForm.requestSubmit();
     }
   });
+  window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", render);
 }
 
@@ -1200,8 +1687,15 @@ async function restoreSessionFromStorage() {
   }
   state.token = token;
   try {
-    const payload = await api("/api/me", { skipAuthReset: true });
-    setSession(token, payload.user, null);
+    const payload = await api("/api/me/key-bundle", { skipAuthReset: true });
+    const password = window.prompt("璇疯緭鍏ュ瘑鐮佷互瑙ｉ攣鏈湴瀵嗛挜");
+    if (!password) {
+      clearSession(true, true);
+      showToast("已取消恢复，请重新登录");
+      return false;
+    }
+    const identity = await restoreIdentity(payload.user.username, password, payload.keyBundle);
+    setSession(token, payload.user, identity);
     await afterLogin();
     showToast("已恢复登录会话");
     return true;
@@ -1219,7 +1713,7 @@ function boot() {
 
   if (!window.crypto?.subtle) {
     elements.authSubmitButton.disabled = true;
-    elements.authTip.textContent = "当前环境缺少 Web Crypto。请用 HTTPS 或 localhost 打开此站点。";
+    elements.authTip.textContent = "当前环境缺少 Web Crypto，请使用 HTTPS 或 localhost 打开本站。";
     return;
   }
 
@@ -1227,3 +1721,6 @@ function boot() {
 }
 
 boot();
+
+
+

@@ -36,6 +36,13 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function makeEncryptedPayload(fillByte) {
+  return {
+    nonce: Buffer.alloc(12, fillByte).toString("base64"),
+    ciphertext: Buffer.alloc(64, fillByte + 1).toString("base64")
+  };
+}
+
 async function waitForHealth(port, serverProcess) {
   const url = `http://127.0.0.1:${port}/health`;
   const startedAt = Date.now();
@@ -84,17 +91,26 @@ async function startServer(envOverrides = {}) {
   };
 }
 
-function openEvents(port, token) {
+async function createEventsTicket(port, token) {
+  const response = await postJson(port, "/api/events/token", {}, token);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.ok(payload.ticket);
+  return payload.ticket;
+}
+
+async function openEvents(port, token) {
   const events = [];
   let buffer = "";
   let request;
+  const ticket = await createEventsTicket(port, token);
 
   const ready = new Promise((resolve, reject) => {
     request = http.get(
       {
         hostname: "127.0.0.1",
         port,
-        path: `/api/events?token=${encodeURIComponent(token)}`,
+        path: `/api/events?ticket=${encodeURIComponent(ticket)}`,
         headers: { Accept: "text/event-stream" }
       },
       (response) => {
@@ -204,12 +220,17 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.equal(me.response.status, 200);
     assert.equal(me.json.user.username, "Alice_1");
     assert.equal(me.json.user.publicKey, SAMPLE_BUNDLES.Alice_1.publicKey);
+
+    const keyBundle = await getJson(server.port, "/api/me/key-bundle", loginBody.token);
+    assert.equal(keyBundle.response.status, 200);
+    assert.equal(keyBundle.json.user.username, "Alice_1");
+    assert.deepEqual(keyBundle.json.keyBundle, SAMPLE_BUNDLES.Alice_1);
   } finally {
     await server.stop();
   }
 });
 
-test("private messaging accepts plaintext and returns readable messages", async () => {
+test("private messaging relays ciphertext and enforces encrypted payloads", async () => {
   const server = await startServer();
 
   try {
@@ -228,8 +249,8 @@ test("private messaging accepts plaintext and returns readable messages", async 
     const aliceToken = aliceBody.token;
     const bobToken = bobBody.token;
 
-    const aliceEvents = openEvents(server.port, aliceToken);
-    const bobEvents = openEvents(server.port, bobToken);
+    const aliceEvents = await openEvents(server.port, aliceToken);
+    const bobEvents = await openEvents(server.port, bobToken);
 
     await Promise.all([aliceEvents.ready, bobEvents.ready]);
     const readyPayload = await waitForEvent(aliceEvents, "ready");
@@ -240,25 +261,30 @@ test("private messaging accepts plaintext and returns readable messages", async 
     assert.equal(search.json.users[0].username, "Bob");
     assert.equal(search.json.users[0].publicKey, SAMPLE_BUNDLES.Bob.publicKey);
 
+    const firstEncrypted = makeEncryptedPayload(11);
     const send = await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        text: "Hello Bob"
+        nonce: firstEncrypted.nonce,
+        ciphertext: firstEncrypted.ciphertext
       },
       aliceToken
     );
     assert.equal(send.status, 201);
     const sendBody = await send.json();
     assert.equal(sendBody.message.peer, "Bob");
-    assert.equal(sendBody.message.text, "Hello Bob");
+    assert.equal(sendBody.message.text, null);
+    assert.equal(sendBody.message.nonce, firstEncrypted.nonce);
+    assert.equal(sendBody.message.ciphertext, firstEncrypted.ciphertext);
     assert.equal(sendBody.message.publicKey, SAMPLE_BUNDLES.Bob.publicKey);
-    assert.equal(sendBody.conversation.latestMessage.text, "Hello Bob");
+    assert.equal(sendBody.conversation.latestMessage.text, null);
+    assert.equal(sendBody.conversation.latestMessage.ciphertext, firstEncrypted.ciphertext);
 
     const bulkPayloads = Array.from({ length: 6 }, (_, index) => ({
       to: "Bob",
-      text: `bulk-${index}`
+      ...makeEncryptedPayload(40 + index)
     }));
     const bulkSends = await Promise.all(
       bulkPayloads.map((body) => postJson(server.port, "/api/messages", body, aliceToken))
@@ -267,36 +293,50 @@ test("private messaging accepts plaintext and returns readable messages", async 
       assert.equal(response.status, 201);
     }
 
-    const blankText = await postJson(
+    const missingCiphertext = await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        text: "   "
+        nonce: makeEncryptedPayload(90).nonce
       },
       aliceToken
     );
-    assert.equal(blankText.status, 400);
-    assert.equal((await blankText.json()).error, "message text is required");
+    assert.equal(missingCiphertext.status, 400);
+    assert.equal((await missingCiphertext.json()).error, "invalid message payload");
 
-    const tooLongText = await postJson(
+    const plaintextOnly = await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        text: "a".repeat(4001)
+        text: "hello"
       },
       aliceToken
     );
-    assert.equal(tooLongText.status, 400);
-    assert.equal((await tooLongText.json()).error, "message text must be 1-4000 characters");
+    assert.equal(plaintextOnly.status, 400);
+    assert.equal((await plaintextOnly.json()).error, "invalid message payload");
+
+    const invalidNonce = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        nonce: "bad",
+        ciphertext: makeEncryptedPayload(91).ciphertext
+      },
+      aliceToken
+    );
+    assert.equal(invalidNonce.status, 400);
+    assert.equal((await invalidNonce.json()).error, "invalid message payload");
 
     const hugePayload = await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        text: "x".repeat(140000)
+        nonce: makeEncryptedPayload(92).nonce,
+        ciphertext: "x".repeat(140000)
       },
       aliceToken
     );
@@ -315,58 +355,89 @@ test("private messaging accepts plaintext and returns readable messages", async 
     const incoming = await waitForEvent(
       bobEvents,
       "message",
-      (payload) => payload.from === "Alice" && payload.text === "Hello Bob"
+      (payload) => payload.from === "Alice" && payload.ciphertext === firstEncrypted.ciphertext
     );
     assert.equal(incoming.peer, "Alice");
     assert.equal(incoming.mine, false);
     assert.equal(incoming.publicKey, SAMPLE_BUNDLES.Alice.publicKey);
-    assert.equal(incoming.text, "Hello Bob");
+    assert.equal(incoming.text, null);
+    assert.equal(incoming.nonce, firstEncrypted.nonce);
+    assert.equal(incoming.ciphertext, firstEncrypted.ciphertext);
 
     const history = await getJson(server.port, "/api/messages?with=Alice", bobToken);
     assert.equal(history.response.status, 200);
     assert.equal(history.json.peer.publicKey, SAMPLE_BUNDLES.Alice.publicKey);
     assert.equal(history.json.messages.length, 7);
-    assert.equal(history.json.messages[0].text, "Hello Bob");
+    assert.equal(history.json.messages[0].ciphertext, firstEncrypted.ciphertext);
     assert.deepEqual(
-      history.json.messages.slice(1).map((item) => item.text).sort(),
-      bulkPayloads.map((item) => item.text).sort()
+      history.json.messages.slice(1).map((item) => item.ciphertext).sort(),
+      bulkPayloads.map((item) => item.ciphertext).sort()
     );
+
+    const page1 = await getJson(server.port, "/api/messages?with=Alice&limit=3", bobToken);
+    assert.equal(page1.response.status, 200);
+    assert.equal(page1.json.messages.length, 3);
+    assert.equal(page1.json.hasMore, true);
+    assert.ok(page1.json.nextBefore);
+
+    const page2 = await getJson(
+      server.port,
+      `/api/messages?with=Alice&limit=3&before=${encodeURIComponent(page1.json.nextBefore)}`,
+      bobToken
+    );
+    assert.equal(page2.response.status, 200);
+    assert.equal(page2.json.messages.length, 3);
+    assert.equal(page2.json.hasMore, true);
+    assert.ok(page2.json.nextBefore);
+
+    const page3 = await getJson(
+      server.port,
+      `/api/messages?with=Alice&limit=3&before=${encodeURIComponent(page2.json.nextBefore)}`,
+      bobToken
+    );
+    assert.equal(page3.response.status, 200);
+    assert.equal(page3.json.messages.length, 1);
+    assert.equal(page3.json.hasMore, false);
 
     bobEvents.close();
     await delay(80);
+    const disconnectedPayload = makeEncryptedPayload(120);
     const missed = await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        text: "missed while disconnected"
+        nonce: disconnectedPayload.nonce,
+        ciphertext: disconnectedPayload.ciphertext
       },
       aliceToken
     );
     assert.equal(missed.status, 201);
 
-    const bobEventsAfterReconnect = openEvents(server.port, bobToken);
+    const bobEventsAfterReconnect = await openEvents(server.port, bobToken);
     await bobEventsAfterReconnect.ready;
+    const reconnectPayload = makeEncryptedPayload(121);
     await postJson(
       server.port,
       "/api/messages",
       {
         to: "Bob",
-        text: "after reconnect"
+        nonce: reconnectPayload.nonce,
+        ciphertext: reconnectPayload.ciphertext
       },
       aliceToken
     );
     const postReconnect = await waitForEvent(
       bobEventsAfterReconnect,
       "message",
-      (payload) => payload.text === "after reconnect"
+      (payload) => payload.ciphertext === reconnectPayload.ciphertext
     );
     assert.equal(postReconnect.from, "Alice");
 
     const historyAfterReconnect = await getJson(server.port, "/api/messages?with=Alice", bobToken);
     assert.equal(historyAfterReconnect.response.status, 200);
     assert.ok(
-      historyAfterReconnect.json.messages.some((item) => item.text === "missed while disconnected")
+      historyAfterReconnect.json.messages.some((item) => item.ciphertext === disconnectedPayload.ciphertext)
     );
     bobEventsAfterReconnect.close();
 
@@ -375,7 +446,8 @@ test("private messaging accepts plaintext and returns readable messages", async 
     assert.equal(conversations.json.conversations.length, 1);
     assert.equal(conversations.json.conversations[0].username, "Bob");
     assert.equal(conversations.json.conversations[0].publicKey, SAMPLE_BUNDLES.Bob.publicKey);
-    assert.equal(conversations.json.conversations[0].latestMessage.text, "after reconnect");
+    assert.equal(conversations.json.conversations[0].latestMessage.text, null);
+    assert.equal(conversations.json.conversations[0].latestMessage.ciphertext, reconnectPayload.ciphertext);
   } finally {
     await server.stop();
   }
@@ -399,6 +471,239 @@ test("session expires and is rejected after ttl", async () => {
     const me = await getJson(server.port, "/api/me", token);
     assert.equal(me.response.status, 401);
     assert.equal(me.json.error, "session expired");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("per-conversation message rate limit returns 429 when exceeded", async () => {
+  const server = await startServer({ MAX_MESSAGES_PER_CONVERSATION_WINDOW: "2" });
+
+  try {
+    const aliceRegister = await postJson(server.port, "/api/register", {
+      username: "AliceL",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 11).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 12).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 13).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 14).toString("base64")
+    });
+    const bobRegister = await postJson(server.port, "/api/register", {
+      username: "BobL",
+      password: "world123",
+      publicKey: Buffer.alloc(65, 15).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 16).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 17).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 18).toString("base64")
+    });
+
+    const aliceToken = (await aliceRegister.json()).token;
+    await bobRegister.json();
+
+    const first = await postJson(server.port, "/api/messages", { to: "BobL", ...makeEncryptedPayload(31) }, aliceToken);
+    const second = await postJson(server.port, "/api/messages", { to: "BobL", ...makeEncryptedPayload(32) }, aliceToken);
+    const third = await postJson(server.port, "/api/messages", { to: "BobL", ...makeEncryptedPayload(33) }, aliceToken);
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 201);
+    assert.equal(third.status, 429);
+    assert.equal((await third.json()).error, "too many messages sent");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin can login, view stats/messages and ban users", async () => {
+  const server = await startServer();
+
+  try {
+    const aliceRegister = await postJson(server.port, "/api/register", {
+      username: "AdminA",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 41).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 42).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 43).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 44).toString("base64")
+    });
+    const bobRegister = await postJson(server.port, "/api/register", {
+      username: "AdminB",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 45).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 46).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 47).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 48).toString("base64")
+    });
+    const aliceToken = (await aliceRegister.json()).token;
+    await bobRegister.json();
+
+    const message = await postJson(
+      server.port,
+      "/api/messages",
+      { to: "AdminB", text: "admin-visible-text", ...makeEncryptedPayload(52) },
+      aliceToken
+    );
+    assert.equal(message.status, 201);
+
+    const adminLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(adminLogin.status, 200);
+    const adminToken = (await adminLogin.json()).token;
+    assert.ok(adminToken);
+
+    const stats = await getJson(server.port, "/api/admin/stats", adminToken);
+    assert.equal(stats.response.status, 200);
+    assert.ok(stats.json.stats.users >= 2);
+    assert.ok(stats.json.stats.messages >= 1);
+
+    const users = await getJson(server.port, "/api/admin/users", adminToken);
+    assert.equal(users.response.status, 200);
+    assert.ok(users.json.users.some((item) => item.username === "AdminA"));
+
+    const allMessages = await getJson(server.port, "/api/admin/messages?limit=20&mask=0", adminToken);
+    assert.equal(allMessages.response.status, 200);
+    assert.ok(allMessages.json.messages.some((item) => item.auditText === "admin-visible-text"));
+
+    const banResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/AdminA`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ banned: true, bannedReason: "test-ban" })
+    });
+    assert.equal(banResponse.status, 200);
+
+    const blockedLogin = await postJson(server.port, "/api/login", {
+      username: "AdminA",
+      password: "pass1234"
+    });
+    assert.equal(blockedLogin.status, 403);
+    assert.equal((await blockedLogin.json()).error, "account banned");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin roles enforce permissions and readonly cannot mutate", async () => {
+  const server = await startServer({
+    ADMIN_ACCOUNTS: "root:rootpass:superadmin,op:oppass:operator,ro:ropass:readonly"
+  });
+
+  try {
+    const register = await postJson(server.port, "/api/register", {
+      username: "RoleU1",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 71).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 72).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 73).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 74).toString("base64")
+    });
+    assert.equal(register.status, 201);
+
+    const roLogin = await postJson(server.port, "/api/admin/login", { username: "ro", password: "ropass" });
+    assert.equal(roLogin.status, 200);
+    const roToken = (await roLogin.json()).token;
+
+    const roPatch = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/RoleU1`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${roToken}`
+      },
+      body: JSON.stringify({ banned: true, bannedReason: "nope" })
+    });
+    assert.equal(roPatch.status, 403);
+
+    const roAudit = await getJson(server.port, "/api/admin/audit?limit=20", roToken);
+    assert.equal(roAudit.response.status, 200);
+
+    const opLogin = await postJson(server.port, "/api/admin/login", { username: "op", password: "oppass" });
+    assert.equal(opLogin.status, 200);
+    const opToken = (await opLogin.json()).token;
+
+    const opAudit = await fetch(`http://127.0.0.1:${server.port}/api/admin/audit?limit=20`, {
+      headers: { Authorization: `Bearer ${opToken}` }
+    });
+    assert.equal(opAudit.status, 403);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin user pagination, batch ban and event ticket blocking work", async () => {
+  const server = await startServer();
+  try {
+    const usersToCreate = ["BatchA", "BatchB", "BatchC"];
+    const userTokens = {};
+    for (let i = 0; i < usersToCreate.length; i += 1) {
+      const username = usersToCreate[i];
+      const register = await postJson(server.port, "/api/register", {
+        username,
+        password: "pass1234",
+        publicKey: Buffer.alloc(65, 81 + i).toString("base64"),
+        privateKeySalt: Buffer.alloc(16, 91 + i).toString("base64"),
+        privateKeyIv: Buffer.alloc(12, 101 + i).toString("base64"),
+        encryptedPrivateKey: Buffer.alloc(160, 111 + i).toString("base64")
+      });
+      assert.equal(register.status, 201);
+      userTokens[username] = (await register.json()).token;
+    }
+    const ticketBeforeBan = await postJson(server.port, "/api/events/token", {}, userTokens.BatchA);
+    assert.equal(ticketBeforeBan.status, 200);
+    const ticketValue = (await ticketBeforeBan.json()).ticket;
+
+    const adminLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    const adminToken = (await adminLogin.json()).token;
+
+    const page1 = await getJson(server.port, "/api/admin/users?limit=2&page=1&sort=username&order=asc", adminToken);
+    assert.equal(page1.response.status, 200);
+    assert.equal(page1.json.limit, 2);
+    assert.ok(page1.json.total >= 3);
+    assert.equal(page1.json.users.length, 2);
+
+    const batchResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/batch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ usernames: ["BatchA", "BatchB"], banned: true, bannedReason: "batch-test" })
+    });
+    assert.equal(batchResponse.status, 200);
+    const batchPayload = await batchResponse.json();
+    assert.equal(batchPayload.updated, 2);
+
+    const bannedOnly = await getJson(server.port, "/api/admin/users?status=banned&q=batch", adminToken);
+    assert.equal(bannedOnly.response.status, 200);
+    assert.ok(bannedOnly.json.users.length >= 2);
+
+    const loginBlocked = await postJson(server.port, "/api/login", {
+      username: "BatchA",
+      password: "pass1234"
+    });
+    assert.equal(loginBlocked.status, 403);
+
+    const oldTicketBlocked = await fetch(
+      `http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(ticketValue)}`
+    );
+    assert.ok([401, 403].includes(oldTicketBlocked.status));
+
+    const bannedToken = userTokens.BatchA;
+    const ticketResponse = await postJson(server.port, "/api/events/token", {}, bannedToken);
+    assert.ok([401, 403].includes(ticketResponse.status));
+
+    const exportResponse = await getJson(
+      server.port,
+      "/api/admin/messages/export?reason=investigation&from=BatchA",
+      adminToken
+    );
+    assert.equal(exportResponse.response.status, 200);
+    assert.ok(String(exportResponse.json.content || "").includes("EXPORT WATERMARK"));
   } finally {
     await server.stop();
   }

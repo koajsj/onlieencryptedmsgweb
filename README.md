@@ -88,6 +88,8 @@ Environment=HOST=127.0.0.1
 Environment=PORT=3000
 Environment=TRUST_PROXY=1
 Environment=TRUSTED_ORIGINS=https://257823.xyz,https://www.257823.xyz
+Environment=MAX_MESSAGES_PER_CONVERSATION_WINDOW=60
+Environment=HSTS_MAX_AGE_SECONDS=31536000
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5
@@ -96,6 +98,23 @@ Group=www-data
 
 [Install]
 WantedBy=multi-user.target
+```
+
+推荐环境变量（用于生产）：
+
+```ini
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=TRUST_PROXY=1
+Environment=TRUSTED_ORIGINS=https://257823.xyz,https://www.257823.xyz
+Environment=SESSION_TTL_MS=604800000
+Environment=MAX_MESSAGES_PER_CONVERSATION_WINDOW=60
+Environment=MESSAGE_PERSIST_DEBOUNCE_MS=180
+Environment=HSTS_MAX_AGE_SECONDS=31536000
+Environment=ADMIN_USERNAME=你的管理员账号
+Environment=ADMIN_PASSWORD=你的管理员密码
+Environment=ADMIN_ACCOUNTS=superadmin账号:密码:superadmin,operator账号:密码:operator,readonly账号:密码:readonly
+Environment=AUDIT_TEXT_RETENTION_DAYS=30
 ```
 
 启动并设为开机自启：
@@ -165,6 +184,15 @@ systemctl status secure-chat --no-pager
 就这么简单。
 
 如果你只改了前端静态文件，也建议照样跑一遍 `npm run build`，避免线上文件不是最新压缩版本。
+现在 `npm start` 会自动检查构建产物是否过期；如果报错，先执行 `npm run build` 再启动。
+
+---
+
+## 2.1 会话恢复说明（新）
+
+- 页面刷新后会尝试恢复登录 token。
+- 为了继续解密历史消息，页面会要求你再输入一次密码来解锁本地私钥。
+- 如果取消输入密码，会清理本地 token 并回到登录页。
 
 ---
 
@@ -200,3 +228,11 @@ ss -lntp | grep 3000
 
 - 第一次部署：装环境 -> 拉代码 -> build -> systemd 启服务 -> Caddy 绑域名和 HTTPS。
 - 日常更新：`git pull` -> `npm install` -> `npm run build` -> `systemctl restart`。
+
+---
+
+## 5. 后台管理员入口
+
+- 后台地址：`https://你的域名/admin.html`
+- 账号密码：由服务器环境变量 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 控制
+- 支持：站点统计、用户列表筛选分页、批量封禁/解封、改用户名、改密码、查看全站聊天审计、审计日志链路、水印导出。

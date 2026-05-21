@@ -6,3 +6,4 @@ npm-debug.log*
 Thumbs.db
 data/users.json
 data/messages.json
+data/message-key.json

@@ -1,0 +1,567 @@
+﻿"use strict";
+
+const STORAGE_KEY = "private-chat-admin-token";
+
+const elements = {
+  loginCard: document.querySelector("#loginCard"),
+  loginForm: document.querySelector("#loginForm"),
+  usernameInput: document.querySelector("#usernameInput"),
+  passwordInput: document.querySelector("#passwordInput"),
+  dashboard: document.querySelector("#dashboard"),
+  adminMeta: document.querySelector("#adminMeta"),
+  refreshButton: document.querySelector("#refreshButton"),
+  logoutButton: document.querySelector("#logoutButton"),
+  statsGrid: document.querySelector("#statsGrid"),
+  userSearchInput: document.querySelector("#userSearchInput"),
+  userStatusSelect: document.querySelector("#userStatusSelect"),
+  userSortSelect: document.querySelector("#userSortSelect"),
+  applyUserFilterButton: document.querySelector("#applyUserFilterButton"),
+  selectAllUsers: document.querySelector("#selectAllUsers"),
+  batchBanButton: document.querySelector("#batchBanButton"),
+  batchUnbanButton: document.querySelector("#batchUnbanButton"),
+  usersPager: document.querySelector("#usersPager"),
+  prevUsersPageButton: document.querySelector("#prevUsersPageButton"),
+  nextUsersPageButton: document.querySelector("#nextUsersPageButton"),
+  usersTbody: document.querySelector("#usersTbody"),
+  msgFromInput: document.querySelector("#msgFromInput"),
+  msgToInput: document.querySelector("#msgToInput"),
+  msgKeywordInput: document.querySelector("#msgKeywordInput"),
+  msgMaskCheckbox: document.querySelector("#msgMaskCheckbox"),
+  applyMsgFilterButton: document.querySelector("#applyMsgFilterButton"),
+  loadMoreMessagesButton: document.querySelector("#loadMoreMessagesButton"),
+  exportReasonInput: document.querySelector("#exportReasonInput"),
+  exportMessagesButton: document.querySelector("#exportMessagesButton"),
+  messagesList: document.querySelector("#messagesList"),
+  refreshAuditButton: document.querySelector("#refreshAuditButton"),
+  auditList: document.querySelector("#auditList"),
+  toast: document.querySelector("#toast")
+};
+
+const ROLE_PERMISSIONS = {
+  superadmin: new Set(["admin:read", "admin:user:update", "admin:user:batch", "admin:messages:read", "admin:messages:export", "admin:audit:read"]),
+  operator: new Set(["admin:read", "admin:user:update", "admin:user:batch", "admin:messages:read", "admin:messages:export"]),
+  readonly: new Set(["admin:read", "admin:messages:read", "admin:audit:read"])
+};
+
+const state = {
+  token: localStorage.getItem(STORAGE_KEY) || "",
+  admin: { username: "", role: "readonly" },
+  stats: {},
+  users: [],
+  usersPage: 1,
+  usersLimit: 30,
+  usersTotal: 0,
+  selectedUsers: new Set(),
+  messages: [],
+  hasMoreMessages: false,
+  nextBefore: "",
+  loadingMessages: false,
+  logs: []
+};
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function hasPermission(permission) {
+  const grants = ROLE_PERMISSIONS[state.admin.role] || new Set();
+  return grants.has(permission);
+}
+
+function showToast(message) {
+  elements.toast.textContent = message;
+  elements.toast.classList.add("show");
+  window.setTimeout(() => elements.toast.classList.remove("show"), 2200);
+}
+
+async function api(pathname, options = {}) {
+  const headers = { Accept: "application/json", ...(options.headers || {}) };
+  if (state.token) {
+    headers.Authorization = `Bearer ${state.token}`;
+  }
+  let body = options.body;
+  if (body && !(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
+  const response = await fetch(pathname, { method: options.method || "GET", headers, body });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload?.error || `request failed: ${response.status}`);
+  }
+  return payload;
+}
+
+function setLoggedIn(loggedIn) {
+  elements.loginCard.hidden = loggedIn;
+  elements.dashboard.hidden = !loggedIn;
+}
+
+function formatDateTime(value) {
+  if (!value) {
+    return "-";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function parseSortValue() {
+  const raw = String(elements.userSortSelect.value || "username:asc");
+  const [sort, order] = raw.split(":");
+  return {
+    sort: sort || "username",
+    order: order === "desc" ? "desc" : "asc"
+  };
+}
+
+function renderStats() {
+  const stats = state.stats;
+  const items = [
+    ["总用户", stats.users || 0],
+    ["封禁用户", stats.bannedUsers || 0],
+    ["在线用户", stats.onlineUsers || 0],
+    ["会话数", stats.sessions || 0],
+    ["消息总量", stats.messages || 0],
+    ["24h消息", stats.messages24h || 0]
+  ];
+  elements.statsGrid.textContent = "";
+  for (const [label, value] of items) {
+    const card = document.createElement("article");
+    card.className = "stat-card";
+    card.innerHTML = `<h4>${label}</h4><strong>${value}</strong>`;
+    elements.statsGrid.append(card);
+  }
+}
+
+function renderUsers() {
+  elements.usersTbody.textContent = "";
+  for (const user of state.users) {
+    const tr = document.createElement("tr");
+    const checked = state.selectedUsers.has(user.username) ? "checked" : "";
+    const status = user.banned ? `封禁 (${user.bannedReason || "无原因"})` : "正常";
+    const safeUsername = escapeHtml(user.username);
+    const safeStatus = escapeHtml(status);
+    tr.innerHTML = `
+      <td><input type="checkbox" data-select-user="${safeUsername}" ${checked} /></td>
+      <td>${safeUsername}</td>
+      <td>${safeStatus}</td>
+      <td>${formatDateTime(user.createdAt)}</td>
+      <td class="actions">
+        <button class="tiny ${user.banned ? "ok" : "danger"}" data-action="ban" data-username="${safeUsername}" ${hasPermission("admin:user:update") ? "" : "disabled"}>${user.banned ? "解封" : "封禁"}</button>
+        <button class="tiny" data-action="rename" data-username="${safeUsername}" ${hasPermission("admin:user:update") ? "" : "disabled"}>改名</button>
+        <button class="tiny" data-action="password" data-username="${safeUsername}" ${hasPermission("admin:user:update") ? "" : "disabled"}>改密</button>
+      </td>
+    `;
+    elements.usersTbody.append(tr);
+  }
+  const totalPages = Math.max(1, Math.ceil(state.usersTotal / state.usersLimit));
+  elements.usersPager.textContent = `第 ${state.usersPage}/${totalPages} 页，共 ${state.usersTotal} 条`;
+  elements.prevUsersPageButton.disabled = state.usersPage <= 1;
+  elements.nextUsersPageButton.disabled = state.usersPage >= totalPages;
+  elements.batchBanButton.disabled = !hasPermission("admin:user:batch");
+  elements.batchUnbanButton.disabled = !hasPermission("admin:user:batch");
+}
+
+function renderMessages() {
+  elements.messagesList.textContent = "";
+  for (const message of state.messages) {
+    const article = document.createElement("article");
+    article.className = "msg-item";
+    const text = message.auditText || "(无可见审计文本)";
+    article.innerHTML = `
+      <div class="msg-meta">
+        <span>${message.from} -> ${message.to}</span>
+        <span>${formatDateTime(message.createdAt)}</span>
+      </div>
+      <div class="msg-text"></div>
+    `;
+    article.querySelector(".msg-text").textContent = text;
+    elements.messagesList.append(article);
+  }
+  elements.loadMoreMessagesButton.disabled = !state.hasMoreMessages || state.loadingMessages;
+}
+
+function renderAuditLogs() {
+  if (!hasPermission("admin:audit:read")) {
+    elements.auditList.parentElement.hidden = true;
+    return;
+  }
+  elements.auditList.parentElement.hidden = false;
+  elements.auditList.textContent = "";
+  for (const item of state.logs) {
+    const article = document.createElement("article");
+    article.className = "msg-item";
+    article.innerHTML = `
+      <div class="msg-meta">
+        <span>${item.action} | ${item.actor} (${item.role})</span>
+        <span>${formatDateTime(item.at)}</span>
+      </div>
+      <div class="msg-text"></div>
+    `;
+    article.querySelector(".msg-text").textContent = JSON.stringify(item.details || {}, null, 2);
+    elements.auditList.append(article);
+  }
+}
+
+async function loadStats() {
+  if (!hasPermission("admin:read")) {
+    return;
+  }
+  const payload = await api("/api/admin/stats");
+  state.stats = payload.stats || {};
+  renderStats();
+}
+
+async function loadUsers() {
+  if (!hasPermission("admin:read")) {
+    return;
+  }
+  const { sort, order } = parseSortValue();
+  const q = encodeURIComponent(String(elements.userSearchInput.value || "").trim());
+  const status = encodeURIComponent(String(elements.userStatusSelect.value || "all"));
+  const payload = await api(`/api/admin/users?q=${q}&status=${status}&sort=${sort}&order=${order}&page=${state.usersPage}&limit=${state.usersLimit}`);
+  state.users = payload.users || [];
+  state.usersTotal = Number(payload.total || 0);
+  state.usersPage = Number(payload.page || state.usersPage);
+  state.usersLimit = Number(payload.limit || state.usersLimit);
+  const available = new Set(state.users.map((user) => user.username));
+  state.selectedUsers = new Set([...state.selectedUsers].filter((name) => available.has(name)));
+  renderUsers();
+}
+
+function messageFilterQuery(reset) {
+  const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
+  const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
+  const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
+  const mask = elements.msgMaskCheckbox.checked ? "1" : "0";
+  const before = !reset && state.nextBefore ? `&before=${encodeURIComponent(state.nextBefore)}` : "";
+  return `/api/admin/messages?limit=120&from=${from}&to=${to}&q=${q}&mask=${mask}${before}`;
+}
+
+async function loadMessages(reset = false) {
+  if (!hasPermission("admin:messages:read") || state.loadingMessages) {
+    return;
+  }
+  state.loadingMessages = true;
+  try {
+    const payload = await api(messageFilterQuery(reset));
+    const rows = payload.messages || [];
+    state.messages = reset ? rows : [...rows, ...state.messages];
+    state.hasMoreMessages = Boolean(payload.hasMore);
+    state.nextBefore = String(payload.nextBefore || "");
+  } finally {
+    state.loadingMessages = false;
+    renderMessages();
+  }
+}
+
+async function loadAuditLogs() {
+  if (!hasPermission("admin:audit:read")) {
+    state.logs = [];
+    renderAuditLogs();
+    return;
+  }
+  const payload = await api("/api/admin/audit?limit=160");
+  state.logs = payload.logs || [];
+  renderAuditLogs();
+}
+
+async function refreshAll(resetMessages = true) {
+  await Promise.all([loadStats(), loadUsers(), loadAuditLogs()]);
+  await loadMessages(resetMessages);
+}
+
+async function login(username, password) {
+  const payload = await api("/api/admin/login", {
+    method: "POST",
+    body: { username, password }
+  });
+  state.token = payload.token || "";
+  state.admin = {
+    username: payload.admin?.username || "管理员",
+    role: payload.admin?.role || "readonly"
+  };
+  localStorage.setItem(STORAGE_KEY, state.token);
+  elements.adminMeta.textContent = `${state.admin.username} | ${state.admin.role}`;
+  setLoggedIn(true);
+  await refreshAll(true);
+}
+
+async function logout() {
+  try {
+    await api("/api/admin/logout", { method: "POST" });
+  } catch (error) {
+    // ignore
+  }
+  state.token = "";
+  state.admin = { username: "", role: "readonly" };
+  localStorage.removeItem(STORAGE_KEY);
+  setLoggedIn(false);
+}
+
+async function patchUser(username, body) {
+  await api(`/api/admin/users/${encodeURIComponent(username)}`, {
+    method: "PATCH",
+    body
+  });
+  await Promise.all([loadUsers(), loadStats(), loadAuditLogs()]);
+  showToast("用户修改成功");
+}
+
+async function batchUsers(banned) {
+  const usernames = [...state.selectedUsers];
+  if (usernames.length === 0) {
+    showToast("请先勾选用户");
+    return;
+  }
+  const reason = banned ? window.prompt("批量封禁原因", "admin batch action") || "admin batch action" : "";
+  await api("/api/admin/users/batch", {
+    method: "POST",
+    body: { usernames, banned, bannedReason: reason }
+  });
+  await Promise.all([loadUsers(), loadStats(), loadAuditLogs()]);
+  showToast(`已更新 ${usernames.length} 个用户`);
+}
+
+async function exportMessages() {
+  if (!hasPermission("admin:messages:export")) {
+    return;
+  }
+  const reason = String(elements.exportReasonInput.value || "").trim();
+  if (!reason) {
+    showToast("请填写导出原因");
+    return;
+  }
+  const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
+  const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
+  const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
+  const payload = await api(`/api/admin/messages/export?reason=${encodeURIComponent(reason)}&from=${from}&to=${to}&q=${q}`);
+  const blob = new Blob([String(payload.content || "")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = String(payload.filename || `admin-export-${Date.now()}.txt`);
+  document.body.append(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast("导出完成");
+  await loadAuditLogs();
+}
+
+async function handleUserAction(event) {
+  const selectCheckbox = event.target.closest("input[data-select-user]");
+  if (selectCheckbox) {
+    const username = String(selectCheckbox.dataset.selectUser || "");
+    if (selectCheckbox.checked) {
+      state.selectedUsers.add(username);
+    } else {
+      state.selectedUsers.delete(username);
+    }
+    return;
+  }
+
+  const button = event.target.closest("button[data-action]");
+  if (!button) {
+    return;
+  }
+  const username = String(button.dataset.username || "");
+  const action = String(button.dataset.action || "");
+  const user = state.users.find((item) => item.username === username);
+  if (!user) {
+    return;
+  }
+  try {
+    if (action === "ban") {
+      if (user.banned) {
+        await patchUser(username, { banned: false });
+      } else {
+        const reason = window.prompt("封禁原因（可选）", "admin action") || "admin action";
+        await patchUser(username, { banned: true, bannedReason: reason });
+      }
+      return;
+    }
+    if (action === "rename") {
+      const nextName = window.prompt("新用户名（3-24 字母数字下划线）", user.username);
+      if (!nextName || nextName === user.username) {
+        return;
+      }
+      await patchUser(username, { username: nextName });
+      return;
+    }
+    if (action === "password") {
+      const nextPassword = window.prompt("新密码（4-72位）");
+      if (!nextPassword) {
+        return;
+      }
+      await patchUser(username, { password: nextPassword });
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function bindEvents() {
+  elements.loginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await login(String(elements.usernameInput.value || "").trim(), String(elements.passwordInput.value || ""));
+      showToast("登录成功");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.logoutButton.addEventListener("click", async () => {
+    await logout();
+    showToast("已退出");
+  });
+
+  elements.refreshButton.addEventListener("click", async () => {
+    try {
+      await refreshAll(true);
+      showToast("已刷新");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.applyUserFilterButton.addEventListener("click", async () => {
+    state.usersPage = 1;
+    try {
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.prevUsersPageButton.addEventListener("click", async () => {
+    if (state.usersPage <= 1) {
+      return;
+    }
+    state.usersPage -= 1;
+    try {
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.nextUsersPageButton.addEventListener("click", async () => {
+    const totalPages = Math.max(1, Math.ceil(state.usersTotal / state.usersLimit));
+    if (state.usersPage >= totalPages) {
+      return;
+    }
+    state.usersPage += 1;
+    try {
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.selectAllUsers.addEventListener("change", () => {
+    if (elements.selectAllUsers.checked) {
+      for (const user of state.users) {
+        state.selectedUsers.add(user.username);
+      }
+    } else {
+      for (const user of state.users) {
+        state.selectedUsers.delete(user.username);
+      }
+    }
+    renderUsers();
+  });
+
+  elements.batchBanButton.addEventListener("click", async () => {
+    try {
+      await batchUsers(true);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.batchUnbanButton.addEventListener("click", async () => {
+    try {
+      await batchUsers(false);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.usersTbody.addEventListener("click", (event) => {
+    void handleUserAction(event);
+  });
+
+  elements.applyMsgFilterButton.addEventListener("click", async () => {
+    try {
+      await loadMessages(true);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.loadMoreMessagesButton.addEventListener("click", async () => {
+    try {
+      await loadMessages(false);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.exportMessagesButton.addEventListener("click", async () => {
+    try {
+      await exportMessages();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.refreshAuditButton.addEventListener("click", async () => {
+    try {
+      await loadAuditLogs();
+      showToast("审计日志已刷新");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
+function syncPermissionUi() {
+  if (!hasPermission("admin:user:update")) {
+    elements.batchBanButton.disabled = true;
+    elements.batchUnbanButton.disabled = true;
+  }
+  if (!hasPermission("admin:messages:export")) {
+    elements.exportMessagesButton.disabled = true;
+    elements.exportReasonInput.disabled = true;
+  }
+}
+
+async function boot() {
+  bindEvents();
+  if (!state.token) {
+    setLoggedIn(false);
+    return;
+  }
+  try {
+    const payload = await api("/api/admin/me");
+    state.admin = {
+      username: payload.admin?.username || "管理员",
+      role: payload.admin?.role || "readonly"
+    };
+    elements.adminMeta.textContent = `${state.admin.username} | ${state.admin.role}`;
+    setLoggedIn(true);
+    syncPermissionUi();
+    await refreshAll(true);
+  } catch (error) {
+    state.token = "";
+    localStorage.removeItem(STORAGE_KEY);
+    setLoggedIn(false);
+  }
+}
+
+void boot();
