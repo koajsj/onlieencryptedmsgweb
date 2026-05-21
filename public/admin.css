@@ -56,7 +56,7 @@ body {
 .login-card {
   width: min(460px, 100%);
   margin: max(10vh, 78px) auto 0;
-  padding: 30px 28px 24px;
+  padding: 34px 30px 28px;
   background: linear-gradient(165deg, var(--card-strong), rgba(255, 255, 255, 0.82));
   animation: card-in 420ms ease;
 }
@@ -76,11 +76,17 @@ body {
 }
 
 .login-card h1 {
-  margin: 14px 0 16px;
+  margin: 14px 0 10px;
   font-family: var(--font-display);
   font-size: clamp(28px, 4vw, 34px);
   line-height: 1.1;
   letter-spacing: 0.01em;
+}
+
+.login-copy {
+  margin: 0 0 18px;
+  color: var(--muted);
+  line-height: 1.6;
 }
 
 .login-card form {
@@ -157,7 +163,7 @@ button:disabled {
 
 .dashboard {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   animation: board-in 420ms ease;
 }
 
@@ -166,7 +172,9 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   padding: 14px 16px;
-  background: var(--card);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(244, 248, 248, 0.96)),
+    var(--card);
 }
 
 .topbar-copy {
@@ -253,7 +261,10 @@ button:disabled {
 
 .panel {
   padding: 14px;
-  background: var(--card);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 251, 0.95)),
+    var(--card);
+  overflow: hidden;
 }
 
 .panel-head {
@@ -261,7 +272,8 @@ button:disabled {
   justify-content: space-between;
   align-items: flex-end;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .panel-head h3 {
@@ -282,7 +294,7 @@ button:disabled {
 
 .filters input,
 .filters select {
-  min-width: 130px;
+  min-width: 140px;
 }
 
 .mask-toggle {
@@ -297,7 +309,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .batch-bar #usersPager {
@@ -374,13 +386,13 @@ td.actions {
   border: 1px dashed var(--line);
   border-radius: 12px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.64);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(248, 251, 251, 0.86));
   text-align: center;
 }
 
 .msg-item {
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 10px;
   background: rgba(255, 255, 255, 0.82);
 }

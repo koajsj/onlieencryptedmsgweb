@@ -6,8 +6,7 @@ const STORAGE = {
   authMode: "private-chat-auth-mode",
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
-  pendingOutbox: "private-chat-pending-outbox",
-  showArchived: "private-chat-show-archived"
+  pendingOutbox: "private-chat-pending-outbox"
 };
 
 const AVATAR_TONES = 6;
@@ -44,7 +43,6 @@ const elements = {
   mobileBackButton: document.querySelector("#mobileBackButton"),
   pinPeerButton: document.querySelector("#pinPeerButton"),
   mutePeerButton: document.querySelector("#mutePeerButton"),
-  archivePeerButton: document.querySelector("#archivePeerButton"),
   exportPeerButton: document.querySelector("#exportPeerButton"),
   peerAvatar: document.querySelector("#peerAvatar"),
   peerName: document.querySelector("#peerName"),
@@ -89,8 +87,7 @@ const state = {
   toastTimer: 0,
   openConversationRequest: 0,
   conversationPrefs: {},
-  drafts: {},
-  showArchived: localStorage.getItem(STORAGE.showArchived) === "1"
+  drafts: {}
 };
 
 function readJsonStorage(key, fallback) {
@@ -227,7 +224,18 @@ function base64ToBytes(value) {
 }
 
 function resetLocalConversationState() {
-  state.conversationPrefs = readJsonStorage(STORAGE.conversationPrefs, {});
+  const rawPrefs = readJsonStorage(STORAGE.conversationPrefs, {});
+  const normalizedPrefs = {};
+  for (const [username, prefs] of Object.entries(rawPrefs)) {
+    if (!username) {
+      continue;
+    }
+    normalizedPrefs[username] = {
+      pinned: Boolean(prefs?.pinned),
+      muted: Boolean(prefs?.muted)
+    };
+  }
+  state.conversationPrefs = normalizedPrefs;
   state.drafts = readJsonStorage(STORAGE.drafts, {});
   loadPendingOutbox();
 }
@@ -347,13 +355,12 @@ function pendingOutboxForPeer(peer) {
 
 function peerPrefs(username) {
   if (!username) {
-    return { pinned: false, muted: false, archived: false };
+    return { pinned: false, muted: false };
   }
   const prefs = state.conversationPrefs[username];
   return {
     pinned: Boolean(prefs?.pinned),
-    muted: Boolean(prefs?.muted),
-    archived: Boolean(prefs?.archived)
+    muted: Boolean(prefs?.muted)
   };
 }
 
@@ -361,11 +368,16 @@ function updatePeerPrefs(username, patch) {
   if (!username) {
     return;
   }
+  const current = peerPrefs(username);
   const next = {
-    ...peerPrefs(username),
+    pinned: Boolean(current.pinned),
+    muted: Boolean(current.muted),
     ...patch
   };
-  state.conversationPrefs[username] = next;
+  state.conversationPrefs[username] = {
+    pinned: Boolean(next.pinned),
+    muted: Boolean(next.muted)
+  };
   saveConversationPrefs();
 }
 
@@ -380,8 +392,8 @@ function setAuthMode(mode) {
   elements.authSubmitButton.textContent = state.authMode === "login" ? "登录" : "注册";
   elements.authTip.textContent =
     state.authMode === "login"
-      ? "输入用户名和密码即可，其余流程全部自动完成。"
-      : "注册时会自动生成并保存密钥，后续聊天全程自动加密。";
+      ? "输入用户名和密码即可，进入后直接打开聊天，不再额外弹出解锁窗口。"
+      : "注册时会自动生成密钥，后续聊天全程自动加密。";
   elements.authPasswordInput.autocomplete = state.authMode === "login" ? "current-password" : "new-password";
 }
 
@@ -710,11 +722,9 @@ function applyThreadActionState(peer) {
   const hasPeer = Boolean(peer);
   elements.pinPeerButton.disabled = !hasPeer;
   elements.mutePeerButton.disabled = !hasPeer;
-  elements.archivePeerButton.disabled = !hasPeer;
   elements.exportPeerButton.disabled = !hasPeer;
   elements.pinPeerButton.textContent = prefs.pinned ? "取消置顶" : "置顶";
   elements.mutePeerButton.textContent = prefs.muted ? "取消静音" : "静音";
-  elements.archivePeerButton.textContent = prefs.archived ? "取消归档" : "归档";
 }
 
 function togglePeerPref(peer, key) {
@@ -725,13 +735,6 @@ function togglePeerPref(peer, key) {
   updatePeerPrefs(peer, { [key]: !prefs[key] });
   sortConversations();
   render();
-}
-
-function toggleArchivedView() {
-  state.showArchived = !state.showArchived;
-  localStorage.setItem(STORAGE.showArchived, state.showArchived ? "1" : "0");
-  renderSidebar();
-  showToast(state.showArchived ? "已显示归档会话" : "已隐藏归档会话");
 }
 
 function exportActiveConversation() {
@@ -791,8 +794,7 @@ function matchConversationSearchScope(conversation, query) {
     sourceLabel: `会话 · ${matchLabel}`,
     searchHint: matchLabel,
     pinned: prefs.pinned,
-    muted: prefs.muted,
-    archived: prefs.archived
+    muted: prefs.muted
   };
 }
 
@@ -809,12 +811,7 @@ function buildLocalSearchResults(query) {
 function renderSidebar() {
   const query = state.searchQuery.trim().toLowerCase();
   const localResults = query ? buildLocalSearchResults(query) : [];
-  const archivedHiddenCount = state.conversations.filter((item) => peerPrefs(item.username).archived).length;
   const conversations = state.conversations.filter((item) => {
-    const prefs = peerPrefs(item.username);
-    if (!state.showArchived && prefs.archived) {
-      return false;
-    }
     if (!query) {
       return true;
     }
@@ -825,7 +822,6 @@ function renderSidebar() {
   });
 
   const visibleCount = conversations.length;
-  const archiveHint = archivedHiddenCount && !state.showArchived ? ` | 已隐藏 ${archivedHiddenCount}` : "";
   const mergedSearchRows = query
     ? (() => {
         const remoteResults = state.searchResults.map((user) => ({
@@ -844,8 +840,8 @@ function renderSidebar() {
       })()
     : [];
   elements.sidebarMeta.textContent = query
-    ? `${visibleCount} 个会话${archiveHint} | ${mergedSearchRows.length} 个匹配`
-    : `${visibleCount} 个会话${archiveHint} | 双击切换归档`;
+    ? `${visibleCount} 个会话 | ${mergedSearchRows.length} 个匹配`
+    : `${visibleCount} 个会话 | 最近活跃优先`;
   elements.searchGroup.hidden = !query;
   elements.conversationList.parentElement.hidden = Boolean(query);
 
@@ -900,9 +896,6 @@ function renderListItem(item, isSearchResult) {
   if (prefs.pinned) {
     button.classList.add("is-pinned");
   }
-  if (prefs.archived) {
-    button.classList.add("is-archived");
-  }
   button.dataset.username = item.username;
 
   const avatar = document.createElement("div");
@@ -927,9 +920,6 @@ function renderListItem(item, isSearchResult) {
   }
   if (prefs.muted) {
     flags.push('<em class="list-flag">静音</em>');
-  }
-  if (prefs.archived) {
-    flags.push('<em class="list-flag">归档</em>');
   }
   if (isSearchResult && item.sourceLabel) {
     flags.push(`<em class="list-flag">${escapeHtml(item.sourceLabel)}</em>`);
@@ -999,9 +989,6 @@ function renderThread(options = {}) {
   }
   if (prefs.muted) {
     statusTags.push("静音");
-  }
-  if (prefs.archived) {
-    statusTags.push("归档");
   }
   const statusSuffix = statusTags.length ? ` | ${statusTags.join(" · ")}` : "";
   elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} | 自动端到端加密${connectionLabel}${statusSuffix}`;
@@ -1962,7 +1949,7 @@ async function afterLogin() {
 
   const savedPeer = localStorage.getItem(STORAGE.activePeer) || "";
   render();
-  if (savedPeer && state.peerKeys.has(savedPeer) && (state.showArchived || !peerPrefs(savedPeer).archived)) {
+  if (savedPeer && state.peerKeys.has(savedPeer)) {
     await openConversation(savedPeer);
   }
 }
@@ -2162,19 +2149,6 @@ function handleThreadActionsClick(action) {
     togglePeerPref(peer, "muted");
     return;
   }
-  if (action === "archive") {
-    const willArchive = !peerPrefs(peer).archived;
-    togglePeerPref(peer, "archived");
-    if (willArchive && !state.showArchived) {
-      closeConversationOnMobile();
-      if (state.activePeer === peer) {
-        state.activePeer = "";
-        localStorage.removeItem(STORAGE.activePeer);
-      }
-      render();
-    }
-    return;
-  }
   if (action === "export") {
     exportActiveConversation();
   }
@@ -2191,11 +2165,6 @@ function handleGlobalKeydown(event) {
   if (isMeta && event.key.toLowerCase() === "e") {
     event.preventDefault();
     exportActiveConversation();
-    return;
-  }
-  if (isMeta && event.shiftKey && event.key.toLowerCase() === "a") {
-    event.preventDefault();
-    toggleArchivedView();
     return;
   }
   if (isMeta && event.key === "Enter") {
@@ -2222,9 +2191,6 @@ function bindEvents() {
   elements.logoutButton.addEventListener("click", () => {
     void logout();
   });
-  elements.sidebarMeta.addEventListener("dblclick", () => {
-    toggleArchivedView();
-  });
   elements.globalSearchInput.addEventListener("input", handleSearchInput);
   elements.conversationList.addEventListener("click", handleListClick);
   elements.searchResultList.addEventListener("click", handleListClick);
@@ -2242,7 +2208,6 @@ function bindEvents() {
   });
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
-  elements.archivePeerButton.addEventListener("click", () => handleThreadActionsClick("archive"));
   elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
   elements.composerForm.addEventListener("submit", (event) => {
     void submitMessage(event);
@@ -2281,33 +2246,8 @@ function bindEvents() {
   });
 }
 
-async function restoreSessionFromStorage() {
-  const token = localStorage.getItem(STORAGE.token);
-  if (!token) {
-    return false;
-  }
-  state.token = token;
-  try {
-    const payload = await api("/api/me/key-bundle", { skipAuthReset: true });
-    const password = window.prompt("请输入密码以解锁本地密钥");
-    if (!password) {
-      clearSession(true, true);
-      showToast("已取消恢复，请重新登录");
-      return false;
-    }
-    const identity = await restoreIdentity(payload.user.username, password, payload.keyBundle);
-    setSession(token, payload.user, identity);
-    await afterLogin();
-    showToast("已恢复登录会话");
-    return true;
-  } catch (error) {
-    clearSession(true, true);
-    return false;
-  }
-}
-
 function boot() {
-  clearStoredSessionArtifacts(false, false);
+  clearStoredSessionArtifacts(true, true);
   setAuthMode(state.authMode);
   bindEvents();
   render();
@@ -2317,8 +2257,6 @@ function boot() {
     elements.authTip.textContent = "当前环境缺少 Web Crypto，请使用 HTTPS 或 localhost 打开本站。";
     return;
   }
-
-  void restoreSessionFromStorage();
 }
 
 boot();
