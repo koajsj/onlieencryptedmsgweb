@@ -66,67 +66,22 @@ npm install
 npm run build
 ```
 
-### 第 5 步：创建 systemd 服务（让它后台常驻）
-
-新建服务文件：
+### 第 5 步：用 PM2 后台运行（精简版）
 
 ```bash
-nano /etc/systemd/system/secure-chat.service
+npm install -g pm2
+pm2 start server.js --name secure-chat
+pm2 save
+pm2 startup
 ```
 
-粘贴下面内容：
+`pm2 startup` 会输出一条命令，复制并执行一次即可开机自启。
 
-```ini
-[Unit]
-Description=Encrypted Chat Web
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/var/www/onlieencryptedmsgweb
-Environment=HOST=127.0.0.1
-Environment=PORT=3000
-Environment=TRUST_PROXY=1
-Environment=TRUSTED_ORIGINS=https://257823.xyz,https://www.257823.xyz
-Environment=MAX_MESSAGES_PER_CONVERSATION_WINDOW=60
-Environment=HSTS_MAX_AGE_SECONDS=31536000
-ExecStart=/usr/bin/node server.js
-Restart=always
-RestartSec=5
-User=www-data
-Group=www-data
-
-[Install]
-WantedBy=multi-user.target
-```
-
-推荐环境变量（用于生产）：
-
-```ini
-Environment=HOST=127.0.0.1
-Environment=PORT=3000
-Environment=TRUST_PROXY=1
-Environment=TRUSTED_ORIGINS=https://257823.xyz,https://www.257823.xyz
-Environment=SESSION_TTL_MS=604800000
-Environment=MAX_MESSAGES_PER_CONVERSATION_WINDOW=60
-Environment=MESSAGE_PERSIST_DEBOUNCE_MS=180
-Environment=HSTS_MAX_AGE_SECONDS=31536000
-Environment=ADMIN_USERNAME=你的管理员账号
-Environment=ADMIN_PASSWORD=你的管理员密码
-Environment=ADMIN_ACCOUNTS=admin账号1:密码1,admin账号2:密码2
-Environment=AUDIT_TEXT_RETENTION_DAYS=30
-```
-
-启动并设为开机自启：
+检查是否运行：
 
 ```bash
-systemctl daemon-reload
-systemctl enable secure-chat
-systemctl start secure-chat
-systemctl status secure-chat
+pm2 status
 ```
-
-如果看到 `active (running)` 就是正常。
 
 ### 第 6 步：配置 Caddy 反向代理 + HTTPS
 
@@ -177,8 +132,8 @@ cd /var/www/onlieencryptedmsgweb
 git pull --ff-only origin main
 npm install
 npm run build
-systemctl restart secure-chat
-systemctl status secure-chat --no-pager
+pm2 restart secure-chat
+pm2 status secure-chat
 ```
 
 就这么简单。
@@ -201,13 +156,13 @@ systemctl status secure-chat --no-pager
 看服务日志：
 
 ```bash
-journalctl -u secure-chat -n 200 --no-pager
+pm2 logs secure-chat --lines 200
 ```
 
 实时看日志：
 
 ```bash
-journalctl -u secure-chat -f
+pm2 logs secure-chat
 ```
 
 看 Caddy 日志：
@@ -226,8 +181,8 @@ ss -lntp | grep 3000
 
 ## 4. 一句话总结
 
-- 第一次部署：装环境 -> 拉代码 -> build -> systemd 启服务 -> Caddy 绑域名和 HTTPS。
-- 日常更新：`git pull` -> `npm install` -> `npm run build` -> `systemctl restart`。
+- 第一次部署：装环境 -> 拉代码 -> build -> PM2 启服务 -> Caddy 绑域名和 HTTPS。
+- 日常更新：`git pull` -> `npm install` -> `npm run build` -> `pm2 restart secure-chat`。
 
 ---
 
