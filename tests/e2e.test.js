@@ -267,6 +267,7 @@ test("private messaging relays ciphertext and enforces encrypted payloads", asyn
       "/api/messages",
       {
         to: "Bob",
+        clientId: "client-msg-1",
         nonce: firstEncrypted.nonce,
         ciphertext: firstEncrypted.ciphertext
       },
@@ -281,6 +282,22 @@ test("private messaging relays ciphertext and enforces encrypted payloads", asyn
     assert.equal(sendBody.message.publicKey, SAMPLE_BUNDLES.Bob.publicKey);
     assert.equal(sendBody.conversation.latestMessage.text, null);
     assert.equal(sendBody.conversation.latestMessage.ciphertext, firstEncrypted.ciphertext);
+
+    const duplicateSend = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        clientId: "client-msg-1",
+        nonce: firstEncrypted.nonce,
+        ciphertext: firstEncrypted.ciphertext
+      },
+      aliceToken
+    );
+    assert.equal(duplicateSend.status, 200);
+    const duplicateBody = await duplicateSend.json();
+    assert.equal(duplicateBody.message.id, sendBody.message.id);
+    assert.equal(duplicateBody.message.clientId, "client-msg-1");
 
     const shortCiphertextMessage = await postJson(
       server.port,

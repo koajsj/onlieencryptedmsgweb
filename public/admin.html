@@ -27,11 +27,12 @@
 
       <section class="dashboard" id="dashboard" hidden>
         <header class="topbar">
-          <div>
+          <div class="topbar-copy">
             <h2><span class="sec-icon" aria-hidden="true">◉</span>管理控制台</h2>
             <p id="adminMeta">管理员</p>
           </div>
           <div class="toolbar">
+            <span class="status-pill" id="refreshMeta">尚未刷新</span>
             <button id="refreshButton" type="button">刷新</button>
             <button id="logoutButton" type="button" class="ghost">退出</button>
           </div>
@@ -114,6 +115,26 @@
     </main>
 
     <div class="toast" id="toast"></div>
+    <div class="dialog-backdrop" id="dialogBackdrop" hidden>
+      <section
+        class="dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialogTitle"
+        aria-describedby="dialogMessage"
+      >
+        <h3 id="dialogTitle">确认操作</h3>
+        <p id="dialogMessage">请确认当前操作。</p>
+        <label class="dialog-field" id="dialogFieldWrap" hidden>
+          <span id="dialogFieldLabel">输入内容</span>
+          <input id="dialogInput" type="text" />
+        </label>
+        <div class="dialog-actions">
+          <button id="dialogCancelButton" type="button" class="ghost">取消</button>
+          <button id="dialogConfirmButton" type="button">确认</button>
+        </div>
+      </section>
+    </div>
     <script src="./admin.js" defer></script>
   </body>
 </html>

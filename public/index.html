@@ -20,7 +20,7 @@
           <div class="brand-badge">P</div>
           <div>
             <p class="eyebrow">Private Line</p>
-            <h1>注册</h1>
+            <h1 id="authHeading">登录私聊</h1>
             <p class="auth-copy">仅需用户名和密码。消息在浏览器端自动加密后发送。</p>
           </div>
         </div>
@@ -74,7 +74,7 @@
 
         <label class="topbar-search" aria-label="搜索用户和会话">
           <span class="search-icon" aria-hidden="true">⌕</span>
-          <input id="globalSearchInput" type="search" placeholder="搜索用户名..." />
+          <input id="globalSearchInput" type="search" placeholder="搜索用户或会话..." />
         </label>
 
         <div class="topbar-user">
@@ -83,7 +83,7 @@
             <div class="avatar avatar-tone-0" id="meAvatar">我</div>
             <div class="user-chip-copy">
               <strong id="meUsername">未登录</strong>
-              <span>自动加密</span>
+              <span id="meStatus" aria-live="polite">连接中</span>
             </div>
           </div>
           <button class="ghost-button compact" id="logoutButton" type="button">退出</button>

@@ -76,6 +76,7 @@ const rateBuckets = new Map();
 const conversationRateBuckets = new Map();
 const eventTickets = new Map();
 const messageBuckets = new Map();
+const messageClientIndex = new Map();
 const scryptAsync = promisify(crypto.scrypt);
 
 let users = [];
@@ -217,7 +218,8 @@ function loadData() {
   }));
   messages = readJsonFile(MESSAGES_FILE, []).map((message) => ({
     ...message,
-    auditText: typeof message?.auditText === "string" ? message.auditText : ""
+    auditText: typeof message?.auditText === "string" ? message.auditText : "",
+    clientId: typeof message?.clientId === "string" ? message.clientId : ""
   }));
   rebuildMessageBuckets();
 }
@@ -261,11 +263,15 @@ function conversationBucketKey(leftUser, rightUser) {
 
 function rebuildMessageBuckets() {
   messageBuckets.clear();
+  messageClientIndex.clear();
   for (const message of messages) {
     const key = conversationBucketKey(message.from, message.to);
     const bucket = messageBuckets.get(key) || [];
     bucket.push(message);
     messageBuckets.set(key, bucket);
+    if (message.clientId) {
+      messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
+    }
   }
 }
 
@@ -274,6 +280,9 @@ function appendMessageBucket(message) {
   const bucket = messageBuckets.get(key) || [];
   bucket.push(message);
   messageBuckets.set(key, bucket);
+  if (message.clientId) {
+    messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
+  }
 }
 
 function securityHeaders(extra = {}) {
@@ -414,6 +423,17 @@ function normalizeMessageText(value) {
     return "";
   }
   return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+}
+
+function normalizeClientId(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const clientId = value.trim();
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(clientId)) {
+    return "";
+  }
+  return clientId;
 }
 
 function decodeBase64Blob(value) {
@@ -676,6 +696,7 @@ function createMessageView(message, viewer) {
   const peerUser = findUserByUsername(peer);
   return {
     id: message.id,
+    clientId: String(message.clientId || ""),
     from: message.from,
     to: message.to,
     peer,
@@ -1673,6 +1694,7 @@ async function handleSendMessage(req, res, url) {
   const nonce = String(body.nonce || "").trim();
   const ciphertext = String(body.ciphertext || "").trim();
   const auditText = normalizeMessageText(body.text);
+  const clientId = normalizeClientId(body.clientId);
   if (!peer || peer.username === session.username) {
     sendJson(res, 404, { error: "user not found" });
     return;
@@ -1680,6 +1702,16 @@ async function handleSendMessage(req, res, url) {
   if (peer.banned) {
     sendJson(res, 403, { error: "peer is banned" });
     return;
+  }
+  if (clientId) {
+    const existing = messageClientIndex.get(`${session.username}\u0000${peer.username}\u0000${clientId}`);
+    if (existing) {
+      sendJson(res, 200, {
+        message: createMessageView(existing, session.username),
+        conversation: buildConversationSummary(session.username, peer.username)
+      });
+      return;
+    }
   }
   if (
     isRateLimited(
@@ -1707,6 +1739,7 @@ async function handleSendMessage(req, res, url) {
 
   const message = {
     id: crypto.randomUUID(),
+    clientId,
     from: session.username,
     to: peer.username,
     nonce,

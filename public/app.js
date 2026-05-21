@@ -6,18 +6,22 @@ const STORAGE = {
   authMode: "private-chat-auth-mode",
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
+  pendingOutbox: "private-chat-pending-outbox",
   showArchived: "private-chat-show-archived"
 };
 
 const AVATAR_TONES = 6;
 const PRIVATE_KEY_ITERATIONS = 150000;
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
+const MESSAGE_VIRTUAL_THRESHOLD = 140;
+const MESSAGE_VIRTUAL_OVERSCAN = 480;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 const elements = {
   authScreen: document.querySelector("#authScreen"),
   workspace: document.querySelector("#workspace"),
+  authHeading: document.querySelector("#authHeading"),
   loginTab: document.querySelector("#loginTab"),
   registerTab: document.querySelector("#registerTab"),
   authForm: document.querySelector("#authForm"),
@@ -29,6 +33,7 @@ const elements = {
   meAvatar: document.querySelector("#meAvatar"),
   meUsername: document.querySelector("#meUsername"),
   logoutButton: document.querySelector("#logoutButton"),
+  meStatus: document.querySelector("#meStatus"),
   sidebarMeta: document.querySelector("#sidebarMeta"),
   searchGroup: document.querySelector("#searchGroup"),
   searchResultList: document.querySelector("#searchResultList"),
@@ -66,7 +71,10 @@ const state = {
   peerKeys: new Map(),
   importedPeerKeys: new Map(),
   conversationKeys: new Map(),
+  previewCache: new Map(),
+  conversationSearchIndex: new Map(),
   pendingMessages: new Map(),
+  pendingOutbox: [],
   messagePageState: new Map(),
   pendingSequence: 0,
   eventSource: null,
@@ -74,7 +82,10 @@ const state = {
   reconnectAttempts: 0,
   manualEventSourceClose: false,
   connectionState: "offline",
+  outboxFlushing: false,
   searchTimer: 0,
+  searchRequestId: 0,
+  messageListRenderRaf: 0,
   toastTimer: 0,
   openConversationRequest: 0,
   conversationPrefs: {},
@@ -131,6 +142,32 @@ function showToast(message) {
   state.toastTimer = window.setTimeout(() => {
     elements.toast.classList.remove("is-visible");
   }, 2400);
+}
+
+function connectionStatusLabel() {
+  switch (state.connectionState) {
+    case "online":
+      return "连接在线";
+    case "connecting":
+      return "连接中";
+    case "reconnecting":
+      return "重连中";
+    default:
+      return "连接未建立";
+  }
+}
+
+function updateWorkspaceStatus() {
+  if (!elements.meStatus) {
+    return;
+  }
+  if (!state.me) {
+    elements.meStatus.textContent = "等待登录";
+    return;
+  }
+  const pendingCount = state.pendingOutbox.length;
+  const pendingSuffix = pendingCount > 0 ? ` · 待补发 ${pendingCount}` : "";
+  elements.meStatus.textContent = `${connectionStatusLabel()} · 自动加密${pendingSuffix}`;
 }
 
 function formatTime(timestamp) {
@@ -192,6 +229,7 @@ function base64ToBytes(value) {
 function resetLocalConversationState() {
   state.conversationPrefs = readJsonStorage(STORAGE.conversationPrefs, {});
   state.drafts = readJsonStorage(STORAGE.drafts, {});
+  loadPendingOutbox();
 }
 
 function saveConversationPrefs() {
@@ -200,6 +238,111 @@ function saveConversationPrefs() {
 
 function saveDrafts() {
   writeJsonStorage(STORAGE.drafts, state.drafts);
+}
+
+function rebuildConversationSearchIndex(username) {
+  if (!username) {
+    return;
+  }
+  const conversation = getConversation(username);
+  const historyText = (state.messageCache.get(username) || [])
+    .map((message) => message.text || "")
+    .join(" ");
+  const indexText = [
+    conversation?.username || username,
+    conversation?.previewText || "",
+    historyText
+  ]
+    .join("\n")
+    .toLowerCase();
+  state.conversationSearchIndex.set(username, indexText);
+}
+
+function normalizePendingOutboxEntry(entry) {
+  const tempId = String(entry?.tempId || "").trim();
+  const clientId = String(entry?.clientId || tempId || "").trim();
+  const peer = String(entry?.peer || "").trim();
+  const text = String(entry?.text || "");
+  const createdAt = Number(entry?.createdAt) || Date.now();
+  if (!tempId || !clientId || !peer || !text) {
+    return null;
+  }
+  return {
+    tempId,
+    clientId,
+    peer,
+    text: text.slice(0, 4000),
+    createdAt,
+    attempts: Math.max(0, Number(entry?.attempts) || 0),
+    failed: Boolean(entry?.failed),
+    lastError: String(entry?.lastError || "")
+  };
+}
+
+function savePendingOutbox() {
+  writeJsonStorage(STORAGE.pendingOutbox, state.pendingOutbox);
+}
+
+function syncPendingMessagesFromOutbox() {
+  state.pendingMessages = new Map(
+    state.pendingOutbox.map((entry) => [
+      entry.tempId,
+      {
+        tempId: entry.tempId,
+        clientId: entry.clientId,
+        peer: entry.peer,
+        text: entry.text,
+        createdAt: entry.createdAt,
+        attempts: entry.attempts,
+        failed: entry.failed,
+        lastError: entry.lastError
+      }
+    ])
+  );
+}
+
+function loadPendingOutbox() {
+  const rawEntries = readJsonStorage(STORAGE.pendingOutbox, []);
+  state.pendingOutbox = Array.isArray(rawEntries)
+    ? rawEntries.map(normalizePendingOutboxEntry).filter(Boolean)
+    : [];
+  syncPendingMessagesFromOutbox();
+}
+
+function upsertPendingOutboxEntry(entry) {
+  const normalized = normalizePendingOutboxEntry(entry);
+  if (!normalized) {
+    return null;
+  }
+  const index = state.pendingOutbox.findIndex((item) => item.tempId === normalized.tempId);
+  if (index >= 0) {
+    state.pendingOutbox[index] = {
+      ...state.pendingOutbox[index],
+      ...normalized
+    };
+  } else {
+    state.pendingOutbox.push(normalized);
+  }
+  savePendingOutbox();
+  syncPendingMessagesFromOutbox();
+  return normalized;
+}
+
+function removePendingOutboxEntry(tempId) {
+  const next = state.pendingOutbox.filter((entry) => entry.tempId !== tempId);
+  if (next.length === state.pendingOutbox.length) {
+    return false;
+  }
+  state.pendingOutbox = next;
+  savePendingOutbox();
+  syncPendingMessagesFromOutbox();
+  return true;
+}
+
+function pendingOutboxForPeer(peer) {
+  return state.pendingOutbox
+    .filter((entry) => entry.peer === peer)
+    .sort((left, right) => left.createdAt - right.createdAt);
 }
 
 function peerPrefs(username) {
@@ -231,6 +374,9 @@ function setAuthMode(mode) {
   localStorage.setItem(STORAGE.authMode, state.authMode);
   elements.loginTab.classList.toggle("is-active", state.authMode === "login");
   elements.registerTab.classList.toggle("is-active", state.authMode === "register");
+  if (elements.authHeading) {
+    elements.authHeading.textContent = state.authMode === "login" ? "登录私聊" : "创建加密账号";
+  }
   elements.authSubmitButton.textContent = state.authMode === "login" ? "登录" : "注册";
   elements.authTip.textContent =
     state.authMode === "login"
@@ -261,12 +407,91 @@ function syncLayoutState() {
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
 }
 
-function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true) {
+function isNearBottom(node, threshold = 120) {
+  if (!node) {
+    return false;
+  }
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= threshold;
+}
+
+function estimateMessageHeight(message) {
+  const text = String(message?.text || "");
+  const charactersPerLine = message?.mine ? 38 : 34;
+  const lineCount = Math.max(1, Math.ceil(Math.max(text.length, 1) / charactersPerLine));
+  let height = message?.mine ? 88 : 106;
+  height += (lineCount - 1) * 18;
+  if (message?.pending || message?.failed) {
+    height += 10;
+  }
+  return height + 16;
+}
+
+function buildMessageVirtualWindow(messages, scrollTop, viewportHeight, anchor = "scroll") {
+  if (messages.length <= MESSAGE_VIRTUAL_THRESHOLD) {
+    return null;
+  }
+
+  const heights = messages.map((message) => estimateMessageHeight(message));
+  const prefix = new Array(heights.length + 1);
+  prefix[0] = 0;
+  for (let index = 0; index < heights.length; index += 1) {
+    prefix[index + 1] = prefix[index] + heights[index];
+  }
+
+  const totalHeight = prefix[prefix.length - 1];
+  const overscan = Math.max(MESSAGE_VIRTUAL_OVERSCAN, Math.round(viewportHeight * 0.75));
+  const baseScrollTop = anchor === "bottom" ? Math.max(0, totalHeight - viewportHeight) : scrollTop;
+  const startTarget = Math.max(0, baseScrollTop - overscan);
+  const endTarget = baseScrollTop + viewportHeight + overscan;
+
+  let start = 0;
+  while (start < messages.length && prefix[start + 1] < startTarget) {
+    start += 1;
+  }
+
+  let end = start;
+  while (end < messages.length && prefix[end] < endTarget) {
+    end += 1;
+  }
+
+  return {
+    start,
+    end,
+    topSpacer: prefix[start],
+    bottomSpacer: Math.max(0, totalHeight - prefix[end])
+  };
+}
+
+function scheduleMessageListRender() {
+  if (state.messageListRenderRaf) {
+    return;
+  }
+  state.messageListRenderRaf = window.requestAnimationFrame(() => {
+    state.messageListRenderRaf = 0;
+    if (!state.activePeer) {
+      return;
+    }
+    renderThread({ scrollBehavior: "preserve" });
+  });
+}
+
+function createSpacer(height) {
+  const spacer = document.createElement("div");
+  spacer.className = "message-spacer";
+  spacer.style.height = `${Math.max(0, Math.round(height))}px`;
+  spacer.setAttribute("aria-hidden", "true");
+  return spacer;
+}
+
+function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true, clearPending = true) {
   if (clearToken) {
     localStorage.removeItem(STORAGE.token);
   }
   if (clearActivePeer) {
     localStorage.removeItem(STORAGE.activePeer);
+  }
+  if (clearPending) {
+    localStorage.removeItem(STORAGE.pendingOutbox);
   }
 }
 
@@ -286,14 +511,26 @@ async function api(pathname, options = {}) {
     body = JSON.stringify(body);
   }
 
-  const response = await fetch(pathname, {
-    method: options.method || "GET",
-    headers,
-    body
-  });
+  let response;
+  try {
+    response = await fetch(pathname, {
+      method: options.method || "GET",
+      headers,
+      body
+    });
+  } catch (error) {
+    throw new Error("网络连接失败，请稍后重试");
+  }
 
   const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
+  let payload = null;
+  if (contentType.includes("application/json")) {
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+  }
 
   if (!response.ok) {
     if (response.status === 401 && state.token && !options.skipAuthReset) {
@@ -321,6 +558,10 @@ function closeEventStream() {
 
 function clearSession(showAuth = true, clearToken = true) {
   closeEventStream();
+  if (state.messageListRenderRaf) {
+    window.cancelAnimationFrame(state.messageListRenderRaf);
+    state.messageListRenderRaf = 0;
+  }
 
   state.token = "";
   state.me = null;
@@ -333,15 +574,21 @@ function clearSession(showAuth = true, clearToken = true) {
   state.peerKeys.clear();
   state.importedPeerKeys.clear();
   state.conversationKeys.clear();
+  state.previewCache.clear();
+  state.conversationSearchIndex.clear();
   state.pendingMessages.clear();
+  state.pendingOutbox = [];
   state.messagePageState.clear();
   state.pendingSequence = 0;
+  state.outboxFlushing = false;
+  state.searchRequestId += 1;
   state.openConversationRequest += 1;
 
   clearStoredSessionArtifacts(clearToken, true);
   elements.globalSearchInput.value = "";
   elements.messageInput.value = "";
   elements.messageInput.style.height = "auto";
+  updateWorkspaceStatus();
   render();
   if (showAuth) {
     elements.workspace.hidden = true;
@@ -360,6 +607,7 @@ function setSession(token, user, identity) {
   elements.meUsername.textContent = user.username;
   setAvatar(elements.meAvatar, user.username);
   cachePeerInfo(user);
+  updateWorkspaceStatus();
 }
 
 function pageStateForPeer(username) {
@@ -512,8 +760,55 @@ function exportActiveConversation() {
   URL.revokeObjectURL(url);
 }
 
+function matchConversationSearchScope(conversation, query) {
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  if (!normalizedQuery) {
+    return null;
+  }
+  const prefs = peerPrefs(conversation.username);
+  const draft = draftTextForPeer(conversation.username);
+  const indexText = state.conversationSearchIndex.get(conversation.username) || "";
+  if (!indexText.includes(normalizedQuery)) {
+    if (!draft.toLowerCase().includes(normalizedQuery)) {
+      return null;
+    }
+  }
+  const matchLabel = draft.trim() && draft.toLowerCase().includes(normalizedQuery)
+    ? "草稿匹配"
+    : indexText.startsWith(conversation.username.toLowerCase())
+      ? "用户名匹配"
+      : String(conversation.previewText || "").toLowerCase().includes(normalizedQuery)
+        ? "最近消息匹配"
+        : "历史消息匹配";
+  return {
+    username: conversation.username,
+    online: conversation.online,
+    avatarSeed: conversation.avatarSeed || conversation.username,
+    publicKey: conversation.publicKey,
+    previewText: conversation.previewText || "",
+    lastAt: conversation.lastAt || 0,
+    unread: conversation.unread || 0,
+    sourceLabel: `会话 · ${matchLabel}`,
+    searchHint: matchLabel,
+    pinned: prefs.pinned,
+    muted: prefs.muted,
+    archived: prefs.archived
+  };
+}
+
+function buildLocalSearchResults(query) {
+  const normalizedQuery = String(query || "").trim();
+  if (!normalizedQuery) {
+    return [];
+  }
+  return state.conversations
+    .map((conversation) => matchConversationSearchScope(conversation, normalizedQuery))
+    .filter(Boolean);
+}
+
 function renderSidebar() {
   const query = state.searchQuery.trim().toLowerCase();
+  const localResults = query ? buildLocalSearchResults(query) : [];
   const archivedHiddenCount = state.conversations.filter((item) => peerPrefs(item.username).archived).length;
   const conversations = state.conversations.filter((item) => {
     const prefs = peerPrefs(item.username);
@@ -531,18 +826,47 @@ function renderSidebar() {
 
   const visibleCount = conversations.length;
   const archiveHint = archivedHiddenCount && !state.showArchived ? ` | 已隐藏 ${archivedHiddenCount}` : "";
-  elements.sidebarMeta.textContent = `${visibleCount} 个会话${archiveHint} | 双击切换归档`;
+  const mergedSearchRows = query
+    ? (() => {
+        const remoteResults = state.searchResults.map((user) => ({
+          ...user,
+          sourceLabel: "用户名结果",
+          searchHint: user.online ? "在线用户" : "用户建议"
+        }));
+        const merged = new Map();
+        for (const item of [...localResults, ...remoteResults]) {
+          if (!item?.username || merged.has(item.username)) {
+            continue;
+          }
+          merged.set(item.username, item);
+        }
+        return [...merged.values()];
+      })()
+    : [];
+  elements.sidebarMeta.textContent = query
+    ? `${visibleCount} 个会话${archiveHint} | ${mergedSearchRows.length} 个匹配`
+    : `${visibleCount} 个会话${archiveHint} | 双击切换归档`;
   elements.searchGroup.hidden = !query;
+  elements.conversationList.parentElement.hidden = Boolean(query);
 
   elements.searchResultList.textContent = "";
   if (query) {
-    if (state.searchResults.length === 0) {
+    const searchRows = mergedSearchRows.sort((left, right) => {
+      const leftScore = Number(Boolean(left.online)) + Number(Boolean(left.pinned)) * 2 + Number(left.unread > 0);
+      const rightScore = Number(Boolean(right.online)) + Number(Boolean(right.pinned)) * 2 + Number(right.unread > 0);
+      if (rightScore !== leftScore) {
+        return rightScore - leftScore;
+      }
+      return (right.lastAt || 0) - (left.lastAt || 0) || String(left.username).localeCompare(right.username);
+    });
+
+    if (searchRows.length === 0) {
       const empty = document.createElement("div");
       empty.className = "list-empty";
       empty.textContent = "没有匹配的用户";
       elements.searchResultList.append(empty);
     } else {
-      for (const user of state.searchResults) {
+      for (const user of searchRows) {
         elements.searchResultList.append(renderListItem(user, true));
       }
     }
@@ -556,6 +880,17 @@ function renderSidebar() {
 }
 function renderListItem(item, isSearchResult) {
   const prefs = peerPrefs(item.username);
+  const draft = isSearchResult ? "" : draftTextForPeer(item.username).trim();
+  const indicators = [];
+  if (item.unread && !prefs.muted) {
+    indicators.push(`<b class="unread-badge">${item.unread}</b>`);
+  } else if (item.online) {
+    indicators.push('<i class="online-dot"></i>');
+  }
+  if (!isSearchResult && draft) {
+    indicators.push('<span class="draft-badge">草稿</span>');
+  }
+
   const button = document.createElement("button");
   button.type = "button";
   button.className = "list-item";
@@ -578,31 +913,32 @@ function renderListItem(item, isSearchResult) {
   meta.innerHTML = `
     <div class="list-row">
       <strong>${escapeHtml(item.username)}</strong>
-      <span>${escapeHtml(isSearchResult ? (item.online ? "在线" : "离线") : formatRelative(item.lastAt))}</span>
+      <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "在线" : "离线")) : formatRelative(item.lastAt))}</span>
     </div>
     <div class="list-row is-subtle">
-      <span>${escapeHtml(isSearchResult ? "点击开始私聊" : messagePreview(item.previewText || "已加密消息"))}</span>
-      ${!isSearchResult && item.unread && !prefs.muted ? `<b class="unread-badge">${item.unread}</b>` : item.online ? '<i class="online-dot"></i>' : ""}
+      <span>${escapeHtml(isSearchResult ? (item.searchHint || "点击开始私聊") : messagePreview(item.previewText || "已加密消息"))}</span>
+      ${indicators.join("")}
     </div>
   `;
 
-  if (!isSearchResult) {
-    const flags = [];
-    if (prefs.pinned) {
-      flags.push('<em class="list-flag">置顶</em>');
-    }
-    if (prefs.muted) {
-      flags.push('<em class="list-flag">静音</em>');
-    }
-    if (prefs.archived) {
-      flags.push('<em class="list-flag">归档</em>');
-    }
-    if (flags.length > 0) {
-      const flagRow = document.createElement("div");
-      flagRow.className = "list-flags";
-      flagRow.innerHTML = flags.join("");
-      meta.append(flagRow);
-    }
+  const flags = [];
+  if (prefs.pinned) {
+    flags.push('<em class="list-flag">置顶</em>');
+  }
+  if (prefs.muted) {
+    flags.push('<em class="list-flag">静音</em>');
+  }
+  if (prefs.archived) {
+    flags.push('<em class="list-flag">归档</em>');
+  }
+  if (isSearchResult && item.sourceLabel) {
+    flags.push(`<em class="list-flag">${escapeHtml(item.sourceLabel)}</em>`);
+  }
+  if (flags.length > 0) {
+    const flagRow = document.createElement("div");
+    flagRow.className = "list-flags";
+    flagRow.innerHTML = flags.join("");
+    meta.append(flagRow);
   }
 
   button.append(avatar, meta);
@@ -633,18 +969,22 @@ function scrollMessagesToBottom() {
   elements.messageList.scrollTop = elements.messageList.scrollHeight;
 }
 
-function renderThread() {
+function renderThread(options = {}) {
+  const scrollBehavior = options.scrollBehavior || "preserve";
   const peer = activePeerMeta();
   const hasPeer = Boolean(peer);
 
   elements.chatEmpty.hidden = hasPeer;
   elements.chatThread.hidden = !hasPeer;
   applyThreadActionState(hasPeer ? peer.username : "");
+  updateWorkspaceStatus();
 
   if (!peer) {
     return;
   }
 
+  const previousScrollHeight = elements.messageList.scrollHeight;
+  const previousScrollTop = elements.messageList.scrollTop;
   elements.peerName.textContent = peer.username;
   let connectionLabel = "";
   if (state.connectionState === "reconnecting") {
@@ -669,6 +1009,12 @@ function renderThread() {
 
   const messages = state.messageCache.get(peer.username) || [];
   const paging = pageStateForPeer(peer.username);
+  const virtualWindow = buildMessageVirtualWindow(
+    messages,
+    previousScrollTop,
+    elements.messageList.clientHeight || 0,
+    scrollBehavior === "bottom" ? "bottom" : "scroll"
+  );
   elements.messageList.textContent = "";
 
   if (paging.hasMore) {
@@ -690,8 +1036,15 @@ function renderThread() {
     empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>还没有消息。输入第一句，程序会自动完成加密和发送。</span>`;
     elements.messageList.append(empty);
   } else {
-    for (const message of messages) {
+    if (virtualWindow && virtualWindow.start > 0) {
+      elements.messageList.append(createSpacer(virtualWindow.topSpacer));
+    }
+    const slice = virtualWindow ? messages.slice(virtualWindow.start, virtualWindow.end) : messages;
+    for (const message of slice) {
       elements.messageList.append(renderMessage(message));
+    }
+    if (virtualWindow && virtualWindow.bottomSpacer > 0) {
+      elements.messageList.append(createSpacer(virtualWindow.bottomSpacer));
     }
   }
 
@@ -701,7 +1054,17 @@ function renderThread() {
     autoResizeComposer();
   }
   setComposerBusy(false);
-  scrollMessagesToBottom();
+  if (scrollBehavior === "bottom") {
+    scrollMessagesToBottom();
+    return;
+  }
+  if (virtualWindow) {
+    elements.messageList.scrollTop = previousScrollTop;
+    return;
+  }
+  if (previousScrollHeight > 0) {
+    elements.messageList.scrollTop = previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight);
+  }
 }
 
 function render() {
@@ -970,9 +1333,27 @@ async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "
   };
 }
 
+function previewCacheKey(conversation) {
+  const latest = conversation?.latestMessage || null;
+  if (!latest) {
+    return "";
+  }
+  return [
+    conversation.username || "",
+    latest.id || "",
+    conversation.publicKey || "",
+    latest.nonce || "",
+    latest.ciphertext || ""
+  ].join("|");
+}
+
 async function decryptPreview(conversation) {
   if (!conversation.latestMessage) {
     return "";
+  }
+  const cacheKey = previewCacheKey(conversation);
+  if (cacheKey && state.previewCache.has(cacheKey)) {
+    return state.previewCache.get(cacheKey);
   }
   const preview = await decryptMessageView(
     {
@@ -983,6 +1364,9 @@ async function decryptPreview(conversation) {
     conversation.publicKey,
     conversation.username
   );
+  if (cacheKey) {
+    state.previewCache.set(cacheKey, preview.text);
+  }
   return preview.text;
 }
 
@@ -1002,6 +1386,10 @@ async function loadConversations() {
 
   state.conversations = conversations;
   sortConversations();
+  for (const conversation of state.conversations) {
+    rebuildConversationSearchIndex(conversation.username);
+  }
+  hydratePendingMessagesIntoCache();
 }
 
 async function loadSearchResults(query) {
@@ -1010,8 +1398,12 @@ async function loadSearchResults(query) {
     renderSidebar();
     return;
   }
+  const requestId = ++state.searchRequestId;
   try {
     const payload = await api(`/api/users?q=${encodeURIComponent(query)}`);
+    if (requestId !== state.searchRequestId) {
+      return;
+    }
     state.searchResults = payload.users;
     for (const user of payload.users) {
       cachePeerInfo(user);
@@ -1044,10 +1436,11 @@ function ensureConversationEntry(username) {
 }
 
 function buildTempMessage(peer, text) {
-  const tempId = `tmp-${Date.now()}-${++state.pendingSequence}`;
+  const tempId = crypto.randomUUID();
   return {
     id: tempId,
     tempId,
+    clientId: tempId,
     from: state.me?.username || "",
     to: peer,
     peer,
@@ -1061,7 +1454,7 @@ function buildTempMessage(peer, text) {
 
 function removePendingMessageFromCache(tempId) {
   for (const [peer, messages] of state.messageCache) {
-    const next = messages.filter((message) => message.tempId !== tempId);
+    const next = messages.filter((message) => message.tempId !== tempId && message.clientId !== tempId);
     if (next.length !== messages.length) {
       state.messageCache.set(peer, next);
       return true;
@@ -1070,22 +1463,39 @@ function removePendingMessageFromCache(tempId) {
   return false;
 }
 
-function setPendingMessageState(tempId, failed) {
+function setPendingMessageState(tempId, failed, lastError = "") {
   for (const [peer, messages] of state.messageCache) {
     let changed = false;
     const next = messages.map((message) => {
-      if (message.tempId !== tempId) {
+      if (message.tempId !== tempId && message.clientId !== tempId) {
         return message;
       }
       changed = true;
       return {
         ...message,
-        pending: false,
+        pending: !Boolean(failed),
         failed: Boolean(failed)
       };
     });
     if (changed) {
       state.messageCache.set(peer, next);
+      const entry = state.pendingMessages.get(tempId);
+      if (entry) {
+        upsertPendingOutboxEntry(
+          failed
+            ? {
+                ...entry,
+                failed: true,
+                attempts: (entry.attempts || 0) + 1,
+                lastError: String(lastError || "发送失败")
+              }
+            : {
+                ...entry,
+                failed: false,
+                lastError: ""
+              }
+        );
+      }
       return true;
     }
   }
@@ -1100,9 +1510,23 @@ function addPendingMessage(peer, text) {
   state.messageCache.set(peer, current);
   state.pendingMessages.set(pending.tempId, {
     tempId: pending.tempId,
+    clientId: pending.clientId,
     peer,
     text,
-    createdAt: pending.createdAt
+    createdAt: pending.createdAt,
+    attempts: 0,
+    failed: false,
+    lastError: ""
+  });
+  upsertPendingOutboxEntry({
+    tempId: pending.tempId,
+    clientId: pending.clientId,
+    peer,
+    text,
+    createdAt: pending.createdAt,
+    attempts: 0,
+    failed: false,
+    lastError: ""
   });
   upsertConversation({
     username: peer,
@@ -1112,20 +1536,117 @@ function addPendingMessage(peer, text) {
     previewText: text,
     lastAt: pending.createdAt
   });
+  rebuildConversationSearchIndex(peer);
   return pending.tempId;
 }
 
-function reconcilePendingMessage(peer, text, createdAt) {
+function reconcilePendingMessage(peer, incomingMessage) {
+  const clientId = String(incomingMessage?.clientId || incomingMessage?.id || "");
   for (const [tempId, pending] of state.pendingMessages) {
-    if (pending.peer !== peer || pending.text !== text) {
+    if (pending.peer !== peer) {
       continue;
     }
-    if (Math.abs((pending.createdAt || 0) - createdAt) > 60000) {
+    if (clientId && pending.clientId === clientId) {
+      state.pendingMessages.delete(tempId);
+      removePendingMessageFromCache(tempId);
+      removePendingOutboxEntry(tempId);
       continue;
     }
-    state.pendingMessages.delete(tempId);
-    removePendingMessageFromCache(tempId);
+    if (!clientId) {
+      const sameText = String(pending.text || "") === String(incomingMessage?.text || "");
+      const withinWindow = Math.abs((pending.createdAt || 0) - Number(incomingMessage?.createdAt || 0)) <= 60000;
+      if (sameText && withinWindow) {
+        state.pendingMessages.delete(tempId);
+        removePendingMessageFromCache(tempId);
+        removePendingOutboxEntry(tempId);
+        return;
+      }
+    }
+  }
+}
+
+function mergePendingMessagesIntoConversation(peer) {
+  const pendingEntries = pendingOutboxForPeer(peer);
+  if (pendingEntries.length === 0) {
     return;
+  }
+  const current = state.messageCache.get(peer) || [];
+  const knownIds = new Set(current.map((message) => message.tempId || message.clientId || message.id));
+  let changed = false;
+  for (const pending of pendingEntries) {
+    if (knownIds.has(pending.tempId) || knownIds.has(pending.clientId)) {
+      continue;
+    }
+    current.push({
+      id: pending.tempId,
+      tempId: pending.tempId,
+      clientId: pending.clientId,
+      from: state.me?.username || "",
+      to: peer,
+      peer,
+      mine: true,
+      text: pending.text,
+      createdAt: pending.createdAt,
+      pending: !pending.failed,
+      failed: pending.failed
+    });
+    changed = true;
+  }
+  if (changed) {
+    current.sort((left, right) => left.createdAt - right.createdAt);
+    state.messageCache.set(peer, current);
+    rebuildConversationSearchIndex(peer);
+  }
+}
+
+function hydratePendingMessagesIntoCache() {
+  for (const entry of state.pendingOutbox) {
+    const current = state.messageCache.get(entry.peer) || [];
+    const knownIds = new Set(current.map((message) => message.tempId || message.clientId || message.id));
+    if (knownIds.has(entry.tempId) || knownIds.has(entry.clientId)) {
+      continue;
+    }
+    current.push({
+      id: entry.tempId,
+      tempId: entry.tempId,
+      clientId: entry.clientId,
+      from: state.me?.username || "",
+      to: entry.peer,
+      peer: entry.peer,
+      mine: true,
+      text: entry.text,
+      createdAt: entry.createdAt,
+      pending: !entry.failed,
+      failed: entry.failed
+    });
+    current.sort((left, right) => left.createdAt - right.createdAt);
+    state.messageCache.set(entry.peer, current);
+    rebuildConversationSearchIndex(entry.peer);
+  }
+}
+
+async function flushPendingOutbox() {
+  if (state.outboxFlushing || !state.me || state.connectionState !== "online") {
+    return;
+  }
+  state.outboxFlushing = true;
+  try {
+    const entries = [...state.pendingOutbox].sort((left, right) => left.createdAt - right.createdAt);
+    for (const entry of entries) {
+      if (!state.pendingMessages.has(entry.tempId)) {
+        continue;
+      }
+      const current = state.pendingMessages.get(entry.tempId);
+      if (!current) {
+        continue;
+      }
+      if (!entry.failed && entry.attempts > 0) {
+        continue;
+      }
+      await sendMessageWithRetry(entry.tempId, entry.peer, entry.text, entry.clientId, true);
+    }
+  } finally {
+    state.outboxFlushing = false;
   }
 }
 
@@ -1153,12 +1674,12 @@ async function openConversation(username) {
     }
 
     cachePeerInfo(payload.peer);
-    const decryptedMessages = [];
-    for (const message of payload.messages) {
-      const peerPublicKey = message.publicKey || payload.peer.publicKey;
-      const decrypted = await decryptMessageView(message, peerPublicKey, payload.peer.username);
-      decryptedMessages.push(decrypted);
-    }
+    const decryptedMessages = await Promise.all(
+      payload.messages.map(async (message) => {
+        const peerPublicKey = message.publicKey || payload.peer.publicKey;
+        return decryptMessageView(message, peerPublicKey, payload.peer.username);
+      })
+    );
 
     state.messageCache.set(username, decryptedMessages);
     state.messagePageState.set(username, {
@@ -1166,6 +1687,8 @@ async function openConversation(username) {
       nextBefore: String(payload.nextBefore || ""),
       loadingOlder: false
     });
+    mergePendingMessagesIntoConversation(username);
+    rebuildConversationSearchIndex(username);
     upsertConversation({
       username: payload.peer.username,
       online: payload.peer.online,
@@ -1175,7 +1698,9 @@ async function openConversation(username) {
       lastAt: getConversation(username)?.lastAt || 0,
       unread: 0
     });
-    render();
+    rebuildConversationSearchIndex(username);
+    renderSidebar();
+    renderThread({ scrollBehavior: "bottom" });
   } catch (error) {
     showToast(error.message);
   }
@@ -1191,7 +1716,7 @@ async function loadOlderMessages(peer) {
   }
 
   paging.loadingOlder = true;
-  renderThread();
+  renderThread({ scrollBehavior: "preserve" });
   const requestId = ++state.openConversationRequest;
   const previous = state.messageCache.get(peer) || [];
 
@@ -1200,28 +1725,31 @@ async function loadOlderMessages(peer) {
       `/api/messages?with=${encodeURIComponent(peer)}&limit=50&before=${encodeURIComponent(paging.nextBefore)}`
     );
     if (requestId !== state.openConversationRequest) {
+      paging.loadingOlder = false;
       return;
     }
     cachePeerInfo(payload.peer);
-    const olderMessages = [];
-    for (const message of payload.messages) {
-      const peerPublicKey = message.publicKey || payload.peer.publicKey;
-      const decrypted = await decryptMessageView(message, peerPublicKey, payload.peer.username);
-      olderMessages.push(decrypted);
-    }
+    const olderMessages = await Promise.all(
+      payload.messages.map(async (message) => {
+        const peerPublicKey = message.publicKey || payload.peer.publicKey;
+        return decryptMessageView(message, peerPublicKey, payload.peer.username);
+      })
+    );
     const knownIds = new Set(previous.map((message) => message.id));
     const merged = [...olderMessages.filter((message) => !knownIds.has(message.id)), ...previous];
     merged.sort((left, right) => left.createdAt - right.createdAt);
     state.messageCache.set(peer, merged);
+    mergePendingMessagesIntoConversation(peer);
+    rebuildConversationSearchIndex(peer);
     state.messagePageState.set(peer, {
       hasMore: Boolean(payload.hasMore),
       nextBefore: String(payload.nextBefore || ""),
       loadingOlder: false
     });
-    renderThread();
+    renderThread({ scrollBehavior: "preserve" });
   } catch (error) {
     paging.loadingOlder = false;
-    renderThread();
+    renderThread({ scrollBehavior: "preserve" });
     showToast(error.message);
   }
 }
@@ -1246,14 +1774,22 @@ function mergePresence(username, online) {
   render();
 }
 
-function messageExists(peer, id) {
-  return (state.messageCache.get(peer) || []).some((message) => message.id === id);
+function messageExists(peer, id, clientId = "") {
+  return (state.messageCache.get(peer) || []).some((message) => {
+    if (message.id === id) {
+      return true;
+    }
+    if (!clientId) {
+      return false;
+    }
+    return message.clientId === clientId || message.tempId === clientId;
+  });
 }
 
 async function ingestEncryptedMessage(message) {
   const peer = message.peer;
   const peerPublicKey = message.publicKey || state.peerKeys.get(peer);
-  if (!peer || !peerPublicKey || messageExists(peer, message.id)) {
+  if (!peer || !peerPublicKey || messageExists(peer, message.id, message.clientId)) {
     return;
   }
 
@@ -1275,13 +1811,14 @@ async function ingestEncryptedMessage(message) {
   }
 
   if (decrypted.mine) {
-    reconcilePendingMessage(peer, decrypted.text, decrypted.createdAt);
+    reconcilePendingMessage(peer, message);
   }
 
   const current = state.messageCache.get(peer) || [];
   current.push(decrypted);
   current.sort((left, right) => left.createdAt - right.createdAt);
   state.messageCache.set(peer, current);
+  rebuildConversationSearchIndex(peer);
 
   const previous = getConversation(peer);
   const muted = peerPrefs(peer).muted;
@@ -1306,9 +1843,11 @@ async function ingestEncryptedMessage(message) {
     lastAt: message.createdAt,
     unread
   });
+  rebuildConversationSearchIndex(peer);
 
   if (state.activePeer === peer) {
-    renderThread();
+    const stickToBottom = message.mine || isNearBottom(elements.messageList);
+    renderThread({ scrollBehavior: stickToBottom ? "bottom" : "preserve" });
   } else {
     renderSidebar();
   }
@@ -1350,6 +1889,7 @@ async function openEventStream() {
     state.connectionState = "online";
     state.reconnectAttempts = 0;
     renderThread();
+    void flushPendingOutbox();
   });
 
   source.addEventListener("ready", (event) => {
@@ -1385,7 +1925,9 @@ async function openEventStream() {
       return;
     }
     state.reconnectAttempts += 1;
-    const delay = Math.min(10000, 400 * 2 ** Math.max(0, state.reconnectAttempts - 1));
+    const jitter = Math.floor(Math.random() * 350);
+    const backoff = Math.min(15000, 450 * 2 ** Math.max(0, state.reconnectAttempts - 1));
+    const delay = backoff + jitter;
     state.reconnectTimer = window.setTimeout(async () => {
       state.reconnectTimer = 0;
       if (!state.token) {
@@ -1416,6 +1958,7 @@ async function openEventStream() {
 async function afterLogin() {
   await loadConversations();
   startEventStream();
+  void flushPendingOutbox();
 
   const savedPeer = localStorage.getItem(STORAGE.activePeer) || "";
   render();
@@ -1486,7 +2029,7 @@ async function logout() {
   clearSession(true);
 }
 
-async function sendMessageWithRetry(tempId, peer, text) {
+async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silent = false) {
   try {
     const encrypted = await encryptOutboundMessage(peer, text);
     const payload = await api("/api/messages", {
@@ -1494,18 +2037,22 @@ async function sendMessageWithRetry(tempId, peer, text) {
       body: {
         to: peer,
         text,
+        clientId,
         nonce: encrypted.nonce,
         ciphertext: encrypted.ciphertext
       }
     });
     state.pendingMessages.delete(tempId);
     removePendingMessageFromCache(tempId);
+    removePendingOutboxEntry(tempId);
     await ingestEncryptedMessage(payload.message);
     return true;
   } catch (error) {
-    setPendingMessageState(tempId, true);
+    setPendingMessageState(tempId, true, error.message);
     renderThread();
-    showToast(error.message);
+    if (!silent) {
+      showToast(error.message);
+    }
     return false;
   }
 }
@@ -1526,8 +2073,8 @@ async function submitMessage(event) {
   setDraftForPeer(peer, "");
   elements.messageInput.value = "";
   autoResizeComposer();
-  renderThread();
-  void sendMessageWithRetry(tempId, peer, text);
+  renderThread({ scrollBehavior: "bottom" });
+  void sendMessageWithRetry(tempId, peer, text, tempId);
 }
 
 async function retryPendingMessage(tempId) {
@@ -1536,8 +2083,8 @@ async function retryPendingMessage(tempId) {
     return;
   }
   setPendingMessageState(tempId, false);
-  renderThread();
-  void sendMessageWithRetry(tempId, pending.peer, pending.text);
+  renderThread({ scrollBehavior: "bottom" });
+  void sendMessageWithRetry(tempId, pending.peer, pending.text, pending.clientId || tempId);
 }
 
 function handleListClick(event) {
@@ -1682,6 +2229,17 @@ function bindEvents() {
   elements.conversationList.addEventListener("click", handleListClick);
   elements.searchResultList.addEventListener("click", handleListClick);
   elements.messageList.addEventListener("click", handleMessageListClick);
+  elements.messageList.addEventListener("scroll", () => {
+    const peer = state.activePeer;
+    if (!peer) {
+      return;
+    }
+    const messages = state.messageCache.get(peer) || [];
+    if (messages.length <= MESSAGE_VIRTUAL_THRESHOLD) {
+      return;
+    }
+    scheduleMessageListRender();
+  });
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
   elements.archivePeerButton.addEventListener("click", () => handleThreadActionsClick("archive"));
@@ -1699,6 +2257,28 @@ function bindEvents() {
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", render);
+  window.addEventListener("online", () => {
+    if (!state.token) {
+      return;
+    }
+    startEventStream(true);
+    void flushPendingOutbox();
+  });
+  window.addEventListener("offline", () => {
+    if (state.connectionState !== "offline") {
+      state.connectionState = "offline";
+      renderThread();
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!state.token || document.visibilityState !== "visible") {
+      return;
+    }
+    void flushPendingOutbox();
+    if (state.connectionState !== "online" && !state.reconnectTimer) {
+      startEventStream(true);
+    }
+  });
 }
 
 async function restoreSessionFromStorage() {

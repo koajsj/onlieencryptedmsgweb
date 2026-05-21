@@ -434,8 +434,10 @@ button {
 }
 
 .user-chip-copy span {
-  color: var(--muted);
+  color: var(--accent-cold);
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .app-shell {
@@ -577,6 +579,10 @@ button {
   margin-top: 4px;
 }
 
+.list-row.is-subtle > span:first-child {
+  min-width: 0;
+}
+
 .list-flags {
   display: flex;
   flex-wrap: wrap;
@@ -622,6 +628,20 @@ button {
   background: var(--accent-main);
   font-size: 11px;
   font-style: normal;
+}
+
+.draft-badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 19px;
+  min-height: 19px;
+  padding: 0 7px;
+  border: 1px solid rgba(121, 178, 185, 0.32);
+  border-radius: 999px;
+  color: var(--accent-cold);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
 }
 
 .sidebar-empty,
@@ -813,6 +833,12 @@ button {
 .message-load-older-button:disabled {
   opacity: 0.7;
   cursor: default;
+}
+
+.message-spacer {
+  flex: 0 0 auto;
+  width: 100%;
+  pointer-events: none;
 }
 
 .message {
