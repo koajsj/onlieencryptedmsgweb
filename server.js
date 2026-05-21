@@ -55,7 +55,9 @@ const PRIVATE_KEY_SALT_BYTES = { min: 16, max: 32 };
 const PRIVATE_KEY_IV_BYTES = { min: 12, max: 24 };
 const ENCRYPTED_PRIVATE_KEY_BYTES = { min: 96, max: 4096 };
 const MESSAGE_NONCE_BYTES = { min: 12, max: 24 };
-const MESSAGE_CIPHERTEXT_BYTES = { min: 24, max: 12288 };
+// AES-GCM ciphertext includes a 16-byte auth tag, so short plaintext messages
+// can legitimately produce ciphertext as small as 16 bytes.
+const MESSAGE_CIPHERTEXT_BYTES = { min: 16, max: 12288 };
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",

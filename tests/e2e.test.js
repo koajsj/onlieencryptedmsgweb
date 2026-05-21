@@ -282,6 +282,18 @@ test("private messaging relays ciphertext and enforces encrypted payloads", asyn
     assert.equal(sendBody.conversation.latestMessage.text, null);
     assert.equal(sendBody.conversation.latestMessage.ciphertext, firstEncrypted.ciphertext);
 
+    const shortCiphertextMessage = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "Bob",
+        nonce: Buffer.alloc(12, 33).toString("base64"),
+        ciphertext: Buffer.alloc(16, 34).toString("base64")
+      },
+      aliceToken
+    );
+    assert.equal(shortCiphertextMessage.status, 201);
+
     const bulkPayloads = Array.from({ length: 6 }, (_, index) => ({
       to: "Bob",
       ...makeEncryptedPayload(40 + index)
@@ -367,10 +379,11 @@ test("private messaging relays ciphertext and enforces encrypted payloads", asyn
     const history = await getJson(server.port, "/api/messages?with=Alice", bobToken);
     assert.equal(history.response.status, 200);
     assert.equal(history.json.peer.publicKey, SAMPLE_BUNDLES.Alice.publicKey);
-    assert.equal(history.json.messages.length, 7);
+    assert.equal(history.json.messages.length, 8);
     assert.equal(history.json.messages[0].ciphertext, firstEncrypted.ciphertext);
+    assert.equal(history.json.messages[1].ciphertext, Buffer.alloc(16, 34).toString("base64"));
     assert.deepEqual(
-      history.json.messages.slice(1).map((item) => item.ciphertext).sort(),
+      history.json.messages.slice(2).map((item) => item.ciphertext).sort(),
       bulkPayloads.map((item) => item.ciphertext).sort()
     );
 
@@ -396,7 +409,7 @@ test("private messaging relays ciphertext and enforces encrypted payloads", asyn
       bobToken
     );
     assert.equal(page3.response.status, 200);
-    assert.equal(page3.json.messages.length, 1);
+    assert.equal(page3.json.messages.length, 2);
     assert.equal(page3.json.hasMore, false);
 
     bobEvents.close();

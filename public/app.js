@@ -821,7 +821,7 @@ async function restoreIdentity(username, password, keyBundle) {
       publicKeyBase64: keyBundle.publicKey
     };
   } catch (error) {
-    throw new Error("鏃犳硶瑙ｉ攣璇ヨ处鍙风殑鏈湴瀵嗛挜");
+    throw new Error("无法解锁该账号的本地密钥");
   }
 }
 
@@ -831,7 +831,7 @@ async function getConversationKey(peerUsername, peerPublicKeyBase64) {
   }
   const rawPeerKey = peerPublicKeyBase64 || state.peerKeys.get(peerUsername);
   if (!rawPeerKey) {
-    throw new Error("缂哄皯瀵圭鍏挜");
+    throw new Error("缺少对端公钥");
   }
 
   const cacheKey = `${peerUsername}:${rawPeerKey}`;
@@ -889,7 +889,7 @@ function peerFromMessage(message, fallbackPeer = "") {
 async function encryptOutboundMessage(peerUsername, text) {
   const peerPublicKey = state.peerKeys.get(peerUsername);
   if (!peerPublicKey) {
-    throw new Error("缂哄皯瀵圭鍏挜");
+    throw new Error("缺少对端公钥");
   }
   const conversationKey = await getConversationKey(peerUsername, peerPublicKey);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
@@ -911,19 +911,40 @@ async function encryptOutboundMessage(peerUsername, text) {
 async function decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPeer = "") {
   const peerUsername = peerFromMessage(message, fallbackPeer);
   if (!peerUsername) {
-    throw new Error("缂哄皯瀵圭鏍囪瘑");
+    throw new Error("缺少对端标识");
   }
   const conversationKey = await getConversationKey(peerUsername, peerPublicKeyBase64);
-  const plaintext = await crypto.subtle.decrypt(
-    {
-      name: "AES-GCM",
-      iv: base64ToBytes(message.nonce),
-      additionalData: aadBytes(message.from, message.to)
-    },
-    conversationKey,
-    base64ToBytes(message.ciphertext)
-  );
-  return textDecoder.decode(plaintext);
+  const iv = base64ToBytes(message.nonce);
+  const payload = base64ToBytes(message.ciphertext);
+  const aadCandidates = [
+    aadBytes(message.from, message.to),
+    aadBytes(message.to, message.from),
+    null
+  ];
+
+  let lastError = null;
+  for (const aad of aadCandidates) {
+    try {
+      const plaintext = await crypto.subtle.decrypt(
+        aad
+          ? {
+              name: "AES-GCM",
+              iv,
+              additionalData: aad
+            }
+          : {
+              name: "AES-GCM",
+              iv
+            },
+        conversationKey,
+        payload
+      );
+      return textDecoder.decode(plaintext);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("消息解密失败");
 }
 
 async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "") {
@@ -934,7 +955,7 @@ async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "
     try {
       text = await decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPeer);
     } catch (error) {
-      text = "[鏃犳硶瑙ｅ瘑]";
+      text = "[无法解密]";
     }
   }
 
@@ -1248,7 +1269,7 @@ async function ingestEncryptedMessage(message) {
       to: message.to,
       peer,
       mine: message.mine,
-      text: String(message.text || "[鏃犳硶瑙ｅ瘑]"),
+      text: String(message.text || "[无法解密]"),
       createdAt: message.createdAt
     };
   }
@@ -1296,7 +1317,7 @@ async function ingestEncryptedMessage(message) {
 async function createEventTicket() {
   const payload = await api("/api/events/token", { method: "POST" });
   if (!payload?.ticket) {
-    throw new Error("鏃犳硶鍒涘缓瀹炴椂杩炴帴绁ㄦ嵁");
+    throw new Error("无法创建实时连接票据");
   }
   return payload.ticket;
 }
@@ -1306,7 +1327,7 @@ function startEventStream(silent = false) {
     state.connectionState = "offline";
     renderThread();
     if (!silent) {
-      showToast(error.message || "瀹炴椂杩炴帴澶辫触");
+      showToast(error.message || "实时连接失败");
     }
   });
 }
@@ -1417,7 +1438,7 @@ async function submitAuth(event) {
   }
 
   if (!window.crypto?.subtle) {
-    showToast("褰撳墠鐜涓嶆敮鎸?Web Crypto锛岃浣跨敤 HTTPS 鎴?localhost");
+    showToast("当前环境不支持 Web Crypto，请使用 HTTPS 或 localhost");
     return;
   }
 
@@ -1448,9 +1469,9 @@ async function submitAuth(event) {
     setSession(payload.token, payload.user, identity);
     elements.authPasswordInput.value = "";
     await afterLogin();
-    showToast(state.authMode === "login" ? "鐧诲綍鎴愬姛锛屽凡鑷姩瑙ｉ攣鍔犲瘑浼氳瘽" : "娉ㄥ唽鎴愬姛锛屽凡鑷姩鍒涘缓鍔犲瘑浼氳瘽");
+    showToast(state.authMode === "login" ? "登录成功，已自动解锁加密会话" : "注册成功，已自动创建加密会话");
   } catch (error) {
-    showToast(error.message || "璁よ瘉澶辫触");
+    showToast(error.message || "认证失败");
   } finally {
     setAuthBusy(false);
   }
@@ -1688,7 +1709,7 @@ async function restoreSessionFromStorage() {
   state.token = token;
   try {
     const payload = await api("/api/me/key-bundle", { skipAuthReset: true });
-    const password = window.prompt("璇疯緭鍏ュ瘑鐮佷互瑙ｉ攣鏈湴瀵嗛挜");
+    const password = window.prompt("请输入密码以解锁本地密钥");
     if (!password) {
       clearSession(true, true);
       showToast("已取消恢复，请重新登录");
