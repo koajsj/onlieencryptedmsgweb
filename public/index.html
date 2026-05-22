@@ -9,9 +9,9 @@
   </head>
   <body>
     <div class="ambient-layer" aria-hidden="true">
-      <i class="ambient-beam beam-1"></i>
-      <i class="ambient-beam beam-2"></i>
       <i class="ambient-grid"></i>
+      <i class="ambient-scan scan-1"></i>
+      <i class="ambient-scan scan-2"></i>
     </div>
 
     <section class="auth-screen" id="authScreen" aria-label="注册和登录">
@@ -21,7 +21,7 @@
           <div>
             <p class="eyebrow">Private Line</p>
             <h1 id="authHeading">登录私聊</h1>
-            <p class="auth-copy">仅需用户名和密码。登录后直接进入聊天，不再额外弹出本地密钥解锁窗。</p>
+            <p class="auth-copy">账号进入，浏览器本地加密。服务端只负责转发密文，不读取聊天内容。</p>
           </div>
         </div>
 
@@ -57,7 +57,7 @@
           </label>
 
           <button class="primary-button auth-submit" id="authSubmitButton" type="submit">登录</button>
-          <p class="auth-tip" id="authTip">输入用户名和密码即可，其余流程全部自动完成。</p>
+          <p class="auth-tip" id="authTip">同一账号可多端进入，消息密钥由浏览器自动处理。</p>
         </form>
       </div>
     </section>
@@ -113,9 +113,9 @@
 
         <main class="chat-panel" id="chatPanel" aria-label="聊天区域">
           <section class="chat-empty" id="chatEmpty">
-            <div class="chat-empty-illustration">⟡</div>
+            <div class="chat-empty-illustration">P</div>
             <h2>选择一个用户开始私聊</h2>
-            <p>上方可以直接搜索用户名。发送与接收消息均在浏览器端自动完成加密处理。</p>
+            <p>搜索用户名后进入对话。发送、接收、历史预览都在本机完成解密。</p>
           </section>
 
           <section class="chat-thread" id="chatThread" hidden>

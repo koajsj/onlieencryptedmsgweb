@@ -442,8 +442,8 @@ function setAuthMode(mode) {
   elements.authSubmitButton.textContent = state.authMode === "login" ? "登录" : "注册";
   elements.authTip.textContent =
     state.authMode === "login"
-      ? "输入用户名和密码即可，进入后直接打开聊天，不再额外弹出解锁窗口。"
-      : "注册时会自动生成密钥，后续聊天全程自动加密。";
+      ? "同一账号可多端进入，消息密钥由浏览器自动处理。"
+      : "注册后自动生成本地密钥，服务端只保存必要的账号资料。";
   elements.authPasswordInput.autocomplete = state.authMode === "login" ? "current-password" : "new-password";
 }
 
@@ -1903,6 +1903,9 @@ function messageExists(peer, id, clientId = "") {
   return (state.messageCache.get(peer) || []).some((message) => {
     if (message.id === id) {
       return true;
+    }
+    if (message.pending || message.failed) {
+      return false;
     }
     if (!clientId) {
       return false;
