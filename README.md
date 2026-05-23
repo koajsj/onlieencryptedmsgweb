@@ -62,7 +62,7 @@ cd onlieencryptedmsgweb
 ### 第 4 步：安装依赖并构建
 
 ```bash
-npm install
+npm install --include=dev
 npm run build
 ```
 
@@ -70,7 +70,7 @@ npm run build
 
 ```bash
 npm install -g pm2
-pm2 start server.js --name secure-chat
+pm2 start /var/www/onlieencryptedmsgweb/server.js --name secure-chat --cwd /var/www/onlieencryptedmsgweb
 pm2 save
 pm2 startup
 ```
@@ -130,13 +130,14 @@ Caddy 会自动申请 HTTPS 证书。
 ```bash
 cd /var/www/onlieencryptedmsgweb
 git pull --ff-only origin main
-npm install
+npm install --include=dev
 npm run build
 pm2 restart secure-chat
 pm2 status secure-chat
 ```
 
 就这么简单。
+`--include=dev` 不能省略，因为构建依赖 `terser` 和 `clean-css-cli`。
 
 如果你只改了前端静态文件，也建议照样跑一遍 `npm run build`，避免线上文件不是最新压缩版本。
 现在 `npm start` 会自动检查构建产物是否过期；如果报错，先执行 `npm run build` 再启动。
@@ -169,12 +170,22 @@ journalctl -u caddy -n 200 --no-pager
 ss -lntp | grep 3000
 ```
 
+如果出现 `Script not found: /root/server.js`，执行下面几行重建 PM2 进程：
+
+```bash
+cd /var/www/onlieencryptedmsgweb
+pm2 delete secure-chat
+pm2 start /var/www/onlieencryptedmsgweb/server.js --name secure-chat --cwd /var/www/onlieencryptedmsgweb
+pm2 save
+pm2 status secure-chat
+```
+
 ---
 
 ## 4. 一句话总结
 
 - 第一次部署：装环境 -> 拉代码 -> build -> PM2 启服务 -> Caddy 绑域名和 HTTPS。
-- 日常更新：`git pull` -> `npm install` -> `npm run build` -> `pm2 restart secure-chat`。
+- 日常更新：`git pull` -> `npm install --include=dev` -> `npm run build` -> `pm2 restart secure-chat`。
 
 ---
 
