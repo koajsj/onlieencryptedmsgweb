@@ -91,6 +91,62 @@ async function startServer(envOverrides = {}) {
   };
 }
 
+async function startServerAndWaitForExit(envOverrides = {}) {
+  const port = 3200 + Math.floor(Math.random() * 1200);
+  const dataDir = typeof envOverrides.DATA_DIR === "string" && envOverrides.DATA_DIR
+    ? envOverrides.DATA_DIR
+    : fs.mkdtempSync(path.join(os.tmpdir(), "chat-site-test-"));
+  const serverProcess = spawn(process.execPath, [SERVER_PATH], {
+    cwd: ROOT_DIR,
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: String(port),
+      DATA_DIR: dataDir,
+      ...envOverrides
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+
+  let stderrText = "";
+  serverProcess.stderr.on("data", (chunk) => {
+    stderrText += chunk.toString("utf8");
+  });
+
+  const exitCode = await Promise.race([
+    new Promise((resolve) => {
+      serverProcess.on("exit", (code) => resolve(code));
+    }),
+    delay(5000).then(() => {
+      serverProcess.kill();
+      return null;
+    })
+  ]);
+
+  if (!envOverrides.DATA_DIR) {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+  return { exitCode, stderr: stderrText };
+}
+
+test("server fails fast on malformed data files", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-site-bad-data-"));
+  fs.writeFileSync(path.join(dataDir, "users.json"), "{not valid json", "utf8");
+  fs.writeFileSync(path.join(dataDir, "messages.json"), "[]", "utf8");
+  fs.writeFileSync(path.join(dataDir, "admin_audit.jsonl"), "", "utf8");
+
+  try {
+    const result = await startServerAndWaitForExit({
+      DATA_DIR: dataDir
+    });
+
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /failed to parse JSON file .*users\.json/i);
+  } finally {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 async function createEventsTicket(port, token) {
   const response = await postJson(port, "/api/events/token", {}, token);
   assert.equal(response.status, 200);
@@ -618,7 +674,7 @@ test("admin can login, view stats/messages and ban users", async () => {
 
 test("all configured admin accounts have full privileges", async () => {
   const server = await startServer({
-    ADMIN_ACCOUNTS: "root:rootpass,op:oppass,ro:ropass"
+    ADMIN_ACCOUNTS: "root:root:pass,op:op:pass,ro:ro:pass"
   });
 
   try {
@@ -632,7 +688,7 @@ test("all configured admin accounts have full privileges", async () => {
     });
     assert.equal(register.status, 201);
 
-    const roLogin = await postJson(server.port, "/api/admin/login", { username: "ro", password: "ropass" });
+    const roLogin = await postJson(server.port, "/api/admin/login", { username: "ro", password: "ro:pass" });
     assert.equal(roLogin.status, 200);
     const roToken = (await roLogin.json()).token;
 
@@ -649,7 +705,7 @@ test("all configured admin accounts have full privileges", async () => {
     const roAudit = await getJson(server.port, "/api/admin/audit?limit=20", roToken);
     assert.equal(roAudit.response.status, 200);
 
-    const opLogin = await postJson(server.port, "/api/admin/login", { username: "op", password: "oppass" });
+    const opLogin = await postJson(server.port, "/api/admin/login", { username: "op", password: "op:pass" });
     assert.equal(opLogin.status, 200);
     const opToken = (await opLogin.json()).token;
 

@@ -23,6 +23,14 @@ ENV_FILE="/etc/default/${APP_NAME}"
 CADDYFILE="/etc/caddy/Caddyfile"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
+ADMIN_ACCOUNTS_VALUE="${ADMIN_ACCOUNTS:-}"
+ADMIN_USERNAME_VALUE="${ADMIN_USERNAME:-}"
+ADMIN_PASSWORD_VALUE="${ADMIN_PASSWORD:-}"
+GENERATED_ADMIN_CREDS="0"
+
+generate_admin_password() {
+  node -e 'process.stdout.write(require("node:crypto").randomBytes(18).toString("base64url"))'
+}
 
 install_base_packages() {
   apt-get update
@@ -83,12 +91,32 @@ prepare_data_dir() {
 }
 
 write_environment_file() {
-  cat > "${ENV_FILE}" <<EOF
-HOST=${APP_HOST}
-PORT=${APP_PORT}
-DATA_DIR=${DATA_DIR}
-EOF
-  chmod 0644 "${ENV_FILE}"
+  if [ -n "${ADMIN_ACCOUNTS_VALUE}" ]; then
+    :
+  elif [ -n "${ADMIN_USERNAME_VALUE}" ] || [ -n "${ADMIN_PASSWORD_VALUE}" ]; then
+    if [ -z "${ADMIN_USERNAME_VALUE}" ] || [ -z "${ADMIN_PASSWORD_VALUE}" ]; then
+      echo "If you set admin credentials manually, both ADMIN_USERNAME and ADMIN_PASSWORD must be provided." >&2
+      exit 1
+    fi
+  else
+    ADMIN_USERNAME_VALUE="admin"
+    ADMIN_PASSWORD_VALUE="$(generate_admin_password)"
+    GENERATED_ADMIN_CREDS="1"
+  fi
+
+  {
+    printf 'HOST=%s\n' "${APP_HOST}"
+    printf 'PORT=%s\n' "${APP_PORT}"
+    printf 'DATA_DIR=%s\n' "${DATA_DIR}"
+    printf 'NODE_ENV=production\n'
+    if [ -n "${ADMIN_ACCOUNTS_VALUE}" ]; then
+      printf 'ADMIN_ACCOUNTS=%s\n' "${ADMIN_ACCOUNTS_VALUE}"
+    else
+      printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME_VALUE}"
+      printf 'ADMIN_PASSWORD=%s\n' "${ADMIN_PASSWORD_VALUE}"
+    fi
+  } > "${ENV_FILE}"
+  chmod 0600 "${ENV_FILE}"
 }
 
 write_systemd_service() {
@@ -136,6 +164,11 @@ print_summary() {
   echo "Data directory: ${DATA_DIR}"
   echo "HTTPS endpoint: https://${DOMAIN}"
   echo "HTTPS endpoint: https://${WWW_DOMAIN}"
+  if [ "${GENERATED_ADMIN_CREDS}" = "1" ]; then
+    echo "Admin credentials were generated automatically."
+    echo "Admin username: ${ADMIN_USERNAME_VALUE}"
+    echo "Admin password: ${ADMIN_PASSWORD_VALUE}"
+  fi
 }
 
 main() {

@@ -33,11 +33,17 @@ const MESSAGE_PERSIST_DEBOUNCE_MS = Math.max(
   Number.parseInt(process.env.MESSAGE_PERSIST_DEBOUNCE_MS || "180", 10) || 180
 );
 const HSTS_MAX_AGE_SECONDS = Math.max(0, Number.parseInt(process.env.HSTS_MAX_AGE_SECONDS || "0", 10) || 0);
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "qwer@1234";
-const ADMIN_ACCOUNTS = String(
-  process.env.ADMIN_ACCOUNTS || `${ADMIN_USERNAME}:${ADMIN_PASSWORD}`
-)
+const rawAdminAccounts = String(process.env.ADMIN_ACCOUNTS || "").trim();
+const rawAdminUsername = typeof process.env.ADMIN_USERNAME === "string" ? process.env.ADMIN_USERNAME.trim() : "";
+const rawAdminPassword = typeof process.env.ADMIN_PASSWORD === "string" ? process.env.ADMIN_PASSWORD : "";
+const hasExplicitAdminAccounts = rawAdminAccounts.length > 0;
+const hasExplicitAdminPair = rawAdminUsername.length > 0 && rawAdminPassword.length > 0;
+if (process.env.NODE_ENV === "production" && !hasExplicitAdminAccounts && !hasExplicitAdminPair) {
+  throw new Error("admin credentials must be configured in production");
+}
+const ADMIN_USERNAME = rawAdminUsername || "admin";
+const ADMIN_PASSWORD = rawAdminPassword || "qwer@1234";
+const ADMIN_ACCOUNTS = (hasExplicitAdminAccounts ? rawAdminAccounts : `${ADMIN_USERNAME}:${ADMIN_PASSWORD}`)
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
@@ -101,9 +107,12 @@ function ensureDataFiles() {
 function parseAdminAccounts() {
   const accounts = [];
   for (const item of ADMIN_ACCOUNTS) {
-    const segments = item.split(":");
-    const username = String(segments[0] || "").trim();
-    const password = String(segments[1] || "");
+    const separatorIndex = item.indexOf(":");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const username = String(item.slice(0, separatorIndex) || "").trim();
+    const password = String(item.slice(separatorIndex + 1) || "");
     if (!username || !password) {
       continue;
     }
@@ -116,6 +125,9 @@ function parseAdminAccounts() {
 }
 
 const adminAccounts = parseAdminAccounts();
+if (adminAccounts.length === 0) {
+  throw new Error("no valid admin accounts configured");
+}
 
 function findAdminAccount(username) {
   return adminAccounts.find((account) => account.username === username) || null;
@@ -140,16 +152,16 @@ function applyAuditTextRetention() {
 
 function loadAdminAuditState() {
   ensureDataFiles();
+  const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) {
+    adminAuditLastHash = "GENESIS";
+    return;
+  }
   try {
-    const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
-    if (lines.length === 0) {
-      adminAuditLastHash = "GENESIS";
-      return;
-    }
     const last = JSON.parse(lines[lines.length - 1]);
     adminAuditLastHash = String(last.hash || "GENESIS");
   } catch (error) {
-    adminAuditLastHash = "GENESIS";
+    throw new Error(`failed to parse admin audit log ${ADMIN_AUDIT_FILE}: ${error.message}`);
   }
 }
 
@@ -194,11 +206,12 @@ function maskAuditText(value) {
   return `${start}${"*".repeat(Math.max(2, text.length - 4))}${end}`;
 }
 
-function readJsonFile(filePath, fallback) {
+function readJsonFile(filePath) {
+  const raw = fs.readFileSync(filePath, "utf8");
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return JSON.parse(raw);
   } catch (error) {
-    return fallback;
+    throw new Error(`failed to parse JSON file ${filePath}: ${error.message}`);
   }
 }
 
@@ -210,13 +223,21 @@ function writeJsonFile(filePath, value) {
 
 function loadData() {
   ensureDataFiles();
-  users = readJsonFile(USERS_FILE, []).map((user) => ({
+  const loadedUsers = readJsonFile(USERS_FILE);
+  if (!Array.isArray(loadedUsers)) {
+    throw new Error(`expected ${USERS_FILE} to contain a JSON array`);
+  }
+  users = loadedUsers.map((user) => ({
     ...user,
     banned: Boolean(user?.banned),
     bannedReason: String(user?.bannedReason || ""),
     bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0
   }));
-  messages = readJsonFile(MESSAGES_FILE, []).map((message) => ({
+  const loadedMessages = readJsonFile(MESSAGES_FILE);
+  if (!Array.isArray(loadedMessages)) {
+    throw new Error(`expected ${MESSAGES_FILE} to contain a JSON array`);
+  }
+  messages = loadedMessages.map((message) => ({
     ...message,
     auditText: typeof message?.auditText === "string" ? message.auditText : "",
     clientId: typeof message?.clientId === "string" ? message.clientId : ""
@@ -1941,9 +1962,14 @@ function serveStatic(req, res, url) {
   });
 }
 
-loadData();
-applyAuditTextRetention();
-loadAdminAuditState();
+try {
+  loadData();
+  applyAuditTextRetention();
+  loadAdminAuditState();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 setInterval(cleanRateBuckets, RATE_WINDOW_MS).unref();
 setInterval(cleanSessions, Math.min(5 * 60 * 1000, SESSION_TTL_MS)).unref();
 setInterval(cleanEventTickets, EVENT_TICKET_TTL_MS).unref();

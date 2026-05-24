@@ -32,6 +32,7 @@ sudo bash scripts/deploy-debian.sh
 - 把站点配置自动写入 `/etc/caddy/Caddyfile`
 - 把应用注册成 `systemd` 服务
 - 把运行数据放到 `/var/lib/secure-chat/data`，避免更新代码时污染仓库
+- 以 `NODE_ENV=production` 启动，并写入管理员凭据
 - 重载并启动 `caddy` 和 `secure-chat`
 
 默认域名已经写死为：
@@ -98,6 +99,10 @@ journalctl -u caddy -n 200 --no-pager
 ss -lntp | grep 3000
 ```
 
+如果服务启动失败，先检查 `data/users.json`、`data/messages.json` 和 `data/admin_audit.jsonl` 是否是合法内容。
+
+现在服务启动会直接报错，不会再把坏数据静默当成空数据处理。
+
 ---
 
 ## 4. 一句话总结
@@ -111,5 +116,6 @@ ss -lntp | grep 3000
 
 - 后台页面仍然是 `https://你的域名/admin.html`
 - 主站页面不再提供可见后台入口
-- 账号密码：由服务器环境变量 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 控制
+- 账号密码：由服务器环境变量 `ADMIN_ACCOUNTS`，或 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 控制
+- 如果部署时没有提供管理员凭据，脚本会自动生成一组并在终端输出
 - 支持：站点统计、用户列表筛选分页、批量封禁/解封、改用户名、改密码、查看全站聊天审计、审计日志链路、水印导出
