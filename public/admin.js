@@ -325,7 +325,7 @@ function renderAuditLogs() {
     article.className = "msg-item";
     article.innerHTML = `
       <div class="msg-meta">
-        <span>${item.action} | ${item.actor} (${item.role})</span>
+        <span>${escapeHtml(item.action)} | ${escapeHtml(item.actor)} (${escapeHtml(item.role)})</span>
         <span>${formatDateTime(item.at)}</span>
       </div>
       <div class="msg-text"></div>

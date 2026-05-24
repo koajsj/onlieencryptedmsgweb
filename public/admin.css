@@ -2,16 +2,16 @@
   --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --font-body: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
 
-  --bg-1: #dfe7e4;
-  --bg-2: #f4f2ea;
-  --ink: #202628;
-  --muted: #647275;
-  --card: rgba(255, 255, 255, 0.86);
-  --card-strong: rgba(255, 255, 255, 0.95);
-  --line: rgba(32, 38, 40, 0.14);
-  --accent: #1e8a84;
-  --accent-strong: #146963;
-  --danger: #bf5a47;
+  --bg-1: #dce5df;
+  --bg-2: #f5f1e8;
+  --ink: #1f2628;
+  --muted: #667477;
+  --card: rgba(255, 255, 255, 0.84);
+  --card-strong: rgba(255, 255, 255, 0.94);
+  --line: rgba(32, 38, 40, 0.12);
+  --accent: #157f78;
+  --accent-strong: #0f645f;
+  --danger: #b95546;
   --success: #3e8d5f;
 }
 
@@ -33,30 +33,30 @@ body {
   color: var(--ink);
   font-family: var(--font-body);
   background:
-    radial-gradient(circle at 8% 18%, rgba(30, 138, 132, 0.22), transparent 36%),
-    radial-gradient(circle at 92% 88%, rgba(191, 90, 71, 0.14), transparent 38%),
+    radial-gradient(circle at 8% 18%, rgba(21, 127, 120, 0.2), transparent 34%),
+    radial-gradient(circle at 92% 88%, rgba(185, 85, 70, 0.12), transparent 38%),
     linear-gradient(130deg, var(--bg-1), var(--bg-2));
 }
 
 .admin-root {
-  width: min(1440px, calc(100% - 36px));
-  margin: 18px auto;
-  min-height: calc(100vh - 36px);
+  width: min(1440px, calc(100% - 32px));
+  margin: 16px auto;
+  min-height: calc(100vh - 32px);
 }
 
 .login-card,
 .panel,
 .topbar {
   border: 1px solid var(--line);
-  border-radius: 18px;
-  box-shadow: 0 18px 44px rgba(15, 22, 23, 0.11);
-  backdrop-filter: blur(5px);
+  border-radius: 24px;
+  box-shadow: 0 20px 48px rgba(15, 22, 23, 0.12);
+  backdrop-filter: blur(8px);
 }
 
 .login-card {
   width: min(460px, 100%);
   margin: max(10vh, 78px) auto 0;
-  padding: 34px 30px 28px;
+  padding: 36px 32px 30px;
   background: linear-gradient(165deg, var(--card-strong), rgba(255, 255, 255, 0.82));
   animation: card-in 420ms ease;
 }
@@ -78,8 +78,8 @@ body {
 .login-card h1 {
   margin: 14px 0 10px;
   font-family: var(--font-display);
-  font-size: clamp(28px, 4vw, 34px);
-  line-height: 1.1;
+  font-size: clamp(30px, 4vw, 38px);
+  line-height: 1.08;
   letter-spacing: 0.01em;
 }
 
@@ -115,7 +115,7 @@ input,
 select {
   min-height: 42px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 0 12px;
   color: var(--ink);
   background: #ffffff;
@@ -132,7 +132,7 @@ select:focus {
 button {
   min-height: 40px;
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: 14px;
   color: #f6fffe;
   background: linear-gradient(140deg, var(--accent), var(--accent-strong));
   font-weight: 700;
@@ -163,7 +163,7 @@ button:disabled {
 
 .dashboard {
   display: grid;
-  gap: 14px;
+  gap: 16px;
   animation: board-in 420ms ease;
 }
 
@@ -171,7 +171,7 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 16px;
+  padding: 16px 18px;
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.84), rgba(244, 248, 248, 0.96)),
     var(--card);
@@ -185,7 +185,7 @@ button:disabled {
 .topbar h2 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: clamp(24px, 3vw, 30px);
+  font-size: clamp(25px, 3vw, 32px);
   font-weight: 700;
   display: inline-flex;
   align-items: center;
@@ -235,13 +235,13 @@ button:disabled {
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .stat-card {
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 11px 13px;
+  border-radius: 18px;
+  padding: 12px 14px;
   background: var(--card);
 }
 
@@ -255,12 +255,12 @@ button:disabled {
   display: block;
   margin-top: 8px;
   font-family: var(--font-display);
-  font-size: 28px;
+  font-size: 30px;
   line-height: 1;
 }
 
 .panel {
-  padding: 14px;
+  padding: 16px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 251, 0.95)),
     var(--card);
@@ -282,7 +282,7 @@ button:disabled {
   align-items: center;
   gap: 8px;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 24px;
 }
 
 .filters {
@@ -294,7 +294,7 @@ button:disabled {
 
 .filters input,
 .filters select {
-  min-width: 140px;
+  min-width: 150px;
 }
 
 .mask-toggle {
@@ -309,7 +309,7 @@ button:disabled {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .batch-bar #usersPager {
@@ -330,7 +330,7 @@ table {
 th,
 td {
   border-bottom: 1px solid var(--line);
-  padding: 9px 8px;
+  padding: 10px 8px;
   text-align: left;
   font-size: 13px;
   white-space: nowrap;
@@ -392,8 +392,8 @@ td.actions {
 
 .msg-item {
   border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 10px;
+  border-radius: 16px;
+  padding: 12px;
   background: rgba(255, 255, 255, 0.82);
 }
 
@@ -413,10 +413,10 @@ td.actions {
 
 .toast {
   position: fixed;
-  right: 14px;
-  bottom: 14px;
-  padding: 10px 12px;
-  border-radius: 10px;
+  right: 16px;
+  bottom: 16px;
+  padding: 11px 13px;
+  border-radius: 14px;
   color: #fbffff;
   background: #1c5f5b;
   opacity: 0;
@@ -446,9 +446,9 @@ td.actions {
 
 .dialog-card {
   width: min(520px, 100%);
-  padding: 20px;
+  padding: 22px;
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: 22px;
   background: linear-gradient(180deg, rgba(248, 244, 236, 0.98), rgba(236, 228, 214, 0.96));
   box-shadow: 0 26px 54px rgba(17, 24, 24, 0.24);
   animation: card-in 220ms ease both;
@@ -457,7 +457,7 @@ td.actions {
 .dialog-card h3 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 24px;
 }
 
 .dialog-card p {
@@ -481,7 +481,7 @@ td.actions {
   min-height: 46px;
   padding: 0 14px;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.82);
 }
 
@@ -532,6 +532,12 @@ td.actions {
     flex-direction: column;
     align-items: stretch;
   }
+
+  .filters input,
+  .filters select {
+    min-width: 0;
+    flex: 1 1 180px;
+  }
 }
 
 @media (max-width: 720px) {
@@ -554,6 +560,10 @@ td.actions {
     width: 100%;
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .toolbar button {
+    width: 100%;
   }
 
   .dialog-card {

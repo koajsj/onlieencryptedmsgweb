@@ -47,6 +47,15 @@ const ADMIN_ACCOUNTS = (hasExplicitAdminAccounts ? rawAdminAccounts : `${ADMIN_U
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
+const RESERVED_USERNAME_KEYS = new Set(
+  ADMIN_ACCOUNTS.map((item) => {
+    const separatorIndex = item.indexOf(":");
+    if (separatorIndex <= 0) {
+      return "";
+    }
+    return item.slice(0, separatorIndex).trim().toLowerCase();
+  }).filter(Boolean)
+);
 const AUDIT_TEXT_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.AUDIT_TEXT_RETENTION_DAYS || "30", 10) || 30);
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
 const TRUSTED_ORIGINS = new Set(
@@ -430,6 +439,10 @@ function normalizeUsername(value) {
     value: username,
     key: username.toLowerCase()
   };
+}
+
+function isReservedUsernameKey(usernameKey) {
+  return RESERVED_USERNAME_KEYS.has(String(usernameKey || "").trim().toLowerCase());
 }
 
 function normalizePassword(value) {
@@ -1043,6 +1056,10 @@ async function handleRegister(req, res) {
     sendJson(res, 400, { error: "username must be 3-24 characters using letters, numbers, or underscore" });
     return;
   }
+  if (isReservedUsernameKey(normalizedUsername.key)) {
+    sendJson(res, 409, { error: "username is reserved" });
+    return;
+  }
   if (password.length < 4 || password.length > 72) {
     sendJson(res, 400, { error: "password must be 4-72 characters" });
     return;
@@ -1408,6 +1425,10 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     const normalizedUsername = normalizeUsername(requestedName);
     if (!normalizedUsername) {
       sendJson(res, 400, { error: "username must be 3-24 characters using letters, numbers, or underscore" });
+      return;
+    }
+    if (normalizedUsername.key !== user.usernameKey && isReservedUsernameKey(normalizedUsername.key)) {
+      sendJson(res, 409, { error: "username is reserved" });
       return;
     }
     if (normalizedUsername.key !== user.usernameKey && findUserByKey(normalizedUsername.key)) {

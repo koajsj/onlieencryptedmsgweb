@@ -1,35 +1,35 @@
 ﻿:root {
   color-scheme: dark;
-  --bg-0: #081111;
-  --bg-1: #0d1c1b;
-  --bg-2: #132726;
-  --panel: rgba(8, 17, 17, 0.82);
-  --panel-strong: rgba(12, 27, 26, 0.94);
-  --panel-muted: rgba(16, 34, 33, 0.7);
-  --line: rgba(157, 184, 177, 0.22);
-  --line-strong: rgba(80, 224, 186, 0.58);
-  --text: #fbfffc;
-  --muted: #c9d9d4;
-  --accent-main: #50e0ba;
-  --accent-ink: #06221c;
-  --accent-cold: #8db6ff;
-  --danger: #ff7474;
-  --ok: #77d991;
-  --bubble-peer: linear-gradient(145deg, #102423, #0d1d1d);
-  --bubble-own: linear-gradient(140deg, #5cf0c6, #9db8ff);
-  --shadow-xl: 0 28px 90px rgba(0, 0, 0, 0.42);
-  --shadow-md: 0 14px 44px rgba(0, 0, 0, 0.34);
-  --shadow-sm: 0 7px 20px rgba(0, 0, 0, 0.24);
-  --radius-xl: 10px;
-  --radius-lg: 8px;
-  --radius-md: 8px;
-  --radius-sm: 6px;
+  --bg-0: #050d10;
+  --bg-1: #09171a;
+  --bg-2: #122326;
+  --panel: rgba(9, 18, 20, 0.82);
+  --panel-strong: rgba(10, 23, 25, 0.94);
+  --panel-muted: rgba(15, 29, 31, 0.72);
+  --line: rgba(163, 194, 187, 0.18);
+  --line-strong: rgba(124, 240, 210, 0.56);
+  --text: #f4fbf9;
+  --muted: #b8c9c5;
+  --accent-main: #7cf0d2;
+  --accent-ink: #051c18;
+  --accent-cold: #9fc2ff;
+  --danger: #ff7e7e;
+  --ok: #7edb95;
+  --bubble-peer: linear-gradient(145deg, rgba(14, 33, 34, 0.98), rgba(10, 22, 23, 0.98));
+  --bubble-own: linear-gradient(140deg, #79f0d5, #9fc2ff);
+  --shadow-xl: 0 34px 110px rgba(0, 0, 0, 0.48);
+  --shadow-md: 0 18px 50px rgba(0, 0, 0, 0.38);
+  --shadow-sm: 0 8px 22px rgba(0, 0, 0, 0.24);
+  --radius-xl: 22px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
-  --font-display: "Microsoft YaHei UI", "Source Han Sans SC", "PingFang SC", sans-serif;
-  --font-body: "Microsoft YaHei UI", "Source Han Sans SC", "PingFang SC", sans-serif;
+  --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+  --font-body: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei UI", sans-serif;
 }
 
 * {
@@ -46,9 +46,9 @@ body {
   font-family: var(--font-body);
   color: var(--text);
   background:
-    linear-gradient(115deg, rgba(80, 224, 186, 0.13), transparent 32%),
-    linear-gradient(245deg, rgba(141, 182, 255, 0.12), transparent 36%),
-    linear-gradient(130deg, var(--bg-0), var(--bg-1) 55%, var(--bg-2));
+    radial-gradient(circle at 10% 18%, rgba(124, 240, 210, 0.18), transparent 28%),
+    radial-gradient(circle at 90% 84%, rgba(159, 194, 255, 0.14), transparent 26%),
+    linear-gradient(130deg, var(--bg-0), var(--bg-1) 50%, var(--bg-2));
   letter-spacing: 0;
 }
 
@@ -63,7 +63,7 @@ body {
 .ambient-scan {
   position: absolute;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(80, 224, 186, 0.48), transparent);
+  background: linear-gradient(90deg, transparent, rgba(124, 240, 210, 0.48), transparent);
   opacity: 0.68;
 }
 
@@ -87,9 +87,9 @@ body {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(rgba(238, 248, 243, 0.045) 1px, transparent 1px) 0 0 / 32px 32px,
-    linear-gradient(90deg, rgba(238, 248, 243, 0.035) 1px, transparent 1px) 0 0 / 32px 32px;
-  mask-image: linear-gradient(170deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.12));
+    linear-gradient(rgba(238, 248, 243, 0.035) 1px, transparent 1px) 0 0 / 30px 30px,
+    linear-gradient(90deg, rgba(238, 248, 243, 0.03) 1px, transparent 1px) 0 0 / 30px 30px;
+  mask-image: linear-gradient(170deg, rgba(0, 0, 0, 0.82), rgba(0, 0, 0, 0.08));
 }
 
 button,
@@ -129,12 +129,12 @@ button {
 }
 
 .auth-card {
-  width: min(620px, 100%);
-  padding: 38px;
-  border: 1px solid rgba(80, 224, 186, 0.22);
+  width: min(680px, 100%);
+  padding: 42px;
+  border: 1px solid rgba(124, 240, 210, 0.18);
   border-radius: var(--radius-xl);
   background:
-    linear-gradient(150deg, rgba(22, 52, 49, 0.96), rgba(10, 25, 24, 0.99)),
+    linear-gradient(155deg, rgba(15, 34, 35, 0.96), rgba(6, 14, 15, 0.99)),
     repeating-linear-gradient(
       120deg,
       rgba(255, 255, 255, 0.022) 0,
@@ -145,6 +145,7 @@ button {
   box-shadow: var(--shadow-xl);
   position: relative;
   overflow: hidden;
+  backdrop-filter: blur(14px);
   animation: reveal-up 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -152,8 +153,20 @@ button {
   content: "";
   position: absolute;
   inset: auto 0 0 0;
-  height: 3px;
-  background: linear-gradient(90deg, transparent, rgba(80, 224, 186, 0.86), rgba(141, 182, 255, 0.78), transparent);
+  height: 4px;
+  background: linear-gradient(90deg, transparent, rgba(124, 240, 210, 0.88), rgba(159, 194, 255, 0.86), transparent);
+}
+
+.auth-card::before {
+  content: "";
+  position: absolute;
+  inset: 18px 18px auto auto;
+  width: 180px;
+  height: 180px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(124, 240, 210, 0.16), transparent 72%);
+  filter: blur(8px);
+  pointer-events: none;
 }
 
 .auth-brand {
@@ -179,12 +192,12 @@ button {
   place-items: center;
   width: 62px;
   height: 62px;
-  border-radius: 8px;
+  border-radius: 16px;
   color: #061a16;
   background: linear-gradient(135deg, #5df0c8, #9db8ff);
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.34);
   font-family: var(--font-display);
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
 }
 
@@ -192,17 +205,17 @@ button {
   width: 48px;
   height: 48px;
   font-size: 22px;
-  border-radius: 8px;
+  border-radius: 14px;
 }
 
 .auth-brand h1 {
   margin: 0;
   color: #ffffff;
   font-family: var(--font-display);
-  font-size: 39px;
+  font-size: clamp(34px, 5vw, 44px);
   font-weight: 800;
   letter-spacing: 0;
-  line-height: 1.05;
+  line-height: 1.02;
 }
 
 .auth-copy {
@@ -215,11 +228,11 @@ button {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
-  margin-top: 30px;
+  margin-top: 28px;
   padding: 8px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: rgba(13, 19, 23, 0.46);
+  border-radius: 18px;
+  background: rgba(10, 18, 20, 0.52);
   position: relative;
   z-index: 1;
 }
@@ -264,16 +277,17 @@ button {
 .composer-field textarea {
   width: 100%;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   outline: none;
   color: var(--text);
-  background: rgba(5, 14, 14, 0.86);
-  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+  background: rgba(5, 14, 14, 0.84);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease, transform 180ms ease;
 }
 
 .field input {
   min-height: 52px;
   padding: 0 16px;
+  border-radius: 16px;
 }
 
 .field input::placeholder,
@@ -285,8 +299,8 @@ button {
 .field input:focus,
 .topbar-search:focus-within,
 .composer-field textarea:focus {
-  border-color: rgba(80, 224, 186, 0.58);
-  box-shadow: 0 0 0 3px rgba(80, 224, 186, 0.16);
+  border-color: rgba(124, 240, 210, 0.58);
+  box-shadow: 0 0 0 4px rgba(124, 240, 210, 0.14);
 }
 
 .primary-button,
@@ -308,7 +322,7 @@ button {
   min-height: 52px;
   color: #061a16;
   background: linear-gradient(135deg, #58e6c0, #9db8ff);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 14px 28px rgba(68, 125, 152, 0.24);
   font-weight: 800;
 }
 
@@ -317,7 +331,7 @@ button {
   padding: 0 14px;
   color: var(--text);
   border-color: var(--line);
-  background: rgba(8, 18, 18, 0.9);
+  background: rgba(9, 19, 20, 0.9);
   font-weight: 700;
 }
 
@@ -328,7 +342,7 @@ button {
   place-items: center;
   color: var(--text);
   border-color: var(--line);
-  background: rgba(8, 18, 18, 0.92);
+  background: rgba(9, 19, 20, 0.92);
 }
 
 .compact {
@@ -351,9 +365,9 @@ button {
 .topbar,
 .sidebar,
 .chat-panel {
-  border: 1px solid rgba(80, 224, 186, 0.2);
+  border: 1px solid rgba(124, 240, 210, 0.16);
   background:
-    linear-gradient(170deg, rgba(14, 32, 31, 0.9), rgba(6, 15, 15, 0.95)),
+    linear-gradient(170deg, rgba(13, 27, 29, 0.9), rgba(6, 14, 15, 0.96)),
     linear-gradient(120deg, rgba(255, 255, 255, 0.02), transparent 56%);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(8px);
@@ -364,9 +378,9 @@ button {
   grid-template-columns: 220px minmax(260px, 1fr) auto;
   gap: 18px;
   align-items: center;
-  min-height: 82px;
-  padding: 16px 18px;
-  border-radius: var(--radius-lg);
+  min-height: 88px;
+  padding: 18px 20px;
+  border-radius: 24px;
 }
 
 .topbar-brand {
@@ -379,7 +393,7 @@ button {
 .topbar-brand strong {
   display: block;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 24px;
   letter-spacing: 0.03em;
   line-height: 1;
 }
@@ -391,7 +405,7 @@ button {
   min-height: 50px;
   padding: 0 16px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   background: rgba(5, 14, 14, 0.72);
 }
 
@@ -421,7 +435,7 @@ button {
   gap: 10px;
   padding: 8px 10px 8px 8px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   background: rgba(5, 14, 14, 0.74);
 }
 
@@ -443,8 +457,8 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(290px, 30vw) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(300px, 28vw) minmax(0, 1fr);
+  gap: 14px;
   min-height: calc(100vh - 146px);
   min-height: calc(100dvh - 146px);
   align-items: stretch;
@@ -457,7 +471,7 @@ button {
 }
 
 .sidebar {
-  padding: 16px;
+  padding: 18px;
 }
 
 .sidebar-block {
@@ -477,7 +491,7 @@ button {
 .sidebar-head h2 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 25px;
+  font-size: 27px;
   font-weight: 800;
 }
 
@@ -514,12 +528,12 @@ button {
   gap: 12px;
   align-items: center;
   width: 100%;
-  padding: 13px;
-  border: 1px solid rgba(80, 224, 186, 0.16);
-  border-radius: var(--radius-md);
+  padding: 14px;
+  border: 1px solid rgba(124, 240, 210, 0.14);
+  border-radius: 18px;
   overflow: hidden;
   background:
-    linear-gradient(140deg, rgba(11, 27, 26, 0.96), rgba(5, 15, 15, 0.92)),
+    linear-gradient(140deg, rgba(11, 27, 27, 0.96), rgba(5, 15, 15, 0.92)),
     linear-gradient(120deg, rgba(255, 255, 255, 0.02), transparent 60%);
   text-align: left;
   transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
@@ -540,13 +554,13 @@ button {
 
 .list-item:hover,
 .list-item.is-active {
-  border-color: rgba(80, 224, 186, 0.62);
+  border-color: rgba(124, 240, 210, 0.62);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   transform: translateX(2px);
 }
 
 .list-item.is-pinned {
-  border-color: rgba(141, 182, 255, 0.66);
+  border-color: rgba(159, 194, 255, 0.66);
 }
 
 .list-row {
@@ -592,7 +606,7 @@ button {
   align-items: center;
   min-height: 18px;
   padding: 0 7px;
-  border: 1px solid rgba(80, 224, 186, 0.42);
+  border: 1px solid rgba(124, 240, 210, 0.42);
   border-radius: 999px;
   color: var(--accent-main);
   font-size: 10px;
@@ -665,9 +679,9 @@ button {
   position: absolute;
   top: 0;
   left: 0;
-  width: 31%;
+  width: 27%;
   height: 100%;
-  border-right: 1px solid rgba(80, 224, 186, 0.12);
+  border-right: 1px solid rgba(124, 240, 210, 0.12);
   pointer-events: none;
 }
 
@@ -690,9 +704,9 @@ button {
   place-items: center;
   width: 94px;
   height: 94px;
-  border-radius: var(--radius-md);
+  border-radius: 18px;
   color: var(--accent-main);
-  border: 1px solid rgba(80, 224, 186, 0.38);
+  border: 1px solid rgba(124, 240, 210, 0.38);
   background: linear-gradient(145deg, rgba(16, 34, 33, 0.8), rgba(6, 15, 15, 0.94));
   font-family: var(--font-display);
   font-size: 38px;
@@ -702,7 +716,7 @@ button {
 .chat-empty h2 {
   margin: 0;
   font-family: var(--font-display);
-  font-size: 32px;
+  font-size: clamp(30px, 3.2vw, 40px);
   font-weight: 800;
 }
 
@@ -723,8 +737,8 @@ button {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 18px 24px;
-  border-bottom: 1px solid rgba(80, 224, 186, 0.18);
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(124, 240, 210, 0.18);
 }
 
 .thread-actions {
@@ -760,7 +774,7 @@ button {
 
 .thread-copy strong {
   font-family: var(--font-display);
-  font-size: 26px;
+  font-size: clamp(24px, 2.3vw, 30px);
   font-weight: 800;
 }
 
@@ -775,7 +789,7 @@ button {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
-  padding: 12px 24px 0;
+  padding: 14px 24px 0;
 }
 
 .thread-search {
@@ -785,7 +799,7 @@ button {
   width: min(520px, 100%);
   padding: 0 14px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   background: rgba(5, 14, 14, 0.82);
 }
 
@@ -806,9 +820,9 @@ button {
 .message-stream {
   overflow: auto;
   min-height: 0;
-  padding: 22px 24px;
+  padding: 24px 24px 22px;
   background:
-    linear-gradient(180deg, rgba(80, 224, 186, 0.1), rgba(10, 23, 22, 0) 128px),
+    linear-gradient(180deg, rgba(124, 240, 210, 0.09), rgba(10, 23, 22, 0) 128px),
     linear-gradient(180deg, rgba(8, 19, 19, 0.86), rgba(4, 11, 11, 0.96));
 }
 
@@ -821,7 +835,7 @@ button {
 .conversation-list::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background: rgba(80, 224, 186, 0.34);
+  background: rgba(124, 240, 210, 0.34);
   background-clip: padding-box;
 }
 
@@ -878,7 +892,7 @@ button {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
   animation: stagger-in 280ms ease both;
 }
 
@@ -909,14 +923,14 @@ button {
 }
 
 .message-body {
-  max-width: min(76%, 680px);
+  max-width: min(74%, 700px);
 }
 
 .message-reply {
   margin-bottom: 8px;
   padding: 10px 12px;
   border-left: 3px solid var(--accent-main);
-  border-radius: var(--radius-md);
+  border-radius: 14px;
   color: var(--muted);
   background: rgba(255, 255, 255, 0.04);
 }
@@ -935,8 +949,8 @@ button {
 }
 
 .bubble {
-  padding: 13px 16px;
-  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  border-radius: 18px;
   line-height: 1.7;
   box-shadow: var(--shadow-sm);
   word-break: break-word;
@@ -1019,8 +1033,8 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: end;
-  padding: 16px 24px 22px;
-  border-top: 1px solid rgba(80, 224, 186, 0.18);
+  padding: 18px 24px 22px;
+  border-top: 1px solid rgba(124, 240, 210, 0.18);
   background: rgba(5, 14, 14, 0.92);
 }
 
@@ -1031,9 +1045,9 @@ button {
   gap: 12px;
   align-items: flex-start;
   padding: 10px 12px;
-  border: 1px solid rgba(80, 224, 186, 0.28);
-  border-radius: var(--radius-md);
-  background: rgba(80, 224, 186, 0.08);
+  border: 1px solid rgba(124, 240, 210, 0.28);
+  border-radius: 16px;
+  background: rgba(124, 240, 210, 0.08);
 }
 
 .composer-reply-copy {
@@ -1062,7 +1076,7 @@ button {
 
 .composer-field textarea {
   min-height: 56px;
-  max-height: 180px;
+  max-height: 200px;
   padding: 14px 16px;
   resize: none;
   line-height: 1.58;
@@ -1077,7 +1091,7 @@ button {
   place-items: center;
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   color: #f5ecdc;
   font-family: var(--font-display);
   font-weight: 700;
@@ -1115,7 +1129,7 @@ button {
   z-index: 40;
   max-width: min(420px, calc(100vw - 32px));
   padding: 11px 14px;
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   color: #061a16;
   background: linear-gradient(135deg, #58e6c0, #9db8ff);
   box-shadow: var(--shadow-md);
@@ -1267,7 +1281,7 @@ button {
   }
 
   .message-body {
-    max-width: 90%;
+    max-width: 92%;
   }
 }
 
@@ -1287,6 +1301,36 @@ button {
   .chat-empty p,
   .auth-copy {
     font-size: 13px;
+  }
+
+  .auth-brand {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-brand .brand-badge {
+    width: 54px;
+    height: 54px;
+    font-size: 24px;
+  }
+
+  .topbar-user {
+    width: 100%;
+  }
+
+  .user-chip {
+    width: 100%;
+  }
+
+  .thread-actions {
+    gap: 6px;
+  }
+
+  .thread-action {
+    flex: 1 1 0;
+  }
+
+  .message-body {
+    max-width: 100%;
   }
 }
 
