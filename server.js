@@ -934,6 +934,22 @@ function pushPresence(username, online) {
   }
 }
 
+function broadcastUserRename(previousUsername, nextUsername) {
+  const payload = {
+    previousUsername,
+    username: nextUsername,
+    at: Date.now()
+  };
+  for (const [, connections] of onlineConnections) {
+    if (connections.size === 0) {
+      continue;
+    }
+    for (const connection of connections) {
+      writeSse(connection.res, "user-renamed", payload);
+    }
+  }
+}
+
 function attachConnection(username, res) {
   const heartbeat = setInterval(() => {
     writeSse(res, "heartbeat", { at: Date.now() });
@@ -1445,6 +1461,9 @@ async function handleAdminUserPatch(req, res, url, pathname) {
       if (message.to === previousUsername) {
         message.to = user.username;
       }
+      if (message.replyTo?.from === previousUsername) {
+        message.replyTo.from = user.username;
+      }
     }
     rebuildMessageBuckets();
     for (const sessionRecord of sessions.values()) {
@@ -1458,10 +1477,15 @@ async function handleAdminUserPatch(req, res, url, pathname) {
       onlineConnections.set(user.username, connections);
     }
     purgeUserEventTickets(previousUsername);
+    broadcastUserRename(previousUsername, user.username);
   }
 
   if (Object.prototype.hasOwnProperty.call(body, "banned")) {
-    const banned = Boolean(body.banned);
+    if (typeof body.banned !== "boolean") {
+      sendJson(res, 400, { error: "banned must be a boolean" });
+      return;
+    }
+    const banned = body.banned;
     user.banned = banned;
     user.bannedReason = banned ? String(body.bannedReason || "admin action").slice(0, 120) : "";
     user.bannedAt = banned ? Date.now() : 0;
@@ -1524,7 +1548,11 @@ async function handleAdminUsersBatch(req, res, url) {
     return;
   }
   const usernames = Array.isArray(body.usernames) ? body.usernames.map((item) => String(item || "").trim()) : [];
-  const banned = Boolean(body.banned);
+  if (typeof body.banned !== "boolean") {
+    sendJson(res, 400, { error: "banned must be a boolean" });
+    return;
+  }
+  const banned = body.banned;
   const reason = String(body.bannedReason || "admin batch action").slice(0, 120);
   const targetUsers = users.filter((user) => usernames.includes(user.username)).slice(0, 200);
   for (const user of targetUsers) {

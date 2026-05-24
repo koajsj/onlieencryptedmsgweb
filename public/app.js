@@ -1899,6 +1899,87 @@ function mergePresence(username, online) {
   render();
 }
 
+async function handleUserRenamed(payload) {
+  const previousUsername = String(payload?.previousUsername || "").trim();
+  const nextUsername = String(payload?.username || "").trim();
+  if (!previousUsername || !nextUsername || previousUsername === nextUsername) {
+    return;
+  }
+
+  if (state.me?.username === previousUsername) {
+    state.me = {
+      ...state.me,
+      username: nextUsername
+    };
+    elements.meUsername.textContent = nextUsername;
+    setAvatar(elements.meAvatar, nextUsername);
+  }
+
+  if (state.activePeer === previousUsername) {
+    state.activePeer = nextUsername;
+    localStorage.setItem(STORAGE.activePeer, nextUsername);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(state.drafts, previousUsername)) {
+    state.drafts[nextUsername] = state.drafts[previousUsername];
+    delete state.drafts[previousUsername];
+    saveDrafts();
+  }
+
+  let pendingChanged = false;
+  state.pendingOutbox = state.pendingOutbox.map((entry) => {
+    let changed = false;
+    const next = { ...entry };
+    if (next.peer === previousUsername) {
+      next.peer = nextUsername;
+      changed = true;
+    }
+    if (next.replyTo?.from === previousUsername) {
+      next.replyTo = {
+        ...next.replyTo,
+        from: nextUsername
+      };
+      changed = true;
+    }
+    if (changed) {
+      pendingChanged = true;
+      return next;
+    }
+    return entry;
+  });
+  if (pendingChanged) {
+    savePendingOutbox();
+    syncPendingMessagesFromOutbox();
+  }
+
+  if (Object.prototype.hasOwnProperty.call(state.conversationPrefs, previousUsername)) {
+    state.conversationPrefs[nextUsername] = state.conversationPrefs[previousUsername];
+    delete state.conversationPrefs[previousUsername];
+    saveConversationPrefs();
+  }
+
+  state.conversations = [];
+  state.searchResults = [];
+  state.messageCache.clear();
+  state.messagePageState.clear();
+  state.conversationKeys.clear();
+  state.previewCache.clear();
+  state.conversationSearchIndex.clear();
+  state.importedPeerKeys.clear();
+  state.peerKeys.clear();
+  state.pendingMessages.clear();
+
+  await loadConversations();
+  if (state.searchQuery.trim()) {
+    await loadSearchResults(state.searchQuery);
+  }
+  if (state.activePeer) {
+    await openConversation(state.activePeer);
+    return;
+  }
+  render();
+}
+
 function messageExists(peer, id, clientId = "") {
   return (state.messageCache.get(peer) || []).some((message) => {
     if (message.id === id) {
@@ -2030,6 +2111,11 @@ async function openEventStream() {
   source.addEventListener("presence", (event) => {
     const payload = JSON.parse(event.data);
     mergePresence(payload.username, payload.online);
+  });
+
+  source.addEventListener("user-renamed", (event) => {
+    const payload = JSON.parse(event.data);
+    void handleUserRenamed(payload);
   });
 
   source.addEventListener("message", (event) => {

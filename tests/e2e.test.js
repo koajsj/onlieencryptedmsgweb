@@ -647,6 +647,17 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.equal(users.response.status, 200);
     assert.ok(users.json.users.some((item) => item.username === "AdminA"));
 
+    const invalidBan = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/AdminA`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ banned: "false" })
+    });
+    assert.equal(invalidBan.status, 400);
+    assert.equal((await invalidBan.json()).error, "banned must be a boolean");
+
     const allMessages = await getJson(server.port, "/api/admin/messages?limit=20&mask=0", adminToken);
     assert.equal(allMessages.response.status, 200);
     assert.ok(allMessages.json.messages.some((item) => item.auditText === "admin-visible-text"));
@@ -667,6 +678,76 @@ test("admin can login, view stats/messages and ban users", async () => {
     });
     assert.equal(blockedLogin.status, 403);
     assert.equal((await blockedLogin.json()).error, "account banned");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin rename broadcasts user rename and keeps the session synchronized", async () => {
+  const server = await startServer();
+
+  try {
+    const aliceRegister = await postJson(server.port, "/api/register", {
+      username: "RenameA",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 51).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 52).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 53).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 54).toString("base64")
+    });
+    const bobRegister = await postJson(server.port, "/api/register", {
+      username: "RenameB",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 55).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 56).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 57).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 58).toString("base64")
+    });
+    const aliceToken = (await aliceRegister.json()).token;
+    const bobToken = (await bobRegister.json()).token;
+
+    const aliceEvents = await openEvents(server.port, aliceToken);
+    const bobEvents = await openEvents(server.port, bobToken);
+    await Promise.all([aliceEvents.ready, bobEvents.ready]);
+
+    const adminLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(adminLogin.status, 200);
+    const adminToken = (await adminLogin.json()).token;
+
+    const renameResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/RenameB`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ username: "RenameC" })
+    });
+    assert.equal(renameResponse.status, 200);
+
+    const renameEvent = await waitForEvent(aliceEvents, "user-renamed", (payload) => {
+      return payload.previousUsername === "RenameB" && payload.username === "RenameC";
+    });
+    assert.equal(renameEvent.previousUsername, "RenameB");
+    assert.equal(renameEvent.username, "RenameC");
+
+    const renamedSession = await getJson(server.port, "/api/me", bobToken);
+    assert.equal(renamedSession.response.status, 200);
+    assert.equal(renamedSession.json.user.username, "RenameC");
+
+    const renamedSend = await postJson(
+      server.port,
+      "/api/messages",
+      { to: "RenameA", ...makeEncryptedPayload(63) },
+      bobToken
+    );
+    assert.equal(renamedSend.status, 201);
+    assert.equal((await renamedSend.json()).message.from, "RenameC");
+
+    aliceEvents.close();
+    bobEvents.close();
   } finally {
     await server.stop();
   }
@@ -764,6 +845,17 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
     assert.equal(batchResponse.status, 200);
     const batchPayload = await batchResponse.json();
     assert.equal(batchPayload.updated, 2);
+
+    const invalidBatch = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/batch`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ usernames: ["BatchA"], banned: "false" })
+    });
+    assert.equal(invalidBatch.status, 400);
+    assert.equal((await invalidBatch.json()).error, "banned must be a boolean");
 
     const bannedOnly = await getJson(server.port, "/api/admin/users?status=banned&q=batch", adminToken);
     assert.equal(bannedOnly.response.status, 200);
