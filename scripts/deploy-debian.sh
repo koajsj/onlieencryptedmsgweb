@@ -52,7 +52,8 @@ install_caddy() {
 prepare_application_dir() {
   mkdir -p "$(dirname "${APP_DIR}")"
   if [ -d "${APP_DIR}/.git" ]; then
-    git -C "${APP_DIR}" pull --ff-only origin "${APP_BRANCH}"
+    git -C "${APP_DIR}" fetch origin "${APP_BRANCH}"
+    git -C "${APP_DIR}" reset --hard "origin/${APP_BRANCH}"
   else
     git clone --branch "${APP_BRANCH}" "${REPO_URL}" "${APP_DIR}"
   fi
