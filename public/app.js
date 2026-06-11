@@ -1137,19 +1137,57 @@ function renderListItem(item, isSearchResult) {
   button.append(avatar, meta);
   return button;
 }
-function renderMessage(message) {
+function isSameDay(a, b) {
+  if (!a || !b) return false;
+  const da = new Date(a);
+  const db = new Date(b);
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+}
+
+function formatDaySeparator(timestamp) {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (isSameDay(date, today)) return "今天";
+  if (isSameDay(date, yesterday)) return "昨天";
+  return date.toLocaleDateString([], { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+}
+
+function createDaySeparator(timestamp) {
+  const sep = document.createElement("div");
+  sep.className = "message-day-sep";
+  sep.textContent = formatDaySeparator(timestamp);
+  return sep;
+}
+
+function isMessageConsecutive(prev, current) {
+  if (!prev || !current) return false;
+  if (prev.mine !== current.mine) return false;
+  if (prev.from !== current.from) return false;
+  const gap = Math.abs((current.createdAt || 0) - (prev.createdAt || 0));
+  if (gap > 5 * 60 * 1000) return false;
+  if (!isSameDay(prev.createdAt, current.createdAt)) return false;
+  if (prev.pending || prev.failed || current.pending || current.failed) return false;
+  return true;
+}
+
+function renderMessage(message, options = {}) {
   const article = document.createElement("article");
-  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}`;
+  const isConsecutive = options.consecutive ? " is-consecutive" : "";
+  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${isConsecutive}`;
   article.dataset.messageId = message.id;
   article.dataset.messageText = message.text;
   const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || "")}">回复</button>`;
   let statusAction = "";
   if (message.failed) {
-    statusAction = `<span class="message-state is-error">发送失败</span> · <button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">重试</button>`;
+    statusAction = `<span class="message-state is-error"><i class="dot"></i>发送失败</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">重试</button>`;
   } else if (message.pending) {
-    statusAction = `<span class="message-state">${message.sendStatus === "queued" ? "离线待发送" : "发送中"}</span>`;
+    const stateClass = message.sendStatus === "queued" ? "is-queued" : "is-sending";
+    const stateLabel = message.sendStatus === "queued" ? "离线待发送" : "发送中";
+    statusAction = `<span class="message-state ${stateClass}"><i class="dot"></i>${stateLabel}</span>`;
   } else if (message.mine && message.sendStatus === "sent") {
-    statusAction = '<span class="message-state">已发送</span>';
+    statusAction = `<span class="message-state is-sent"><i class="dot"></i>已发送</span>`;
   }
   const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || "")}">复制</button>`;
   const replyMarkup = message.replyTo
@@ -1160,12 +1198,21 @@ function renderMessage(message) {
       </div>
     `
     : "";
+  const metaParts = [escapeHtml(formatTime(message.createdAt))];
+  if (statusAction) metaParts.push(statusAction);
+  if (!isConsecutive || !message.mine) {
+    metaParts.push(replyAction);
+  }
+  metaParts.push(copyAction);
+  const avatarMarkup = isConsecutive
+    ? ""
+    : `<div class="message-avatar avatar avatar-tone-${avatarTone(message.from)}">${escapeHtml(avatarInitial(message.from))}</div>`;
   article.innerHTML = `
-    ${message.mine ? "" : `<div class="message-avatar avatar avatar-tone-${avatarTone(message.from)}">${escapeHtml(avatarInitial(message.from))}</div>`}
+    ${message.mine ? "" : avatarMarkup}
     <div class="message-body">
       ${replyMarkup}
       <div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>
-      <div class="message-meta">${escapeHtml(formatTime(message.createdAt))}${statusAction ? ` | ${statusAction}` : ""} | ${replyAction} | ${copyAction}</div>
+      <div class="message-meta">${metaParts.join('<span class="message-meta-sep">·</span>')}</div>
     </div>
   `;
   return article;
@@ -1256,8 +1303,18 @@ function renderThread(options = {}) {
       elements.messageList.append(createSpacer(virtualWindow.topSpacer));
     }
     const slice = virtualWindow ? visibleMessages.slice(virtualWindow.start, virtualWindow.end) : visibleMessages;
+    let prevMessage = null;
+    let lastDayKey = "";
     for (const message of slice) {
-      elements.messageList.append(renderMessage(message));
+      const dayKey = new Date(message.createdAt || 0).toDateString();
+      if (dayKey && dayKey !== lastDayKey) {
+        elements.messageList.append(createDaySeparator(message.createdAt || Date.now()));
+        lastDayKey = dayKey;
+        prevMessage = null;
+      }
+      const consecutive = isMessageConsecutive(prevMessage, message);
+      elements.messageList.append(renderMessage(message, { consecutive }));
+      prevMessage = message;
     }
     if (virtualWindow && virtualWindow.bottomSpacer > 0) {
       elements.messageList.append(createSpacer(virtualWindow.bottomSpacer));
