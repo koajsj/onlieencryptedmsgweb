@@ -16,6 +16,7 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
+const MESSAGES_LOG_FILE = path.join(DATA_DIR, "messages.jsonl");
 const ADMIN_AUDIT_FILE = path.join(DATA_DIR, "admin_audit.jsonl");
 
 const MAX_BODY_BYTES = 128 * 1024;
@@ -33,17 +34,24 @@ const MESSAGE_PERSIST_DEBOUNCE_MS = Math.max(
   Number.parseInt(process.env.MESSAGE_PERSIST_DEBOUNCE_MS || "180", 10) || 180
 );
 const HSTS_MAX_AGE_SECONDS = Math.max(0, Number.parseInt(process.env.HSTS_MAX_AGE_SECONDS || "0", 10) || 0);
+const COOKIE_SECURE =
+  process.env.COOKIE_SECURE === "1" || (process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "0");
+const USER_SESSION_COOKIE = "secure_chat_session";
+const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const rawAdminAccounts = String(process.env.ADMIN_ACCOUNTS || "").trim();
 const rawAdminUsername = typeof process.env.ADMIN_USERNAME === "string" ? process.env.ADMIN_USERNAME.trim() : "";
 const rawAdminPassword = typeof process.env.ADMIN_PASSWORD === "string" ? process.env.ADMIN_PASSWORD : "";
+const rawAdminPasswordHash =
+  typeof process.env.ADMIN_PASSWORD_HASH === "string" ? process.env.ADMIN_PASSWORD_HASH.trim() : "";
 const hasExplicitAdminAccounts = rawAdminAccounts.length > 0;
 const hasExplicitAdminPair = rawAdminUsername.length > 0 && rawAdminPassword.length > 0;
-if (process.env.NODE_ENV === "production" && !hasExplicitAdminAccounts && !hasExplicitAdminPair) {
+const hasExplicitAdminHash = rawAdminUsername.length > 0 && rawAdminPasswordHash.length > 0;
+if (process.env.NODE_ENV === "production" && !hasExplicitAdminAccounts && !hasExplicitAdminPair && !hasExplicitAdminHash) {
   throw new Error("admin credentials must be configured in production");
 }
 const ADMIN_USERNAME = rawAdminUsername || "admin";
-const ADMIN_PASSWORD = rawAdminPassword || "qwer@1234";
-const ADMIN_ACCOUNTS = (hasExplicitAdminAccounts ? rawAdminAccounts : `${ADMIN_USERNAME}:${ADMIN_PASSWORD}`)
+const ADMIN_SECRET = rawAdminPasswordHash || rawAdminPassword || "qwer@1234";
+const ADMIN_ACCOUNTS = (hasExplicitAdminAccounts ? rawAdminAccounts : `${ADMIN_USERNAME}:${ADMIN_SECRET}`)
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean);
@@ -92,6 +100,7 @@ const conversationRateBuckets = new Map();
 const eventTickets = new Map();
 const messageBuckets = new Map();
 const messageClientIndex = new Map();
+const usersByKey = new Map();
 const scryptAsync = promisify(crypto.scrypt);
 
 let users = [];
@@ -99,6 +108,8 @@ let messages = [];
 let adminAuditLastHash = "GENESIS";
 let pendingMessagesPersistTimer = null;
 let messagesDirty = false;
+let messagesRequireFullPersist = false;
+const pendingMessageAppends = [];
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -107,6 +118,9 @@ function ensureDataFiles() {
   }
   if (!fs.existsSync(MESSAGES_FILE)) {
     fs.writeFileSync(MESSAGES_FILE, "[]\n", "utf8");
+  }
+  if (!fs.existsSync(MESSAGES_LOG_FILE)) {
+    fs.writeFileSync(MESSAGES_LOG_FILE, "", "utf8");
   }
   if (!fs.existsSync(ADMIN_AUDIT_FILE)) {
     fs.writeFileSync(ADMIN_AUDIT_FILE, "", "utf8");
@@ -127,7 +141,7 @@ function parseAdminAccounts() {
     }
     accounts.push({
       username: username.trim(),
-      password
+      secret: password
     });
   }
   return accounts;
@@ -140,6 +154,23 @@ if (adminAccounts.length === 0) {
 
 function findAdminAccount(username) {
   return adminAccounts.find((account) => account.username === username) || null;
+}
+
+function timingSafeStringEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ""), "utf8");
+  const rightBuffer = Buffer.from(String(right || ""), "utf8");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+async function verifyAdminSecret(password, storedSecret) {
+  const secret = String(storedSecret || "");
+  if (secret.startsWith("scrypt:")) {
+    return verifyPassword(password, secret);
+  }
+  return timingSafeStringEqual(password, secret);
 }
 
 function applyAuditTextRetention() {
@@ -224,9 +255,30 @@ function readJsonFile(filePath) {
   }
 }
 
+function readJsonLinesFile(filePath) {
+  const raw = fs.readFileSync(filePath, "utf8");
+  const rows = [];
+  const lines = raw.split(/\r?\n/).filter(Boolean);
+  for (const [index, line] of lines.entries()) {
+    try {
+      rows.push(JSON.parse(line));
+    } catch (error) {
+      throw new Error(`failed to parse JSON line ${index + 1} in ${filePath}: ${error.message}`);
+    }
+  }
+  return rows;
+}
+
 function writeJsonFile(filePath, value) {
   const tempPath = `${filePath}.tmp`;
   fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
+function rewriteJsonLinesFile(filePath, rows) {
+  const tempPath = `${filePath}.tmp`;
+  const body = rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join("\n")}\n` : "";
+  fs.writeFileSync(tempPath, body, "utf8");
   fs.renameSync(tempPath, filePath);
 }
 
@@ -242,7 +294,10 @@ function loadData() {
     bannedReason: String(user?.bannedReason || ""),
     bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0
   }));
-  const loadedMessages = readJsonFile(MESSAGES_FILE);
+  rebuildUserIndex();
+
+  const logStat = fs.statSync(MESSAGES_LOG_FILE);
+  const loadedMessages = logStat.size > 0 ? readJsonLinesFile(MESSAGES_LOG_FILE) : readJsonFile(MESSAGES_FILE);
   if (!Array.isArray(loadedMessages)) {
     throw new Error(`expected ${MESSAGES_FILE} to contain a JSON array`);
   }
@@ -251,15 +306,25 @@ function loadData() {
     auditText: typeof message?.auditText === "string" ? message.auditText : "",
     clientId: typeof message?.clientId === "string" ? message.clientId : ""
   }));
+  messages.sort((left, right) => Number(left.createdAt) - Number(right.createdAt));
   rebuildMessageBuckets();
 }
 
 function persistUsers() {
   writeJsonFile(USERS_FILE, users);
+  rebuildUserIndex();
 }
 
 function persistMessagesNow() {
   writeJsonFile(MESSAGES_FILE, messages);
+  rewriteJsonLinesFile(MESSAGES_LOG_FILE, messages);
+}
+
+function persistMessageAppendsNow(rows) {
+  if (rows.length === 0) {
+    return;
+  }
+  fs.appendFileSync(MESSAGES_LOG_FILE, rows.map((row) => `${JSON.stringify(row)}\n`).join(""), "utf8");
 }
 
 function flushPendingMessagePersist() {
@@ -270,12 +335,25 @@ function flushPendingMessagePersist() {
   if (!messagesDirty) {
     return;
   }
+  const appends = pendingMessageAppends.splice(0);
+  const shouldFullPersist = messagesRequireFullPersist;
   messagesDirty = false;
-  persistMessagesNow();
+  messagesRequireFullPersist = false;
+  if (shouldFullPersist) {
+    persistMessagesNow();
+    return;
+  }
+  persistMessageAppendsNow(appends);
 }
 
-function schedulePersistMessages() {
+function schedulePersistMessages(message = null) {
   messagesDirty = true;
+  if (message) {
+    pendingMessageAppends.push(message);
+  } else {
+    messagesRequireFullPersist = true;
+    pendingMessageAppends.length = 0;
+  }
   if (pendingMessagesPersistTimer) {
     return;
   }
@@ -301,6 +379,18 @@ function rebuildMessageBuckets() {
     messageBuckets.set(key, bucket);
     if (message.clientId) {
       messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
+    }
+  }
+  for (const bucket of messageBuckets.values()) {
+    bucket.sort((left, right) => left.createdAt - right.createdAt);
+  }
+}
+
+function rebuildUserIndex() {
+  usersByKey.clear();
+  for (const user of users) {
+    if (user?.usernameKey) {
+      usersByKey.set(user.usernameKey, user);
     }
   }
 }
@@ -335,13 +425,14 @@ function securityHeaders(extra = {}) {
   return headers;
 }
 
-function sendJson(res, status, payload) {
+function sendJson(res, status, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(
     status,
     securityHeaders({
       "Content-Type": "application/json; charset=utf-8",
-      "Content-Length": Buffer.byteLength(body)
+      "Content-Length": Buffer.byteLength(body),
+      ...extraHeaders
     })
   );
   res.end(body);
@@ -425,6 +516,21 @@ function rejectIfForbiddenOrLimited(req, res, key, limit, limitMessage) {
     return true;
   }
   return false;
+}
+
+function cacheControlForStaticFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".html") {
+    return "no-store";
+  }
+  if ([".js", ".css", ".json"].includes(ext)) {
+    return "public, max-age=0, must-revalidate";
+  }
+  return "public, max-age=86400";
+}
+
+function weakEtagForStat(stat) {
+  return `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
 }
 
 function normalizeUsername(value) {
@@ -533,11 +639,12 @@ function makeAvatarSeed(username) {
 async function hashPassword(password) {
   const salt = crypto.randomBytes(16).toString("hex");
   const hash = (await scryptAsync(password, salt, 64)).toString("hex");
-  return `${salt}:${hash}`;
+  return `scrypt:${salt}:${hash}`;
 }
 
 async function verifyPassword(password, storedHash) {
-  const [salt, hash] = String(storedHash || "").split(":");
+  const parts = String(storedHash || "").split(":");
+  const [salt, hash] = parts[0] === "scrypt" ? parts.slice(1) : parts;
   if (!salt || !hash || !/^[a-f0-9]{128}$/i.test(hash)) {
     return false;
   }
@@ -551,7 +658,7 @@ async function verifyPassword(password, storedHash) {
 }
 
 function findUserByKey(usernameKey) {
-  return users.find((user) => user.usernameKey === usernameKey) || null;
+  return usersByKey.get(usernameKey) || null;
 }
 
 function findUserByUsername(username) {
@@ -573,6 +680,52 @@ function createSession(username, role = "user") {
   return token;
 }
 
+function parseCookies(req) {
+  const header = String(req.headers.cookie || "");
+  const cookies = new Map();
+  for (const item of header.split(";")) {
+    const separatorIndex = item.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const name = item.slice(0, separatorIndex).trim();
+    const value = item.slice(separatorIndex + 1).trim();
+    if (!name) {
+      continue;
+    }
+    try {
+      cookies.set(name, decodeURIComponent(value));
+    } catch (error) {
+      cookies.set(name, value);
+    }
+  }
+  return cookies;
+}
+
+function cookieAttributes(maxAgeSeconds, pathValue = "/") {
+  return [
+    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
+    `Path=${pathValue}`,
+    "HttpOnly",
+    "SameSite=Lax",
+    COOKIE_SECURE ? "Secure" : ""
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+function sessionCookieHeader(name, token, maxAgeMs = SESSION_TTL_MS) {
+  return `${name}=${encodeURIComponent(token)}; ${cookieAttributes(maxAgeMs / 1000)}`;
+}
+
+function clearSessionCookieHeader(name) {
+  return `${name}=; ${cookieAttributes(0)}`;
+}
+
+function sessionCookieNameForPath(pathname) {
+  return pathname.startsWith("/api/admin") ? ADMIN_SESSION_COOKIE : USER_SESSION_COOKIE;
+}
+
 function parseBearerToken(req) {
   const auth = String(req.headers.authorization || "");
   if (!auth.startsWith("Bearer ")) {
@@ -582,7 +735,8 @@ function parseBearerToken(req) {
 }
 
 function getSessionFromRequest(req, url) {
-  const token = parseBearerToken(req);
+  const bearerToken = parseBearerToken(req);
+  const token = bearerToken || parseCookies(req).get(sessionCookieNameForPath(url.pathname)) || "";
   if (!token) {
     return null;
   }
@@ -863,8 +1017,7 @@ function listUsersForSearch(viewer, query) {
 
 function messagesBetween(leftUser, rightUser) {
   const key = conversationBucketKey(leftUser, rightUser);
-  const bucket = messageBuckets.get(key) || [];
-  return [...bucket].sort((left, right) => left.createdAt - right.createdAt);
+  return messageBuckets.get(key) || [];
 }
 
 function encodeMessageCursor(message) {
@@ -1135,6 +1288,8 @@ async function handleRegister(req, res) {
     token,
     user: publicUser(user),
     keyBundle: keyBundleForUser(user)
+  }, {
+    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
   });
 }
 
@@ -1188,6 +1343,8 @@ async function handleLogin(req, res) {
     token,
     user: publicUser(user),
     keyBundle: keyBundleForUser(user)
+  }, {
+    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
   });
 }
 
@@ -1197,7 +1354,9 @@ function handleLogout(req, res, url) {
     return;
   }
   sessions.delete(session.token);
-  sendJson(res, 200, { ok: true });
+  sendJson(res, 200, { ok: true }, {
+    "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
+  });
 }
 
 function handleLogoutAll(req, res, url) {
@@ -1209,6 +1368,8 @@ function handleLogoutAll(req, res, url) {
   sendJson(res, 200, {
     ok: true,
     revoked
+  }, {
+    "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
   });
 }
 
@@ -1282,7 +1443,7 @@ async function handleAdminLogin(req, res) {
   const username = String(body.username || "").trim();
   const password = String(body.password || "");
   const account = findAdminAccount(username);
-  if (!account || account.password !== password) {
+  if (!account || !(await verifyAdminSecret(password, account.secret))) {
     sendJson(res, 401, { error: "invalid admin credentials" });
     return;
   }
@@ -1294,6 +1455,8 @@ async function handleAdminLogin(req, res) {
       username: account.username,
       role: "admin"
     }
+  }, {
+    "Set-Cookie": sessionCookieHeader(ADMIN_SESSION_COOKIE, token)
   });
 }
 
@@ -1304,7 +1467,9 @@ function handleAdminLogout(req, res, url) {
   }
   recordAdminAction("admin_logout", session, req, {});
   sessions.delete(session.token);
-  sendJson(res, 200, { ok: true });
+  sendJson(res, 200, { ok: true }, {
+    "Set-Cookie": clearSessionCookieHeader(ADMIN_SESSION_COOKIE)
+  });
 }
 
 function handleAdminMe(req, res, url) {
@@ -1886,7 +2051,7 @@ async function handleSendMessage(req, res, url) {
   };
   messages.push(message);
   appendMessageBucket(message);
-  schedulePersistMessages();
+  schedulePersistMessages(message);
 
   const senderView = createMessageView(message, session.username);
   const recipientView = createMessageView(message, peer.username);
@@ -1996,11 +2161,26 @@ function serveStatic(req, res, url) {
     }
 
     const ext = path.extname(filePath).toLowerCase();
+    const etag = weakEtagForStat(stat);
+    const cacheControl = cacheControlForStaticFile(filePath);
+    if (req.headers["if-none-match"] === etag) {
+      res.writeHead(
+        304,
+        securityHeaders({
+          "Cache-Control": cacheControl,
+          ETag: etag
+        })
+      );
+      res.end();
+      return;
+    }
     res.writeHead(
       200,
       securityHeaders({
         "Content-Type": contentTypes[ext] || "application/octet-stream",
-        "Content-Length": stat.size
+        "Content-Length": stat.size,
+        "Cache-Control": cacheControl,
+        ETag: etag
       })
     );
     if (req.method === "HEAD") {

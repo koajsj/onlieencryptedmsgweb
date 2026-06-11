@@ -1,7 +1,6 @@
 ﻿"use strict";
 
 const STORAGE = {
-  token: "private-chat-token",
   activePeer: "private-chat-active-peer",
   authMode: "private-chat-auth-mode",
   conversationPrefs: "private-chat-conversation-prefs",
@@ -546,9 +545,6 @@ function createSpacer(height) {
 }
 
 function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true, clearPending = true) {
-  if (clearToken) {
-    localStorage.removeItem(STORAGE.token);
-  }
   if (clearActivePeer) {
     localStorage.removeItem(STORAGE.activePeer);
   }
@@ -563,10 +559,6 @@ async function api(pathname, options = {}) {
     ...(options.headers || {})
   };
 
-  if (state.token) {
-    headers.Authorization = `Bearer ${state.token}`;
-  }
-
   let body = options.body;
   if (body && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -578,6 +570,7 @@ async function api(pathname, options = {}) {
     response = await fetch(pathname, {
       method: options.method || "GET",
       headers,
+      credentials: "same-origin",
       body
     });
   } catch (error) {
@@ -663,11 +656,10 @@ function clearSession(showAuth = true, clearToken = true) {
 }
 
 function setSession(token, user, identity) {
-  state.token = token;
+  state.token = token ? "cookie" : "";
   state.me = user;
   state.identity = identity;
   resetLocalConversationState();
-  localStorage.setItem(STORAGE.token, token);
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
   elements.meUsername.textContent = user.username;
@@ -2542,6 +2534,5 @@ function boot() {
 }
 
 boot();
-
 
 

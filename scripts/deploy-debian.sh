@@ -32,6 +32,10 @@ generate_admin_password() {
   node -e 'process.stdout.write(require("node:crypto").randomBytes(18).toString("base64url"))'
 }
 
+hash_admin_password() {
+  ADMIN_PASSWORD_TO_HASH="$1" node -e 'const crypto = require("node:crypto"); const password = process.env.ADMIN_PASSWORD_TO_HASH || ""; const salt = crypto.randomBytes(16).toString("hex"); const hash = crypto.scryptSync(password, salt, 64).toString("hex"); process.stdout.write(`scrypt:${salt}:${hash}`);'
+}
+
 install_base_packages() {
   apt-get update
   apt-get install -y \
@@ -86,6 +90,9 @@ prepare_data_dir() {
   if [ -f "${APP_DIR}/data/messages.json" ] && [ ! -f "${DATA_DIR}/messages.json" ]; then
     cp "${APP_DIR}/data/messages.json" "${DATA_DIR}/messages.json"
   fi
+  if [ -f "${APP_DIR}/data/messages.jsonl" ] && [ ! -f "${DATA_DIR}/messages.jsonl" ]; then
+    cp "${APP_DIR}/data/messages.jsonl" "${DATA_DIR}/messages.jsonl"
+  fi
 
   chown -R www-data:www-data "$(dirname "${DATA_DIR}")"
 }
@@ -113,7 +120,7 @@ write_environment_file() {
       printf 'ADMIN_ACCOUNTS=%s\n' "${ADMIN_ACCOUNTS_VALUE}"
     else
       printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME_VALUE}"
-      printf 'ADMIN_PASSWORD=%s\n' "${ADMIN_PASSWORD_VALUE}"
+      printf 'ADMIN_PASSWORD_HASH=%s\n' "$(hash_admin_password "${ADMIN_PASSWORD_VALUE}")"
     fi
   } > "${ENV_FILE}"
   chmod 0600 "${ENV_FILE}"

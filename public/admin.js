@@ -1,7 +1,5 @@
 ﻿"use strict";
 
-const STORAGE_KEY = "private-chat-admin-token";
-
 const elements = {
   loginCard: document.querySelector("#loginCard"),
   loginForm: document.querySelector("#loginForm"),
@@ -50,7 +48,7 @@ const elements = {
 };
 
 const state = {
-  token: localStorage.getItem(STORAGE_KEY) || "",
+  token: "cookie",
   admin: { username: "", role: "admin" },
   stats: {},
   users: [],
@@ -165,9 +163,6 @@ async function promptDialog(options) {
 
 async function api(pathname, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
-  if (state.token) {
-    headers.Authorization = `Bearer ${state.token}`;
-  }
   let body = options.body;
   if (body && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -175,7 +170,7 @@ async function api(pathname, options = {}) {
   }
   let response;
   try {
-    response = await fetch(pathname, { method: options.method || "GET", headers, body });
+    response = await fetch(pathname, { method: options.method || "GET", headers, credentials: "same-origin", body });
   } catch (error) {
     throw new Error("网络连接失败，请稍后重试");
   }
@@ -443,12 +438,11 @@ async function login(username, password) {
     method: "POST",
     body: { username, password }
   });
-  state.token = payload.token || "";
+  state.token = payload.token ? "cookie" : "";
   state.admin = {
     username: payload.admin?.username || "管理员",
     role: payload.admin?.role || "admin"
   };
-  localStorage.setItem(STORAGE_KEY, state.token);
   updateAdminHeader();
   setLoggedIn(true);
   await refreshAll(true);
@@ -463,7 +457,6 @@ async function logout() {
   state.token = "";
   state.admin = { username: "", role: "admin" };
   state.lastRefreshAt = 0;
-  localStorage.removeItem(STORAGE_KEY);
   updateAdminHeader();
   setLoggedIn(false);
 }
@@ -833,10 +826,6 @@ function syncPermissionUi() {
 
 async function boot() {
   bindEvents();
-  if (!state.token) {
-    setLoggedIn(false);
-    return;
-  }
   try {
     const payload = await api("/api/admin/me");
     state.admin = {
@@ -849,7 +838,6 @@ async function boot() {
     await refreshAll(true);
   } catch (error) {
     state.token = "";
-    localStorage.removeItem(STORAGE_KEY);
     state.lastRefreshAt = 0;
     updateAdminHeader();
     setLoggedIn(false);

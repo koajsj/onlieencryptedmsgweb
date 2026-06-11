@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -41,6 +42,12 @@ function makeEncryptedPayload(fillByte) {
     nonce: Buffer.alloc(12, fillByte).toString("base64"),
     ciphertext: Buffer.alloc(64, fillByte + 1).toString("base64")
   };
+}
+
+function makeScryptHash(password) {
+  const salt = Buffer.alloc(16, 91).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `scrypt:${salt}:${hash}`;
 }
 
 async function waitForHealth(port, serverProcess) {
@@ -255,6 +262,10 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.ok(registerBody.user.publicKey);
     assert.ok(registerBody.token);
     assert.deepEqual(registerBody.keyBundle, SAMPLE_BUNDLES.Alice_1);
+    const registerCookie = register.headers.get("set-cookie") || "";
+    assert.match(registerCookie, /secure_chat_session=/);
+    assert.match(registerCookie, /HttpOnly/);
+    assert.match(registerCookie, /SameSite=Lax/);
 
     const duplicate = await postJson(server.port, "/api/register", {
       username: "alice_1",
@@ -276,6 +287,12 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.equal(me.response.status, 200);
     assert.equal(me.json.user.username, "Alice_1");
     assert.equal(me.json.user.publicKey, SAMPLE_BUNDLES.Alice_1.publicKey);
+
+    const cookieMeResponse = await fetch(`http://127.0.0.1:${server.port}/api/me`, {
+      headers: { Cookie: registerCookie.split(";")[0] }
+    });
+    assert.equal(cookieMeResponse.status, 200);
+    assert.equal((await cookieMeResponse.json()).user.username, "Alice_1");
 
     const keyBundle = await getJson(server.port, "/api/me/key-bundle", loginBody.token);
     assert.equal(keyBundle.response.status, 200);
@@ -795,6 +812,39 @@ test("all configured admin accounts have full privileges", async () => {
 
     const opExport = await getJson(server.port, "/api/admin/messages/export?reason=permission-check", opToken);
     assert.equal(opExport.response.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin password hash can be used instead of a plaintext admin password", async () => {
+  const server = await startServer({
+    ADMIN_USERNAME: "hashed_admin",
+    ADMIN_PASSWORD: "",
+    ADMIN_PASSWORD_HASH: makeScryptHash("admin-secret")
+  });
+
+  try {
+    const rejected = await postJson(server.port, "/api/admin/login", {
+      username: "hashed_admin",
+      password: "wrong-secret"
+    });
+    assert.equal(rejected.status, 401);
+
+    const accepted = await postJson(server.port, "/api/admin/login", {
+      username: "hashed_admin",
+      password: "admin-secret"
+    });
+    assert.equal(accepted.status, 200);
+    const cookie = accepted.headers.get("set-cookie") || "";
+    assert.match(cookie, /secure_chat_admin_session=/);
+    assert.match(cookie, /HttpOnly/);
+
+    const me = await fetch(`http://127.0.0.1:${server.port}/api/admin/me`, {
+      headers: { Cookie: cookie.split(";")[0] }
+    });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).admin.username, "hashed_admin");
   } finally {
     await server.stop();
   }
