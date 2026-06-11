@@ -1,0 +1,199 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#081214" />
+    <meta name="color-scheme" content="dark" />
+    <title>私聊消息</title>
+    <link rel="stylesheet" href="./styles.min.css" />
+  </head>
+  <body>
+    <div class="ambient-layer" aria-hidden="true">
+      <i class="ambient-grid"></i>
+      <i class="ambient-scan scan-1"></i>
+      <i class="ambient-scan scan-2"></i>
+    </div>
+
+    <section class="auth-screen" id="authScreen" aria-label="注册和登录">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <div class="brand-badge">P</div>
+          <div>
+            <p class="eyebrow">Private Line</p>
+            <h1 id="authHeading">登录私聊</h1>
+            <p class="auth-copy">账号进入，浏览器本地加密。服务端只负责转发密文，不读取聊天内容。</p>
+          </div>
+        </div>
+
+        <div class="auth-tabs" role="tablist" aria-label="登录注册切换">
+          <button class="auth-tab is-active" id="loginTab" type="button" data-mode="login">登录</button>
+          <button class="auth-tab" id="registerTab" type="button" data-mode="register">注册</button>
+        </div>
+
+        <form class="auth-form" id="authForm">
+          <label class="field">
+            <span>用户名</span>
+            <input
+              id="authUsernameInput"
+              name="username"
+              autocomplete="username"
+              minlength="3"
+              maxlength="24"
+              pattern="[A-Za-z0-9_]{3,24}"
+              placeholder="3-24 位，仅限字母、数字、下划线"
+              required
+            />
+          </label>
+
+          <label class="field">
+            <span>密码</span>
+            <input
+              id="authPasswordInput"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              minlength="4"
+              maxlength="72"
+              placeholder="至少 4 位"
+              required
+            />
+          </label>
+
+          <button class="primary-button auth-submit" id="authSubmitButton" type="submit">登录</button>
+          <p class="auth-tip" id="authTip" role="status" aria-live="polite">同一账号可多端进入，消息密钥由浏览器自动处理。</p>
+        </form>
+      </div>
+    </section>
+
+    <section class="workspace" id="workspace" hidden aria-label="私聊工作区">
+      <header class="topbar">
+        <div class="topbar-brand">
+          <div class="brand-badge is-small">P</div>
+          <div>
+            <p class="eyebrow">Signal Desk</p>
+            <strong>私聊消息</strong>
+          </div>
+        </div>
+
+        <label class="topbar-search" aria-label="搜索用户和会话">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input
+            id="globalSearchInput"
+            type="search"
+            placeholder="搜索用户或会话..."
+            aria-controls="searchResultList conversationList"
+          />
+        </label>
+
+        <div class="topbar-user">
+          <div class="user-chip">
+            <div class="avatar avatar-tone-0" id="meAvatar">我</div>
+            <div class="user-chip-copy">
+              <strong id="meUsername">未登录</strong>
+              <span class="meStatus-row">
+                <i class="user-chip-dot" id="meStatusDot" aria-hidden="true"></i>
+                <span id="meStatus" aria-live="polite">连接中</span>
+              </span>
+            </div>
+          </div>
+          <button class="ghost-button compact" id="logoutAllButton" type="button">退出所有设备</button>
+          <button class="ghost-button compact" id="logoutButton" type="button">退出</button>
+        </div>
+      </header>
+
+      <div class="app-shell">
+        <aside class="sidebar" id="sidebar" aria-label="会话列表">
+          <div class="sidebar-block">
+            <div class="sidebar-head">
+              <h2>会话</h2>
+              <span id="sidebarMeta">0 个会话</span>
+            </div>
+
+            <div class="list-group" id="searchGroup" hidden>
+              <div class="group-title">搜索结果</div>
+              <div class="conversation-list" id="searchResultList"></div>
+            </div>
+
+            <div class="list-group">
+              <div class="group-title">最近私聊</div>
+              <div class="conversation-list" id="conversationList"></div>
+              <div class="sidebar-empty" id="conversationEmpty">
+                <span>还没有私聊，先搜索一个用户名开始聊天。</span>
+                <button class="ghost-button compact empty-search-button" id="sidebarSearchButton" type="button">搜索用户</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <main class="chat-panel" id="chatPanel" aria-label="聊天区域">
+          <section class="chat-empty" id="chatEmpty">
+            <div class="chat-empty-illustration">P</div>
+            <h2>选择一个用户开始私聊</h2>
+            <p>搜索用户名后进入对话。发送、接收、历史预览都在本机完成解密。</p>
+            <button class="primary-button empty-search-button" id="emptySearchButton" type="button">搜索用户</button>
+          </section>
+
+          <section class="chat-thread" id="chatThread" hidden>
+            <header class="thread-header">
+              <button class="icon-button mobile-back" id="mobileBackButton" type="button" aria-label="返回列表">←</button>
+              <div class="thread-user">
+                <div class="avatar avatar-tone-1" id="peerAvatar">A</div>
+                <div class="thread-copy">
+                  <strong id="peerName">未选择</strong>
+                  <span id="peerStatus">离线</span>
+                </div>
+              </div>
+              <div class="thread-actions">
+                <button class="ghost-button compact thread-action" id="pinPeerButton" type="button">置顶</button>
+                <button class="ghost-button compact thread-action" id="mutePeerButton" type="button">静音</button>
+                <button class="ghost-button compact thread-action" id="exportPeerButton" type="button">导出</button>
+              </div>
+            </header>
+
+            <div class="thread-tools">
+              <label class="thread-search" aria-label="搜索当前会话">
+                <span class="search-icon" aria-hidden="true">⌕</span>
+                <input id="threadSearchInput" type="search" placeholder="搜索当前会话..." aria-controls="messageList" />
+              </label>
+              <div class="thread-search-meta" id="threadSearchMeta">显示全部消息</div>
+            </div>
+
+            <div class="security-status" id="securityStatus" aria-live="polite">等待选择会话</div>
+
+            <div class="message-stream" id="messageList" aria-live="polite"></div>
+            <div class="typing-indicator" id="typingIndicator" hidden>
+              <div class="message-avatar avatar avatar-tone-1" id="typingAvatar" aria-hidden="true">·</div>
+              <div class="typing-bubble" aria-label="对方正在输入">
+                <span></span><span></span><span></span>
+              </div>
+            </div>
+            <button class="scroll-bottom-button" id="scrollBottomButton" type="button" aria-label="滚动到最新消息">
+              <span class="arrow" aria-hidden="true"></span>
+              <span class="count" id="scrollBottomCount" hidden></span>
+            </button>
+
+            <form class="composer" id="composerForm">
+              <div class="composer-reply" id="composerReplyBar" hidden>
+                <div class="composer-reply-copy">
+                  <span>回复 <strong id="replyPreviewAuthor"></strong></span>
+                  <p id="replyPreviewText"></p>
+                </div>
+                <button id="cancelReplyButton" type="button" class="ghost-button compact">取消</button>
+              </div>
+              <label class="composer-field">
+                <textarea id="messageInput" rows="1" maxlength="4000" placeholder="输入消息，Enter 发送 · Shift + Enter 换行" required></textarea>
+                <span class="composer-hint" aria-hidden="true">Enter 发送 · Shift+Enter 换行</span>
+              </label>
+              <button class="primary-button send-button" id="sendButton" type="submit">发送</button>
+            </form>
+          </section>
+        </main>
+      </div>
+    </section>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="./app.min.js" defer></script>
+  </body>
+</html>

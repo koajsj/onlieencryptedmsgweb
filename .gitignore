@@ -1,0 +1,13 @@
+node_modules/
+npm-debug.log*
+*.log
+.env
+.DS_Store
+Thumbs.db
+.claude/
+data/users.json
+data/messages.json
+data/message-key.json
+data/*.json
+data/*.jsonl
+!data/.gitkeep
