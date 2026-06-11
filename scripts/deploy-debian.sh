@@ -132,8 +132,18 @@ restart_services() {
   caddy validate --config "${CADDYFILE}"
   systemctl enable "${APP_NAME}"
   systemctl restart "${APP_NAME}"
+  if ! systemctl is-active --quiet "${APP_NAME}"; then
+    echo "${APP_NAME} failed to start. Recent logs:" >&2
+    journalctl -u "${APP_NAME}" -n 60 --no-pager >&2 || true
+    exit 1
+  fi
   systemctl enable caddy
   systemctl restart caddy
+  if ! systemctl is-active --quiet caddy; then
+    echo "caddy failed to start. Recent logs:" >&2
+    journalctl -u caddy -n 60 --no-pager >&2 || true
+    exit 1
+  fi
 }
 
 print_summary() {
