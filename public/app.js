@@ -29,6 +29,7 @@ const elements = {
   authTip: document.querySelector("#authTip"),
   emptySearchButton: document.querySelector("#emptySearchButton"),
   sidebarSearchButton: document.querySelector("#sidebarSearchButton"),
+  sidebarSearchInput: document.querySelector("#sidebarSearchInput"),
   globalSearchInput: document.querySelector("#globalSearchInput"),
   meAvatar: document.querySelector("#meAvatar"),
   meUsername: document.querySelector("#meUsername"),
@@ -37,6 +38,9 @@ const elements = {
   meStatusDot: document.querySelector("#meStatusDot"),
   sidebarMeta: document.querySelector("#sidebarMeta"),
   searchGroup: document.querySelector("#searchGroup"),
+  pinnedGroup: document.querySelector("#pinnedGroup"),
+  pinnedConversationList: document.querySelector("#pinnedConversationList"),
+  recentGroup: document.querySelector("#recentGroup"),
   searchResultList: document.querySelector("#searchResultList"),
   conversationList: document.querySelector("#conversationList"),
   conversationEmpty: document.querySelector("#conversationEmpty"),
@@ -46,6 +50,10 @@ const elements = {
   pinPeerButton: document.querySelector("#pinPeerButton"),
   mutePeerButton: document.querySelector("#mutePeerButton"),
   exportPeerButton: document.querySelector("#exportPeerButton"),
+  headerSearchButton: document.querySelector("#headerSearchButton"),
+  headerCallButton: document.querySelector("#headerCallButton"),
+  headerVideoButton: document.querySelector("#headerVideoButton"),
+  headerDetailsButton: document.querySelector("#headerDetailsButton"),
   threadSearchInput: document.querySelector("#threadSearchInput"),
   threadSearchMeta: document.querySelector("#threadSearchMeta"),
   securityStatus: document.querySelector("#securityStatus"),
@@ -65,7 +73,19 @@ const elements = {
   composerForm: document.querySelector("#composerForm"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
-  toast: document.querySelector("#toast")
+  toast: document.querySelector("#toast"),
+  contactPanel: document.querySelector("#contactPanel"),
+  detailsCloseButton: document.querySelector("#detailsCloseButton"),
+  contactDetailsEmpty: document.querySelector("#contactDetailsEmpty"),
+  contactDetailsContent: document.querySelector("#contactDetailsContent"),
+  detailsAvatar: document.querySelector("#detailsAvatar"),
+  detailsName: document.querySelector("#detailsName"),
+  detailsStatus: document.querySelector("#detailsStatus"),
+  detailsRole: document.querySelector("#detailsRole"),
+  detailsAbout: document.querySelector("#detailsAbout"),
+  detailsMediaGrid: document.querySelector("#detailsMediaGrid"),
+  detailsFilesList: document.querySelector("#detailsFilesList"),
+  notificationsToggle: document.querySelector("#notificationsToggle")
 };
 
 const state = {
@@ -107,8 +127,76 @@ const state = {
   drafts: {},
   submitInFlight: false,
   scrollBottomNewCount: 0,
-  scrollBottomHideTimer: 0
+  scrollBottomHideTimer: 0,
+  detailsPanelOpen: false
 };
+
+const CONTACT_DETAIL_PRESETS = [
+  {
+    role: "Product Manager at Northstar Labs",
+    about: "Balances product planning, stakeholder reviews, and calm async updates for distributed teams.",
+    media: [
+      { tone: "workspace", label: "Roadmap board" },
+      { tone: "plant", label: "Desk setup" },
+      { tone: "mountain", label: "Offsite notes" },
+      { tone: "interior", label: "Client lounge" }
+    ],
+    files: [
+      { name: "Project Brief v2.1.pdf", meta: "PDF · 2.4 MB", kind: "pdf" },
+      { name: "Launch Timeline.xlsx", meta: "XLS · 940 KB", kind: "xls" },
+      { name: "Meeting Notes.docx", meta: "DOC · 320 KB", kind: "doc" }
+    ],
+    inlineFile: { name: "Project Brief v2.1.pdf", meta: "PDF · 2.4 MB", kind: "pdf" }
+  },
+  {
+    role: "Design Lead at Atelier Cloud",
+    about: "Keeps design reviews focused, organized, and easy to action without losing visual polish.",
+    media: [
+      { tone: "interior", label: "Moodboard" },
+      { tone: "workspace", label: "Wireframes" },
+      { tone: "plant", label: "Studio drop" },
+      { tone: "mountain", label: "Brand retreat" }
+    ],
+    files: [
+      { name: "Design QA Checklist.pdf", meta: "PDF · 1.8 MB", kind: "pdf" },
+      { name: "Asset Inventory.xlsx", meta: "XLS · 760 KB", kind: "xls" },
+      { name: "Brand Notes.docx", meta: "DOC · 280 KB", kind: "doc" }
+    ],
+    inlineFile: { name: "Design QA Checklist.pdf", meta: "PDF · 1.8 MB", kind: "pdf" }
+  },
+  {
+    role: "Operations Lead at Fieldframe",
+    about: "Uses concise communication, structured follow-ups, and secure file exchange to unblock delivery.",
+    media: [
+      { tone: "plant", label: "Ops dashboard" },
+      { tone: "workspace", label: "Planning grid" },
+      { tone: "mountain", label: "Site survey" },
+      { tone: "interior", label: "Meeting room" }
+    ],
+    files: [
+      { name: "Weekly Handoff.pdf", meta: "PDF · 2.1 MB", kind: "pdf" },
+      { name: "Capacity Model.xlsx", meta: "XLS · 880 KB", kind: "xls" },
+      { name: "Action Summary.docx", meta: "DOC · 260 KB", kind: "doc" }
+    ],
+    inlineFile: { name: "Weekly Handoff.pdf", meta: "PDF · 2.1 MB", kind: "pdf" }
+  },
+  {
+    role: "Growth Strategist at Meridian",
+    about: "Pairs campaign planning with fast approvals and a tidy communication trail for every launch.",
+    media: [
+      { tone: "mountain", label: "Campaign recap" },
+      { tone: "workspace", label: "Funnel report" },
+      { tone: "interior", label: "Partner room" },
+      { tone: "plant", label: "Event board" }
+    ],
+    files: [
+      { name: "Campaign Recap.pdf", meta: "PDF · 2.0 MB", kind: "pdf" },
+      { name: "Forecast Model.xlsx", meta: "XLS · 1.1 MB", kind: "xls" },
+      { name: "Partner Summary.docx", meta: "DOC · 300 KB", kind: "doc" }
+    ],
+    inlineFile: { name: "Campaign Recap.pdf", meta: "PDF · 2.0 MB", kind: "pdf" }
+  }
+];
 
 function readJsonStorage(key, fallback) {
   try {
@@ -147,9 +235,25 @@ function avatarInitial(username) {
   return String(username || "?").slice(0, 1).toUpperCase();
 }
 
+function usernameSeed(username) {
+  let total = 0;
+  for (const char of String(username || "")) {
+    total += char.charCodeAt(0);
+  }
+  return total;
+}
+
 function setAvatar(node, username) {
   node.className = `avatar avatar-tone-${avatarTone(username)}`;
   node.textContent = avatarInitial(username);
+}
+
+function contactDetailPreset(username) {
+  return CONTACT_DETAIL_PRESETS[usernameSeed(username) % CONTACT_DETAIL_PRESETS.length];
+}
+
+function isDetailsDrawerLayout() {
+  return window.innerWidth <= 1420;
 }
 
 function showToast(message, kind = "info") {
@@ -165,13 +269,13 @@ function showToast(message, kind = "info") {
 function connectionStatusLabel() {
   switch (state.connectionState) {
     case "online":
-      return "连接在线";
+      return "Online";
     case "connecting":
-      return "连接中";
+      return "Connecting";
     case "reconnecting":
-      return "重连中";
+      return "Reconnecting";
     default:
-      return "连接未建立";
+      return "Offline";
   }
 }
 
@@ -180,13 +284,13 @@ function updateWorkspaceStatus() {
     return;
   }
   if (!state.me) {
-    elements.meStatus.textContent = "等待登录";
+    elements.meStatus.textContent = "Waiting to sign in";
     updateMeStatusDot("offline");
     return;
   }
   const pendingCount = state.pendingOutbox.length;
-  const pendingSuffix = pendingCount > 0 ? ` · 待补发 ${pendingCount}` : "";
-  elements.meStatus.textContent = `${connectionStatusLabel()} · 自动加密${pendingSuffix}`;
+  const pendingSuffix = pendingCount > 0 ? ` · queued ${pendingCount}` : "";
+  elements.meStatus.textContent = `${connectionStatusLabel()} · encrypted${pendingSuffix}`;
   updateMeStatusDot(state.connectionState);
 }
 
@@ -276,15 +380,15 @@ function formatRelative(timestamp) {
   const diffMs = Date.now() - timestamp;
   const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
   if (diffMinutes < 1) {
-    return "刚刚";
+    return "Now";
   }
   if (diffMinutes < 60) {
-    return `${diffMinutes} 分钟前`;
+    return `${diffMinutes}m`;
   }
   if (diffMinutes < 24 * 60) {
     return formatTime(timestamp);
   }
-  return new Date(timestamp).toLocaleDateString([], {
+  return new Date(timestamp).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric"
   });
@@ -293,7 +397,7 @@ function formatRelative(timestamp) {
 function messagePreview(text) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   if (!normalized) {
-    return "还没有消息";
+    return "No messages yet";
   }
   return normalized.length > 34 ? `${normalized.slice(0, 34)}...` : normalized;
 }
@@ -301,7 +405,7 @@ function messagePreview(text) {
 function replyPreviewText(message) {
   const normalized = String(message?.text || "").replace(/\s+/g, " ").trim();
   if (!normalized) {
-    return "消息内容为空";
+    return "Empty message";
   }
   return normalized.length > 96 ? `${normalized.slice(0, 96)}...` : normalized;
 }
@@ -567,24 +671,24 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     return;
   }
   if (!peer) {
-    elements.securityStatus.textContent = "等待选择会话";
+    elements.securityStatus.textContent = "Choose a conversation to see secure session status.";
     return;
   }
   const parts = [];
-  parts.push(state.identity?.privateKey ? "密钥已解锁" : "密钥未解锁");
-  parts.push(state.peerKeys.has(peer.username) ? "对端公钥已获取" : "等待对端公钥");
+  parts.push(state.identity?.privateKey ? "Keys ready" : "Keys locked");
+  parts.push(state.peerKeys.has(peer.username) ? "Peer key synced" : "Waiting for peer key");
   if (state.connectionState === "online") {
-    parts.push("实时连接中");
+    parts.push("Live connection");
   } else if (state.connectionState === "reconnecting") {
-    parts.push("实时连接重试中");
+    parts.push("Retrying live connection");
   } else if (state.connectionState === "connecting") {
-    parts.push("实时连接建立中");
+    parts.push("Connecting now");
   } else {
-    parts.push("离线队列可用");
+    parts.push("Offline queue available");
   }
   const pendingCount = pendingOutboxForPeer(peer.username).length;
   if (pendingCount > 0) {
-    parts.push(`${pendingCount} 条待发送`);
+    parts.push(`${pendingCount} queued`);
   }
   elements.securityStatus.textContent = parts.join(" · ");
 }
@@ -603,12 +707,16 @@ function setComposerBusy(busy) {
 }
 
 function isMobile() {
-  return window.innerWidth <= 900;
+  return window.innerWidth <= 960;
 }
 
 function syncLayoutState() {
+  if (!isDetailsDrawerLayout()) {
+    state.detailsPanelOpen = false;
+  }
   document.body.classList.toggle("is-mobile", isMobile());
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
+  document.body.classList.toggle("is-details-open", isDetailsDrawerLayout() && state.detailsPanelOpen);
 }
 
 function isNearBottom(node, threshold = 120) {
@@ -926,8 +1034,9 @@ function applyThreadActionState(peer) {
   elements.pinPeerButton.disabled = !hasPeer;
   elements.mutePeerButton.disabled = !hasPeer;
   elements.exportPeerButton.disabled = !hasPeer;
-  elements.pinPeerButton.textContent = prefs.pinned ? "取消置顶" : "置顶";
-  elements.mutePeerButton.textContent = prefs.muted ? "取消静音" : "静音";
+  elements.pinPeerButton.textContent = prefs.pinned ? "Unpin" : "Pin";
+  elements.mutePeerButton.textContent = prefs.muted ? "Unmute" : "Mute";
+  elements.exportPeerButton.textContent = "Export";
 }
 
 function togglePeerPref(peer, key) {
@@ -980,12 +1089,12 @@ function matchConversationSearchScope(conversation, query) {
     }
   }
   const matchLabel = draft.trim() && draft.toLowerCase().includes(normalizedQuery)
-    ? "草稿匹配"
+    ? "Draft match"
     : indexText.startsWith(conversation.username.toLowerCase())
-      ? "用户名匹配"
+      ? "Name match"
       : String(conversation.previewText || "").toLowerCase().includes(normalizedQuery)
-        ? "最近消息匹配"
-        : "历史消息匹配";
+        ? "Recent message"
+        : "History match";
   return {
     username: conversation.username,
     online: conversation.online,
@@ -994,7 +1103,7 @@ function matchConversationSearchScope(conversation, query) {
     previewText: conversation.previewText || "",
     lastAt: conversation.lastAt || 0,
     unread: conversation.unread || 0,
-    sourceLabel: `会话 · ${matchLabel}`,
+    sourceLabel: `Chat · ${matchLabel}`,
     searchHint: matchLabel,
     pinned: prefs.pinned,
     muted: prefs.muted
@@ -1011,8 +1120,127 @@ function buildLocalSearchResults(query) {
     .filter(Boolean);
 }
 
+function setDetailsPanelOpen(force) {
+  state.detailsPanelOpen = typeof force === "boolean" ? force : !state.detailsPanelOpen;
+  syncLayoutState();
+}
+
+function renderDetailFileRow(file) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "detail-file-row";
+
+  const icon = document.createElement("div");
+  icon.className = "detail-file-icon";
+  icon.dataset.kind = file.kind || "doc";
+  icon.textContent = String(file.kind || "doc").toUpperCase();
+
+  const copy = document.createElement("div");
+  copy.className = "detail-file-copy";
+  copy.innerHTML = `
+    <strong>${escapeHtml(file.name || "Untitled file")}</strong>
+    <span class="detail-file-meta">${escapeHtml(file.meta || "File")}</span>
+  `;
+
+  const download = document.createElement("button");
+  download.type = "button";
+  download.className = "detail-file-download";
+  download.dataset.detailAction = "download";
+  download.setAttribute("aria-label", `Download ${file.name || "file"}`);
+  download.innerHTML = `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+      <polyline points="7 10 12 15 17 10"></polyline>
+      <line x1="12" y1="15" x2="12" y2="3"></line>
+    </svg>
+  `;
+
+  wrapper.append(icon, copy, download);
+  return wrapper;
+}
+
+function renderInlineFileCard(file) {
+  const article = document.createElement("article");
+  article.className = "message message-file";
+
+  const body = document.createElement("div");
+  body.className = "message-body";
+
+  const card = document.createElement("div");
+  card.className = "bubble bubble-file";
+  card.innerHTML = `
+    <div class="inline-file-card">
+      <div class="inline-file-icon" data-kind="${escapeHtml(file.kind || "pdf")}">${escapeHtml(String(file.kind || "pdf").toUpperCase())}</div>
+      <div class="inline-file-copy">
+        <strong>${escapeHtml(file.name || "Encrypted document")}</strong>
+        <span>${escapeHtml(file.meta || "Secure file")}</span>
+      </div>
+      <button class="inline-file-action" type="button" data-detail-action="download" aria-label="Download ${escapeHtml(file.name || "file")}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+      </button>
+    </div>
+  `;
+
+  const meta = document.createElement("div");
+  meta.className = "message-meta";
+  meta.textContent = "Shared file";
+
+  body.append(card, meta);
+  article.append(body);
+  return article;
+}
+
+function renderContactDetails(peer) {
+  if (!elements.contactDetailsEmpty || !elements.contactDetailsContent) {
+    return;
+  }
+  if (!peer) {
+    elements.contactDetailsEmpty.hidden = false;
+    elements.contactDetailsContent.hidden = true;
+    if (isDetailsDrawerLayout()) {
+      setDetailsPanelOpen(false);
+    }
+    return;
+  }
+
+  const preset = contactDetailPreset(peer.username);
+  const prefs = peerPrefs(peer.username);
+  elements.contactDetailsEmpty.hidden = true;
+  elements.contactDetailsContent.hidden = false;
+  setAvatar(elements.detailsAvatar, peer.username);
+  elements.detailsName.textContent = peer.username;
+  elements.detailsStatus.textContent = peer.online ? "Online now" : "Last active recently";
+  elements.detailsRole.textContent = preset.role;
+  elements.detailsAbout.textContent = preset.about;
+  elements.notificationsToggle.checked = !prefs.muted;
+
+  elements.detailsMediaGrid.textContent = "";
+  for (const item of preset.media) {
+    const thumb = document.createElement("div");
+    thumb.className = "media-thumb";
+    thumb.dataset.tone = item.tone;
+    thumb.setAttribute("role", "img");
+    thumb.setAttribute("aria-label", item.label);
+    elements.detailsMediaGrid.append(thumb);
+  }
+
+  elements.detailsFilesList.textContent = "";
+  for (const file of preset.files) {
+    elements.detailsFilesList.append(renderDetailFileRow(file));
+  }
+}
+
 function renderSidebar() {
   const query = state.searchQuery.trim().toLowerCase();
+  if (elements.globalSearchInput && elements.globalSearchInput.value !== state.searchQuery) {
+    elements.globalSearchInput.value = state.searchQuery;
+  }
+  if (elements.sidebarSearchInput && elements.sidebarSearchInput.value !== state.searchQuery) {
+    elements.sidebarSearchInput.value = state.searchQuery;
+  }
   const localResults = query ? buildLocalSearchResults(query) : [];
   const conversations = state.conversations.filter((item) => {
     if (!query) {
@@ -1021,16 +1249,18 @@ function renderSidebar() {
     return (
       item.username.toLowerCase().includes(query) ||
       String(item.previewText || "").toLowerCase().includes(query)
-    );
+      );
   });
 
+  const pinnedConversations = conversations.filter((item) => peerPrefs(item.username).pinned);
+  const recentConversations = conversations.filter((item) => !peerPrefs(item.username).pinned);
   const visibleCount = conversations.length;
   const mergedSearchRows = query
     ? (() => {
         const remoteResults = state.searchResults.map((user) => ({
           ...user,
-          sourceLabel: "用户名结果",
-          searchHint: user.online ? "在线用户" : "用户建议"
+          sourceLabel: "Directory match",
+          searchHint: user.online ? "Available now" : "Contact suggestion"
         }));
         const merged = new Map();
         for (const item of [...localResults, ...remoteResults]) {
@@ -1043,10 +1273,15 @@ function renderSidebar() {
       })()
     : [];
   elements.sidebarMeta.textContent = query
-    ? `${visibleCount} 个会话 | ${mergedSearchRows.length} 个匹配`
-    : `${visibleCount} 个会话 | 最近活跃优先`;
+    ? `${mergedSearchRows.length} results`
+    : `${visibleCount} conversations`;
   elements.searchGroup.hidden = !query;
-  elements.conversationList.parentElement.hidden = Boolean(query);
+  if (elements.pinnedGroup) {
+    elements.pinnedGroup.hidden = query || pinnedConversations.length === 0;
+  }
+  if (elements.recentGroup) {
+    elements.recentGroup.hidden = Boolean(query) || recentConversations.length === 0;
+  }
 
   elements.searchResultList.textContent = "";
   if (query) {
@@ -1062,7 +1297,7 @@ function renderSidebar() {
     if (searchRows.length === 0) {
       const empty = document.createElement("div");
       empty.className = "list-empty";
-      empty.textContent = "没有匹配的用户";
+      empty.textContent = "No matching people or chats";
       elements.searchResultList.append(empty);
     } else {
       for (const user of searchRows) {
@@ -1071,12 +1306,20 @@ function renderSidebar() {
     }
   }
 
+  if (elements.pinnedConversationList) {
+    elements.pinnedConversationList.textContent = "";
+    for (const conversation of pinnedConversations) {
+      elements.pinnedConversationList.append(renderListItem(conversation, false));
+    }
+  }
+
   elements.conversationList.textContent = "";
-  elements.conversationEmpty.hidden = conversations.length > 0;
-  for (const conversation of conversations) {
+  elements.conversationEmpty.hidden = query || conversations.length > 0;
+  for (const conversation of recentConversations) {
     elements.conversationList.append(renderListItem(conversation, false));
   }
 }
+
 function renderListItem(item, isSearchResult) {
   const prefs = peerPrefs(item.username);
   const draft = isSearchResult ? "" : draftTextForPeer(item.username).trim();
@@ -1087,7 +1330,7 @@ function renderListItem(item, isSearchResult) {
     indicators.push('<i class="online-dot"></i>');
   }
   if (!isSearchResult && draft) {
-    indicators.push('<span class="draft-badge">草稿</span>');
+    indicators.push('<span class="draft-badge">Draft</span>');
   }
 
   const button = document.createElement("button");
@@ -1103,26 +1346,35 @@ function renderListItem(item, isSearchResult) {
 
   const avatar = document.createElement("div");
   setAvatar(avatar, item.username);
+  const avatarWrap = document.createElement("div");
+  avatarWrap.className = "list-item-avatar";
+  avatarWrap.append(avatar);
+  if (item.online) {
+    const presence = document.createElement("i");
+    presence.className = "online-dot";
+    presence.setAttribute("aria-hidden", "true");
+    avatarWrap.append(presence);
+  }
 
   const meta = document.createElement("div");
   meta.className = "list-item-meta";
   meta.innerHTML = `
     <div class="list-row">
       <strong>${escapeHtml(item.username)}</strong>
-      <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "在线" : "离线")) : formatRelative(item.lastAt))}</span>
+      <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "Online" : "Offline")) : formatRelative(item.lastAt))}</span>
     </div>
     <div class="list-row is-subtle">
-      <span>${escapeHtml(isSearchResult ? (item.searchHint || "点击开始私聊") : messagePreview(item.previewText || "已加密消息"))}</span>
-      ${indicators.join("")}
+      <span class="list-preview">${escapeHtml(isSearchResult ? (item.searchHint || "Start a secure chat") : messagePreview(item.previewText || "Encrypted message"))}</span>
+      <span class="list-indicators">${indicators.join("")}</span>
     </div>
   `;
 
   const flags = [];
   if (prefs.pinned) {
-    flags.push('<em class="list-flag">置顶</em>');
+    flags.push('<em class="list-flag">Pinned</em>');
   }
   if (prefs.muted) {
-    flags.push('<em class="list-flag">静音</em>');
+    flags.push('<em class="list-flag">Muted</em>');
   }
   if (isSearchResult && item.sourceLabel) {
     flags.push(`<em class="list-flag">${escapeHtml(item.sourceLabel)}</em>`);
@@ -1134,7 +1386,7 @@ function renderListItem(item, isSearchResult) {
     meta.append(flagRow);
   }
 
-  button.append(avatar, meta);
+  button.append(avatarWrap, meta);
   return button;
 }
 function isSameDay(a, b) {
@@ -1149,9 +1401,13 @@ function formatDaySeparator(timestamp) {
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
-  if (isSameDay(date, today)) return "今天";
-  if (isSameDay(date, yesterday)) return "昨天";
-  return date.toLocaleDateString([], { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+  if (isSameDay(date, today)) return "Today";
+  if (isSameDay(date, yesterday)) return "Yesterday";
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "short",
+    day: "numeric"
+  });
 }
 
 function createDaySeparator(timestamp) {
@@ -1178,22 +1434,22 @@ function renderMessage(message, options = {}) {
   article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${isConsecutive}`;
   article.dataset.messageId = message.id;
   article.dataset.messageText = message.text;
-  const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || "")}">回复</button>`;
+  const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || "")}">Reply</button>`;
   let statusAction = "";
   if (message.failed) {
-    statusAction = `<span class="message-state is-error"><i class="dot"></i>发送失败</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">重试</button>`;
+    statusAction = `<span class="message-state is-error"><i class="dot"></i>Failed</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">Retry</button>`;
   } else if (message.pending) {
     const stateClass = message.sendStatus === "queued" ? "is-queued" : "is-sending";
-    const stateLabel = message.sendStatus === "queued" ? "离线待发送" : "发送中";
+    const stateLabel = message.sendStatus === "queued" ? "Queued" : "Sending";
     statusAction = `<span class="message-state ${stateClass}"><i class="dot"></i>${stateLabel}</span>`;
   } else if (message.mine && message.sendStatus === "sent") {
-    statusAction = `<span class="message-state is-sent"><i class="dot"></i>已发送</span>`;
+    statusAction = `<span class="message-state is-sent"><i class="dot"></i>Sent</span>`;
   }
-  const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || "")}">复制</button>`;
+  const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || "")}">Copy</button>`;
   const replyMarkup = message.replyTo
     ? `
       <div class="message-reply">
-        <span>回复 ${escapeHtml(message.replyTo.from || "消息")}</span>
+        <span>Replying to ${escapeHtml(message.replyTo.from || "message")}</span>
         <p>${escapeHtml(replyPreviewText(message.replyTo))}</p>
       </div>
     `
@@ -1228,6 +1484,7 @@ function renderThread(options = {}) {
   applyThreadActionState(hasPeer ? peer.username : "");
   updateWorkspaceStatus();
   updateSecurityStatus(peer);
+  renderContactDetails(peer);
 
   if (!peer) {
     return;
@@ -1241,21 +1498,21 @@ function renderThread(options = {}) {
   elements.peerName.textContent = peer.username;
   let connectionLabel = "";
   if (state.connectionState === "reconnecting") {
-    connectionLabel = " | 连接重试中";
+    connectionLabel = " · reconnecting";
   } else if (state.connectionState === "offline") {
-    connectionLabel = " | 连接未建立";
+    connectionLabel = " · offline queue";
   }
   const prefs = peerPrefs(peer.username);
   const statusTags = [];
   if (prefs.pinned) {
-    statusTags.push("置顶");
+    statusTags.push("Pinned");
   }
   if (prefs.muted) {
-    statusTags.push("静音");
+    statusTags.push("Muted");
   }
   const threadQuery = state.threadSearchQuery.trim().toLowerCase();
-  const statusSuffix = statusTags.length ? ` | ${statusTags.join(" · ")}` : "";
-  elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} | 自动端到端加密${connectionLabel}${statusSuffix}`;
+  const statusSuffix = statusTags.length ? ` · ${statusTags.join(" · ")}` : "";
+  elements.peerStatus.textContent = `${peer.online ? "Online now" : "Offline"} · end-to-end encrypted${connectionLabel}${statusSuffix}`;
   updateSecurityStatus(peer);
   setAvatar(elements.peerAvatar, peer.username);
 
@@ -1270,8 +1527,8 @@ function renderThread(options = {}) {
   );
   if (elements.threadSearchMeta) {
     elements.threadSearchMeta.textContent = threadQuery
-      ? `匹配 ${visibleMessages.length} / ${messages.length} 条`
-      : `共 ${messages.length} 条消息`;
+      ? `${visibleMessages.length} of ${messages.length} messages`
+      : `${messages.length} messages`;
   }
   elements.messageList.textContent = "";
 
@@ -1282,7 +1539,7 @@ function renderThread(options = {}) {
     loadOlderButton.type = "button";
     loadOlderButton.className = "message-load-older-button";
     loadOlderButton.dataset.loadOlderPeer = peer.username;
-    loadOlderButton.textContent = paging.loadingOlder ? "加载中..." : "加载更早消息";
+    loadOlderButton.textContent = paging.loadingOlder ? "Loading..." : "Load earlier messages";
     loadOlderButton.disabled = paging.loadingOlder;
     loadOlderWrap.append(loadOlderButton);
     elements.messageList.append(loadOlderWrap);
@@ -1291,12 +1548,12 @@ function renderThread(options = {}) {
   if (messages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "message-empty";
-    empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>还没有消息。输入第一句，程序会自动完成加密和发送。</span>`;
+    empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>No messages yet. Send the first secure note to start the thread.</span>`;
     elements.messageList.append(empty);
   } else if (visibleMessages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "message-empty";
-    empty.innerHTML = `<strong>没有匹配的消息</strong><span>试试更短的关键词，或者清空会话内搜索。</span>`;
+    empty.innerHTML = `<strong>No matching messages</strong><span>Try a shorter keyword or clear the in-thread search.</span>`;
     elements.messageList.append(empty);
   } else {
     if (virtualWindow && virtualWindow.start > 0) {
@@ -1305,7 +1562,10 @@ function renderThread(options = {}) {
     const slice = virtualWindow ? visibleMessages.slice(virtualWindow.start, virtualWindow.end) : visibleMessages;
     let prevMessage = null;
     let lastDayKey = "";
-    for (const message of slice) {
+    const inlineFile = !threadQuery && !virtualWindow ? contactDetailPreset(peer.username).inlineFile : null;
+    const inlineFileAfterIndex = inlineFile ? Math.min(2, Math.max(0, slice.length - 1)) : -1;
+    for (let index = 0; index < slice.length; index += 1) {
+      const message = slice[index];
       const dayKey = new Date(message.createdAt || 0).toDateString();
       if (dayKey && dayKey !== lastDayKey) {
         elements.messageList.append(createDaySeparator(message.createdAt || Date.now()));
@@ -1314,6 +1574,9 @@ function renderThread(options = {}) {
       }
       const consecutive = isMessageConsecutive(prevMessage, message);
       elements.messageList.append(renderMessage(message, { consecutive }));
+      if (inlineFile && index === inlineFileAfterIndex) {
+        elements.messageList.append(renderInlineFileCard(inlineFile));
+      }
       prevMessage = message;
     }
     if (virtualWindow && virtualWindow.bottomSpacer > 0) {
@@ -1994,6 +2257,7 @@ async function openConversation(username) {
 
   ensureConversationEntry(username);
   state.activePeer = username;
+  state.detailsPanelOpen = false;
   localStorage.setItem(STORAGE.activePeer, username);
   clearReplyTarget();
   state.threadSearchQuery = "";
@@ -2099,6 +2363,7 @@ function closeConversationOnMobile() {
     return;
   }
   state.activePeer = "";
+  state.detailsPanelOpen = false;
   localStorage.removeItem(STORAGE.activePeer);
   render();
 }
@@ -2106,12 +2371,30 @@ function closeConversationOnMobile() {
 function focusGlobalSearch() {
   if (isMobile() && state.activePeer) {
     state.activePeer = "";
+    state.detailsPanelOpen = false;
     localStorage.removeItem(STORAGE.activePeer);
     render();
   }
   window.setTimeout(() => {
     elements.globalSearchInput.focus();
     elements.globalSearchInput.select();
+  }, 0);
+}
+
+function focusSidebarSearch() {
+  if (!elements.sidebarSearchInput) {
+    focusGlobalSearch();
+    return;
+  }
+  if (isMobile() && state.activePeer) {
+    state.activePeer = "";
+    state.detailsPanelOpen = false;
+    localStorage.removeItem(STORAGE.activePeer);
+    render();
+  }
+  window.setTimeout(() => {
+    elements.sidebarSearchInput.focus();
+    elements.sidebarSearchInput.select();
   }, 0);
 }
 
@@ -2591,8 +2874,22 @@ function handleListClick(event) {
   void openConversation(item.dataset.username || "");
 }
 
-function handleSearchInput() {
-  state.searchQuery = elements.globalSearchInput.value;
+function syncSearchInputs(source) {
+  const value = source === "sidebar"
+    ? String(elements.sidebarSearchInput?.value || "")
+    : String(elements.globalSearchInput?.value || "");
+  if (elements.globalSearchInput && source !== "global" && elements.globalSearchInput.value !== value) {
+    elements.globalSearchInput.value = value;
+  }
+  if (elements.sidebarSearchInput && source !== "sidebar" && elements.sidebarSearchInput.value !== value) {
+    elements.sidebarSearchInput.value = value;
+  }
+  return value;
+}
+
+function handleSearchInput(event) {
+  const source = event?.currentTarget === elements.sidebarSearchInput ? "sidebar" : "global";
+  state.searchQuery = syncSearchInputs(source);
   renderSidebar();
   queueSearch();
 }
@@ -2632,6 +2929,11 @@ function handleMessageListClick(event) {
   if (loadOlderButton) {
     const peer = loadOlderButton.dataset.loadOlderPeer || "";
     void loadOlderMessages(peer);
+    return;
+  }
+  const downloadButton = event.target.closest("[data-detail-action='download']");
+  if (downloadButton) {
+    showToast("文件下载示例已展示，后续可接入真实附件接口");
     return;
   }
   const replyButton = event.target.closest(".message-reply-button");
@@ -2678,6 +2980,80 @@ function handleThreadActionsClick(action) {
   }
 }
 
+function setPeerMutedState(peer, muted) {
+  if (!peer) {
+    return;
+  }
+  updatePeerPrefs(peer, { muted: Boolean(muted) });
+  sortConversations();
+  render();
+}
+
+function focusThreadSearch() {
+  if (!elements.threadSearchInput) {
+    return;
+  }
+  elements.threadSearchInput.focus();
+  elements.threadSearchInput.select();
+}
+
+function handlePresenceAction(kind) {
+  if (!state.activePeer) {
+    showToast("请先选择会话");
+    return;
+  }
+  if (kind === "call") {
+    showToast("语音通话功能即将提供");
+    return;
+  }
+  if (kind === "video") {
+    showToast("视频通话功能即将提供");
+    return;
+  }
+  showToast("更多会话工具将很快提供");
+}
+
+function handleComposerActionClick(event) {
+  const actionButton = event.target.closest("[data-composer-action]");
+  if (!actionButton) {
+    return;
+  }
+  const action = actionButton.dataset.composerAction || "";
+  if (action === "attach") {
+    showToast("附件上传入口已预留，后续可接入真实文件发送");
+    return;
+  }
+  if (action === "emoji") {
+    showToast("表情面板入口已预留，后续可接入真实表情选择器");
+    return;
+  }
+  if (action === "gif") {
+    showToast("GIF 入口已预留，后续可接入第三方内容库");
+  }
+}
+
+function handleDetailActionClick(event) {
+  const actionButton = event.target.closest("[data-detail-action]");
+  if (!actionButton) {
+    return;
+  }
+  const action = actionButton.dataset.detailAction || "";
+  if (action === "message") {
+    if (isDetailsDrawerLayout()) {
+      setDetailsPanelOpen(false);
+    }
+    elements.messageInput.focus();
+    return;
+  }
+  if (action === "download") {
+    showToast("文件下载示例已展示，后续可接入真实附件接口");
+    return;
+  }
+  if (action === "call" || action === "video" || action === "more") {
+    handlePresenceAction(action);
+  }
+}
+
 function handleGlobalKeydown(event) {
   const isMeta = event.ctrlKey || event.metaKey;
   if (isMeta && event.key.toLowerCase() === "k") {
@@ -2707,6 +3083,10 @@ function handleGlobalKeydown(event) {
     clearReplyTarget();
     return;
   }
+  if (event.key === "Escape" && state.detailsPanelOpen) {
+    setDetailsPanelOpen(false);
+    return;
+  }
   if (isMeta && event.key === "Enter") {
     if (!state.activePeer) {
       return;
@@ -2730,9 +3110,11 @@ function bindEvents() {
     void logoutAllDevices();
   });
   elements.globalSearchInput.addEventListener("input", handleSearchInput);
-  elements.emptySearchButton?.addEventListener("click", focusGlobalSearch);
-  elements.sidebarSearchButton?.addEventListener("click", focusGlobalSearch);
+  elements.sidebarSearchInput?.addEventListener("input", handleSearchInput);
+  elements.emptySearchButton?.addEventListener("click", focusSidebarSearch);
+  elements.sidebarSearchButton?.addEventListener("click", focusSidebarSearch);
   elements.threadSearchInput.addEventListener("input", handleThreadSearchInput);
+  elements.pinnedConversationList?.addEventListener("click", handleListClick);
   elements.conversationList.addEventListener("click", handleListClick);
   elements.searchResultList.addEventListener("click", handleListClick);
   elements.messageList.addEventListener("click", handleMessageListClick);
@@ -2752,6 +3134,18 @@ function bindEvents() {
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
   elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
+  elements.headerSearchButton?.addEventListener("click", focusThreadSearch);
+  elements.headerCallButton?.addEventListener("click", () => handlePresenceAction("call"));
+  elements.headerVideoButton?.addEventListener("click", () => handlePresenceAction("video"));
+  elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
+  elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
+  elements.contactPanel?.addEventListener("click", handleDetailActionClick);
+  elements.notificationsToggle?.addEventListener("change", () => {
+    if (!state.activePeer) {
+      return;
+    }
+    setPeerMutedState(state.activePeer, !elements.notificationsToggle.checked);
+  });
   elements.scrollBottomButton?.addEventListener("click", () => {
     scrollMessagesToBottom(true);
     state.scrollBottomNewCount = 0;
@@ -2760,6 +3154,7 @@ function bindEvents() {
   elements.composerForm.addEventListener("submit", (event) => {
     void submitMessage(event);
   });
+  elements.composerForm.addEventListener("click", handleComposerActionClick);
   elements.messageInput.addEventListener("input", handleComposerInput);
   elements.mobileBackButton.addEventListener("click", closeConversationOnMobile);
   elements.cancelReplyButton.addEventListener("click", () => {
