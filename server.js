@@ -389,6 +389,29 @@ function getClientAddress(req) {
   return req.socket.remoteAddress || "unknown";
 }
 
+function normalizedRequestHost(req) {
+  const forwardedHost = TRUST_PROXY ? String(req.headers["x-forwarded-host"] || "") : "";
+  const rawHost = forwardedHost || String(req.headers.host || "");
+  const primaryHost = rawHost.split(",")[0].trim().replace(/^https?:\/\//i, "");
+  if (!primaryHost) {
+    return "localhost";
+  }
+  try {
+    return new URL(`http://${primaryHost}`).host || "localhost";
+  } catch (error) {
+    return "localhost";
+  }
+}
+
+function parseRequestUrl(req) {
+  const requestTarget = String(req.url || "/").trim() || "/";
+  try {
+    return new URL(requestTarget, `http://${normalizedRequestHost(req)}`);
+  } catch (error) {
+    return null;
+  }
+}
+
 function isSameOriginRequest(req) {
   const origin = String(req.headers.origin || "");
   if (!origin) {
@@ -398,7 +421,7 @@ function isSameOriginRequest(req) {
     return true;
   }
   try {
-    return new URL(origin).host === req.headers.host;
+    return new URL(origin).host === normalizedRequestHost(req);
   } catch (error) {
     return false;
   }
@@ -2199,7 +2222,11 @@ setInterval(cleanEventTickets, EVENT_TICKET_TTL_MS).unref();
 setInterval(applyAuditTextRetention, 60 * 60 * 1000).unref();
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  const url = parseRequestUrl(req);
+  if (!url) {
+    sendJson(res, 400, { error: "invalid request url" });
+    return;
+  }
   const pathname = url.pathname;
 
   if (req.method === "GET" && pathname === "/health") {
