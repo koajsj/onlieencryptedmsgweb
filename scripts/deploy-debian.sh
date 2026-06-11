@@ -51,6 +51,8 @@ install_caddy() {
 
 prepare_application_dir() {
   mkdir -p "$(dirname "${APP_DIR}")"
+  # Ensure git doesn't reject the directory due to ownership mismatch
+  git config --global --add safe.directory "${APP_DIR}" 2>/dev/null || true
   if [ -d "${APP_DIR}/.git" ]; then
     git -C "${APP_DIR}" fetch origin "${APP_BRANCH}"
     git -C "${APP_DIR}" reset --hard "origin/${APP_BRANCH}"
