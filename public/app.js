@@ -31,6 +31,17 @@ const elements = {
   sidebarSearchButton: document.querySelector("#sidebarSearchButton"),
   sidebarSearchInput: document.querySelector("#sidebarSearchInput"),
   globalSearchInput: document.querySelector("#globalSearchInput"),
+  settingsButton: document.querySelector("#settingsButton"),
+  navMessagesButton: document.querySelector("#navMessagesButton"),
+  navContactsButton: document.querySelector("#navContactsButton"),
+  sidebarProfileButton: document.querySelector("#sidebarProfileButton"),
+  sidebarProfileAvatar: document.querySelector("#sidebarProfileAvatar"),
+  sidebarProfileName: document.querySelector("#sidebarProfileName"),
+  sidebarProfileStatus: document.querySelector("#sidebarProfileStatus"),
+  accountMenuButton: document.querySelector("#accountMenuButton"),
+  accountMenu: document.querySelector("#accountMenu"),
+  editAccountButton: document.querySelector("#editAccountButton"),
+  logoutMenuButton: document.querySelector("#logoutMenuButton"),
   meAvatar: document.querySelector("#meAvatar"),
   meUsername: document.querySelector("#meUsername"),
   logoutButton: document.querySelector("#logoutButton"),
@@ -73,7 +84,11 @@ const elements = {
   composerForm: document.querySelector("#composerForm"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
+  emojiPanel: document.querySelector("#emojiPanel"),
   toast: document.querySelector("#toast"),
+  messageContextMenu: document.querySelector("#messageContextMenu"),
+  contextCopyButton: document.querySelector("#contextCopyButton"),
+  contextRecallButton: document.querySelector("#contextRecallButton"),
   contactPanel: document.querySelector("#contactPanel"),
   detailsCloseButton: document.querySelector("#detailsCloseButton"),
   contactDetailsEmpty: document.querySelector("#contactDetailsEmpty"),
@@ -128,74 +143,88 @@ const state = {
   submitInFlight: false,
   scrollBottomNewCount: 0,
   scrollBottomHideTimer: 0,
-  detailsPanelOpen: false
+  detailsPanelOpen: false,
+  activeNavSection: "messages",
+  emojiPanelOpen: false,
+  accountMenuOpen: false,
+  accountMenuAnchor: null,
+  contextMenuMessageId: "",
+  previewMode: false
 };
 
 const CONTACT_DETAIL_PRESETS = [
   {
-    role: "Product Manager at Northstar Labs",
-    about: "Balances product planning, stakeholder reviews, and calm async updates for distributed teams.",
+    role: "\u4ea7\u54c1\u8bbe\u8ba1\u7ec4\u3000\u8bbe\u8ba1\u4e3b\u7406",
+    about: "\u8d1f\u8d23\u4f1a\u8bae\u8d44\u6599\u3001\u4efb\u52a1\u8282\u594f\u4e0e\u56e2\u961f\u540c\u6b65\uff0c\u503e\u5411\u7b80\u6d01\u6c9f\u901a\u4e0e\u7a33\u5b9a\u63a8\u8fdb\u3002",
     media: [
-      { tone: "workspace", label: "Roadmap board" },
-      { tone: "plant", label: "Desk setup" },
-      { tone: "mountain", label: "Offsite notes" },
-      { tone: "interior", label: "Client lounge" }
+      { tone: "workspace", label: "\u8def\u7ebf\u56fe" },
+      { tone: "plant", label: "\u529e\u516c\u684c\u9762" },
+      { tone: "mountain", label: "\u5916\u51fa\u8bb0\u5f55" },
+      { tone: "interior", label: "\u4f1a\u5ba2\u533a" }
     ],
     files: [
-      { name: "Project Brief v2.1.pdf", meta: "PDF · 2.4 MB", kind: "pdf" },
-      { name: "Launch Timeline.xlsx", meta: "XLS · 940 KB", kind: "xls" },
-      { name: "Meeting Notes.docx", meta: "DOC · 320 KB", kind: "doc" }
+      { name: "\u9879\u76ee\u7b80\u62a5\u7ec8\u7a3f.pdf", meta: "PDF \u00b7 2.4 MB", kind: "pdf" },
+      { name: "\u53d1\u5e03\u8282\u70b9\u6392\u671f.xlsx", meta: "XLS \u00b7 940 KB", kind: "xls" },
+      { name: "\u8bc4\u5ba1\u8bb0\u5f55.docx", meta: "DOC \u00b7 320 KB", kind: "doc" }
     ],
-    inlineFile: { name: "Project Brief v2.1.pdf", meta: "PDF · 2.4 MB", kind: "pdf" }
+    inlineFile: { name: "\u9879\u76ee\u7b80\u62a5\u7ec8\u7a3f.pdf", meta: "PDF \u00b7 2.4 MB", kind: "pdf" }
   },
   {
-    role: "Design Lead at Atelier Cloud",
-    about: "Keeps design reviews focused, organized, and easy to action without losing visual polish.",
+    role: "\u54c1\u724c\u89c6\u89c9\u7ec4\u3000\u8bbe\u8ba1\u8d1f\u8d23\u4eba",
+    about: "\u64c5\u957f\u628a\u8bc4\u5ba1\u5185\u5bb9\u6574\u7406\u6210\u53ef\u6267\u884c\u7684\u6e05\u5355\uff0c\u540c\u65f6\u4fdd\u6301\u754c\u9762\u7ec6\u8282\u548c\u8282\u594f\u3002",
     media: [
-      { tone: "interior", label: "Moodboard" },
-      { tone: "workspace", label: "Wireframes" },
-      { tone: "plant", label: "Studio drop" },
-      { tone: "mountain", label: "Brand retreat" }
+      { tone: "interior", label: "\u6c14\u6c1b\u677f" },
+      { tone: "workspace", label: "\u7ebf\u6846\u7a3f" },
+      { tone: "plant", label: "\u5de5\u4f5c\u5ba4" },
+      { tone: "mountain", label: "\u54c1\u724c\u6d3b\u52a8" }
     ],
     files: [
-      { name: "Design QA Checklist.pdf", meta: "PDF · 1.8 MB", kind: "pdf" },
-      { name: "Asset Inventory.xlsx", meta: "XLS · 760 KB", kind: "xls" },
-      { name: "Brand Notes.docx", meta: "DOC · 280 KB", kind: "doc" }
+      { name: "\u8bbe\u8ba1\u8d70\u67e5\u6e05\u5355.pdf", meta: "PDF \u00b7 1.8 MB", kind: "pdf" },
+      { name: "\u7d20\u6750\u6c47\u603b.xlsx", meta: "XLS \u00b7 760 KB", kind: "xls" },
+      { name: "\u54c1\u724c\u5907\u6ce8.docx", meta: "DOC \u00b7 280 KB", kind: "doc" }
     ],
-    inlineFile: { name: "Design QA Checklist.pdf", meta: "PDF · 1.8 MB", kind: "pdf" }
+    inlineFile: { name: "\u8bbe\u8ba1\u8d70\u67e5\u6e05\u5355.pdf", meta: "PDF \u00b7 1.8 MB", kind: "pdf" }
   },
   {
-    role: "Operations Lead at Fieldframe",
-    about: "Uses concise communication, structured follow-ups, and secure file exchange to unblock delivery.",
+    role: "\u8fd0\u8425\u56e2\u961f\u3000\u6267\u884c\u8d1f\u8d23\u4eba",
+    about: "\u4e60\u60ef\u7528\u7ed3\u6784\u5316\u7684\u6d88\u606f\u548c\u6587\u4ef6\u4ea4\u4ed8\u63a8\u8fdb\u9879\u76ee\uff0c\u8ddf\u8fdb\u660e\u786e\u4e14\u9ad8\u6548\u3002",
     media: [
-      { tone: "plant", label: "Ops dashboard" },
-      { tone: "workspace", label: "Planning grid" },
-      { tone: "mountain", label: "Site survey" },
-      { tone: "interior", label: "Meeting room" }
+      { tone: "plant", label: "\u6570\u636e\u770b\u677f" },
+      { tone: "workspace", label: "\u6392\u671f\u770b\u677f" },
+      { tone: "mountain", label: "\u5916\u573a\u8bb0\u5f55" },
+      { tone: "interior", label: "\u4f1a\u8bae\u5ba4" }
     ],
     files: [
-      { name: "Weekly Handoff.pdf", meta: "PDF · 2.1 MB", kind: "pdf" },
-      { name: "Capacity Model.xlsx", meta: "XLS · 880 KB", kind: "xls" },
-      { name: "Action Summary.docx", meta: "DOC · 260 KB", kind: "doc" }
+      { name: "\u5468\u5ea6\u4ea4\u63a5\u5355.pdf", meta: "PDF \u00b7 2.1 MB", kind: "pdf" },
+      { name: "\u4eba\u529b\u6a21\u578b.xlsx", meta: "XLS \u00b7 880 KB", kind: "xls" },
+      { name: "\u884c\u52a8\u7eaa\u8981.docx", meta: "DOC \u00b7 260 KB", kind: "doc" }
     ],
-    inlineFile: { name: "Weekly Handoff.pdf", meta: "PDF · 2.1 MB", kind: "pdf" }
+    inlineFile: { name: "\u5468\u5ea6\u4ea4\u63a5\u5355.pdf", meta: "PDF \u00b7 2.1 MB", kind: "pdf" }
   },
   {
-    role: "Growth Strategist at Meridian",
-    about: "Pairs campaign planning with fast approvals and a tidy communication trail for every launch.",
+    role: "\u5e02\u573a\u7b56\u7565\u7ec4\u3000\u534f\u540c\u8d1f\u8d23\u4eba",
+    about: "\u8d1f\u8d23\u6295\u653e\u8ba1\u5212\u3001\u5ba1\u6279\u8282\u70b9\u4e0e\u6d88\u606f\u7559\u5b58\uff0c\u4f7f\u6bcf\u4e00\u6b21\u53d1\u5e03\u66f4\u6e05\u6670\u3002",
     media: [
-      { tone: "mountain", label: "Campaign recap" },
-      { tone: "workspace", label: "Funnel report" },
-      { tone: "interior", label: "Partner room" },
-      { tone: "plant", label: "Event board" }
+      { tone: "mountain", label: "\u6295\u653e\u590d\u76d8" },
+      { tone: "workspace", label: "\u8f6c\u5316\u62a5\u8868" },
+      { tone: "interior", label: "\u5408\u4f5c\u4f1a\u8bae" },
+      { tone: "plant", label: "\u6d3b\u52a8\u6392\u671f" }
     ],
     files: [
-      { name: "Campaign Recap.pdf", meta: "PDF · 2.0 MB", kind: "pdf" },
-      { name: "Forecast Model.xlsx", meta: "XLS · 1.1 MB", kind: "xls" },
-      { name: "Partner Summary.docx", meta: "DOC · 300 KB", kind: "doc" }
+      { name: "\u6295\u653e\u590d\u76d8.pdf", meta: "PDF \u00b7 2.0 MB", kind: "pdf" },
+      { name: "\u9884\u4f30\u6a21\u578b.xlsx", meta: "XLS \u00b7 1.1 MB", kind: "xls" },
+      { name: "\u5408\u4f5c\u603b\u7ed3.docx", meta: "DOC \u00b7 300 KB", kind: "doc" }
     ],
-    inlineFile: { name: "Campaign Recap.pdf", meta: "PDF · 2.0 MB", kind: "pdf" }
+    inlineFile: { name: "\u6295\u653e\u590d\u76d8.pdf", meta: "PDF \u00b7 2.0 MB", kind: "pdf" }
   }
+];
+
+const PREVIEW_USER = { username: "\u5f20\u5b50\u8f69" };
+const PREVIEW_CONVERSATIONS = [
+  { username: "\u6797\u8bed\u6850", online: true, previewText: "\u6587\u4ef6\u5df2\u53d1\u4f60\uff0c\u8bf7\u67e5\u6536", lastAt: Date.now() - 8 * 60 * 1000, unread: 0, pinned: true },
+  { username: "\u738b\u601d\u8fdc", online: false, previewText: "\u597d\u7684\uff0c\u6211\u7a0d\u540e\u5904\u7406", lastAt: Date.now() - 23 * 60 * 1000, unread: 2, pinned: false },
+  { username: "\u8fd0\u8425\u56e2\u961f", online: true, previewText: "\u6570\u636e\u677f\u5df2\u66f4\u65b0", lastAt: Date.now() - 45 * 60 * 1000, unread: 3, pinned: false },
+  { username: "\u9648\u4e00\u5e06", online: false, previewText: "\u8c22\u8c22\u4f60\u7684\u5e2e\u52a9", lastAt: Date.now() - 24 * 60 * 60 * 1000, unread: 0, pinned: false }
 ];
 
 function readJsonStorage(key, fallback) {
@@ -266,16 +295,120 @@ function showToast(message, kind = "info") {
   }, 2400);
 }
 
+function setAccountMenuExpanded(expanded) {
+  const value = expanded ? "true" : "false";
+  elements.accountMenuButton?.setAttribute("aria-expanded", value);
+  elements.sidebarProfileButton?.setAttribute("aria-expanded", value);
+}
+
+function positionFloatingMenu(menu, anchor) {
+  if (!menu || !anchor) {
+    return;
+  }
+  const rect = anchor.getBoundingClientRect();
+  const menuWidth = menu.offsetWidth || 188;
+  const menuHeight = menu.offsetHeight || 120;
+  const gap = 10;
+  const viewportGap = 12;
+  let left = rect.right - menuWidth;
+  let top = rect.bottom + gap;
+
+  if (left < viewportGap) {
+    left = rect.left;
+  }
+  left = Math.max(viewportGap, Math.min(left, window.innerWidth - menuWidth - viewportGap));
+
+  if (top + menuHeight > window.innerHeight - viewportGap) {
+    top = rect.top - menuHeight - gap;
+  }
+  top = Math.max(viewportGap, top);
+
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
+function closeAccountMenu() {
+  state.accountMenuOpen = false;
+  state.accountMenuAnchor = null;
+  setAccountMenuExpanded(false);
+  if (elements.accountMenu) {
+    elements.accountMenu.hidden = true;
+    elements.accountMenu.style.removeProperty("left");
+    elements.accountMenu.style.removeProperty("top");
+  }
+}
+
+function toggleAccountMenu(force, anchor = elements.accountMenuButton || elements.sidebarProfileButton) {
+  state.accountMenuOpen = typeof force === "boolean" ? force : !state.accountMenuOpen;
+  state.accountMenuAnchor = state.accountMenuOpen ? (anchor || elements.accountMenuButton || elements.sidebarProfileButton) : null;
+  setAccountMenuExpanded(state.accountMenuOpen);
+  if (elements.accountMenu) {
+    elements.accountMenu.hidden = !state.accountMenuOpen;
+    if (state.accountMenuOpen && state.accountMenuAnchor) {
+      positionFloatingMenu(elements.accountMenu, state.accountMenuAnchor);
+    }
+  }
+}
+
+function closeEmojiPanel() {
+  state.emojiPanelOpen = false;
+  if (elements.emojiPanel) {
+    elements.emojiPanel.hidden = true;
+  }
+}
+
+function toggleEmojiPanel(force) {
+  state.emojiPanelOpen = typeof force === "boolean" ? force : !state.emojiPanelOpen;
+  if (elements.emojiPanel) {
+    elements.emojiPanel.hidden = !state.emojiPanelOpen;
+  }
+}
+
+function hideMessageContextMenu() {
+  state.contextMenuMessageId = "";
+  if (elements.messageContextMenu) {
+    elements.messageContextMenu.hidden = true;
+    elements.messageContextMenu.style.removeProperty("left");
+    elements.messageContextMenu.style.removeProperty("top");
+  }
+}
+
+function showMessageContextMenu(messageId, x, y) {
+  if (!elements.messageContextMenu || !messageId) {
+    return;
+  }
+  state.contextMenuMessageId = messageId;
+  elements.messageContextMenu.hidden = false;
+  const maxX = window.innerWidth - 180;
+  const maxY = window.innerHeight - 120;
+  elements.messageContextMenu.style.left = `${Math.min(x, maxX)}px`;
+  elements.messageContextMenu.style.top = `${Math.min(y, maxY)}px`;
+}
+
+function insertEmoji(value) {
+  if (!elements.messageInput || !value) {
+    return;
+  }
+  const input = elements.messageInput;
+  const start = input.selectionStart ?? input.value.length;
+  const end = input.selectionEnd ?? input.value.length;
+  input.value = `${input.value.slice(0, start)}${value}${input.value.slice(end)}`;
+  const nextPos = start + value.length;
+  input.setSelectionRange(nextPos, nextPos);
+  input.focus();
+  handleComposerInput();
+}
+
 function connectionStatusLabel() {
   switch (state.connectionState) {
     case "online":
-      return "Online";
+      return "\u5728\u7ebf";
     case "connecting":
-      return "Connecting";
+      return "\u8fde\u63a5\u4e2d";
     case "reconnecting":
-      return "Reconnecting";
+      return "\u91cd\u8fde\u4e2d";
     default:
-      return "Offline";
+      return "\u79bb\u7ebf";
   }
 }
 
@@ -284,13 +417,31 @@ function updateWorkspaceStatus() {
     return;
   }
   if (!state.me) {
-    elements.meStatus.textContent = "Waiting to sign in";
+    elements.meStatus.textContent = "\u7b49\u5f85\u767b\u5f55";
+    if (elements.sidebarProfileAvatar) {
+      setAvatar(elements.sidebarProfileAvatar, "Echo");
+    }
+    if (elements.sidebarProfileName) {
+      elements.sidebarProfileName.textContent = "Echo";
+    }
+    if (elements.sidebarProfileStatus) {
+      elements.sidebarProfileStatus.textContent = "\u70b9\u51fb\u767b\u5f55";
+    }
     updateMeStatusDot("offline");
     return;
   }
   const pendingCount = state.pendingOutbox.length;
-  const pendingSuffix = pendingCount > 0 ? ` · queued ${pendingCount}` : "";
-  elements.meStatus.textContent = `${connectionStatusLabel()} · encrypted${pendingSuffix}`;
+  const pendingSuffix = pendingCount > 0 ? ` \u00b7 \u5f85\u53d1\u9001 ${pendingCount}` : "";
+  elements.meStatus.textContent = `${connectionStatusLabel()} \u00b7 \u5df2\u52a0\u5bc6${pendingSuffix}`;
+  if (elements.sidebarProfileAvatar) {
+    setAvatar(elements.sidebarProfileAvatar, state.me.username);
+  }
+  if (elements.sidebarProfileName) {
+    elements.sidebarProfileName.textContent = state.me.username;
+  }
+  if (elements.sidebarProfileStatus) {
+    elements.sidebarProfileStatus.textContent = state.previewMode ? "\u754c\u9762\u9884\u89c8" : connectionStatusLabel();
+  }
   updateMeStatusDot(state.connectionState);
 }
 
@@ -380,16 +531,16 @@ function formatRelative(timestamp) {
   const diffMs = Date.now() - timestamp;
   const diffMinutes = Math.max(0, Math.floor(diffMs / 60000));
   if (diffMinutes < 1) {
-    return "Now";
+    return "\u521a\u521a";
   }
   if (diffMinutes < 60) {
-    return `${diffMinutes}m`;
+    return `${diffMinutes} \u5206\u949f\u524d`;
   }
   if (diffMinutes < 24 * 60) {
     return formatTime(timestamp);
   }
-  return new Date(timestamp).toLocaleDateString("en-US", {
-    month: "short",
+  return new Date(timestamp).toLocaleDateString("zh-CN", {
+    month: "numeric",
     day: "numeric"
   });
 }
@@ -397,7 +548,7 @@ function formatRelative(timestamp) {
 function messagePreview(text) {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   if (!normalized) {
-    return "No messages yet";
+    return "暂无消息";
   }
   return normalized.length > 34 ? `${normalized.slice(0, 34)}...` : normalized;
 }
@@ -405,7 +556,7 @@ function messagePreview(text) {
 function replyPreviewText(message) {
   const normalized = String(message?.text || "").replace(/\s+/g, " ").trim();
   if (!normalized) {
-    return "Empty message";
+    return "空消息";
   }
   return normalized.length > 96 ? `${normalized.slice(0, 96)}...` : normalized;
 }
@@ -671,26 +822,26 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     return;
   }
   if (!peer) {
-    elements.securityStatus.textContent = "Choose a conversation to see secure session status.";
+    elements.securityStatus.textContent = "\u8bf7\u9009\u62e9\u4f1a\u8bdd\u67e5\u770b\u52a0\u5bc6\u72b6\u6001\u3002";
     return;
   }
   const parts = [];
-  parts.push(state.identity?.privateKey ? "Keys ready" : "Keys locked");
-  parts.push(state.peerKeys.has(peer.username) ? "Peer key synced" : "Waiting for peer key");
+  parts.push(state.identity?.privateKey ? "\u5bc6\u94a5\u5df2\u5c31\u7eea" : "\u5bc6\u94a5\u5df2\u9501\u5b9a");
+  parts.push(state.peerKeys.has(peer.username) ? "\u5bf9\u7aef\u5bc6\u94a5\u5df2\u540c\u6b65" : "\u7b49\u5f85\u5bf9\u7aef\u5bc6\u94a5");
   if (state.connectionState === "online") {
-    parts.push("Live connection");
+    parts.push("\u5b9e\u65f6\u8fde\u63a5\u6b63\u5e38");
   } else if (state.connectionState === "reconnecting") {
-    parts.push("Retrying live connection");
+    parts.push("\u6b63\u5728\u5c1d\u8bd5\u91cd\u8fde");
   } else if (state.connectionState === "connecting") {
-    parts.push("Connecting now");
+    parts.push("\u6b63\u5728\u5efa\u7acb\u8fde\u63a5");
   } else {
-    parts.push("Offline queue available");
+    parts.push("\u79bb\u7ebf\u961f\u5217\u53ef\u7528");
   }
   const pendingCount = pendingOutboxForPeer(peer.username).length;
   if (pendingCount > 0) {
-    parts.push(`${pendingCount} queued`);
+    parts.push(`\u5f85\u53d1\u9001 ${pendingCount}`);
   }
-  elements.securityStatus.textContent = parts.join(" · ");
+  elements.securityStatus.textContent = parts.join(" \u00b7 ");
 }
 
 function setAuthBusy(busy) {
@@ -717,6 +868,9 @@ function syncLayoutState() {
   document.body.classList.toggle("is-mobile", isMobile());
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
   document.body.classList.toggle("is-details-open", isDetailsDrawerLayout() && state.detailsPanelOpen);
+  if (state.accountMenuOpen && elements.accountMenu && state.accountMenuAnchor) {
+    positionFloatingMenu(elements.accountMenu, state.accountMenuAnchor);
+  }
 }
 
 function isNearBottom(node, threshold = 120) {
@@ -901,6 +1055,7 @@ function clearSession(showAuth = true, clearToken = true) {
   state.outboxFlushing = false;
   state.searchRequestId += 1;
   state.openConversationRequest += 1;
+  state.previewMode = false;
 
   clearStoredSessionArtifacts(clearToken, true);
   elements.globalSearchInput.value = "";
@@ -920,6 +1075,7 @@ function setSession(token, user, identity) {
   state.token = token ? "cookie" : "";
   state.me = user;
   state.identity = identity;
+  state.previewMode = false;
   resetLocalConversationState();
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
@@ -1034,9 +1190,9 @@ function applyThreadActionState(peer) {
   elements.pinPeerButton.disabled = !hasPeer;
   elements.mutePeerButton.disabled = !hasPeer;
   elements.exportPeerButton.disabled = !hasPeer;
-  elements.pinPeerButton.textContent = prefs.pinned ? "Unpin" : "Pin";
-  elements.mutePeerButton.textContent = prefs.muted ? "Unmute" : "Mute";
-  elements.exportPeerButton.textContent = "Export";
+  elements.pinPeerButton.textContent = prefs.pinned ? "\u53d6\u6d88\u7f6e\u9876" : "\u7f6e\u9876";
+  elements.mutePeerButton.textContent = prefs.muted ? "\u53d6\u6d88\u514d\u6253\u6270" : "\u514d\u6253\u6270";
+  elements.exportPeerButton.textContent = "\u5bfc\u51fa";
 }
 
 function togglePeerPref(peer, key) {
@@ -1089,12 +1245,12 @@ function matchConversationSearchScope(conversation, query) {
     }
   }
   const matchLabel = draft.trim() && draft.toLowerCase().includes(normalizedQuery)
-    ? "Draft match"
+    ? "\u8349\u7a3f\u547d\u4e2d"
     : indexText.startsWith(conversation.username.toLowerCase())
-      ? "Name match"
+      ? "\u540d\u79f0\u547d\u4e2d"
       : String(conversation.previewText || "").toLowerCase().includes(normalizedQuery)
-        ? "Recent message"
-        : "History match";
+        ? "\u6700\u8fd1\u6d88\u606f"
+        : "\u5386\u53f2\u6d88\u606f";
   return {
     username: conversation.username,
     online: conversation.online,
@@ -1103,7 +1259,7 @@ function matchConversationSearchScope(conversation, query) {
     previewText: conversation.previewText || "",
     lastAt: conversation.lastAt || 0,
     unread: conversation.unread || 0,
-    sourceLabel: `Chat · ${matchLabel}`,
+    sourceLabel: `\u4f1a\u8bdd \u00b7 ${matchLabel}`,
     searchHint: matchLabel,
     pinned: prefs.pinned,
     muted: prefs.muted
@@ -1137,15 +1293,15 @@ function renderDetailFileRow(file) {
   const copy = document.createElement("div");
   copy.className = "detail-file-copy";
   copy.innerHTML = `
-    <strong>${escapeHtml(file.name || "Untitled file")}</strong>
-    <span class="detail-file-meta">${escapeHtml(file.meta || "File")}</span>
+    <strong>${escapeHtml(file.name || "\u672a\u547d\u540d\u6587\u4ef6")}</strong>
+    <span class="detail-file-meta">${escapeHtml(file.meta || "\u6587\u4ef6")}</span>
   `;
 
   const download = document.createElement("button");
   download.type = "button";
   download.className = "detail-file-download";
   download.dataset.detailAction = "download";
-  download.setAttribute("aria-label", `Download ${file.name || "file"}`);
+  download.setAttribute("aria-label", `\u4e0b\u8f7d ${file.name || "\u6587\u4ef6"}`);
   download.innerHTML = `
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -1171,10 +1327,10 @@ function renderInlineFileCard(file) {
     <div class="inline-file-card">
       <div class="inline-file-icon" data-kind="${escapeHtml(file.kind || "pdf")}">${escapeHtml(String(file.kind || "pdf").toUpperCase())}</div>
       <div class="inline-file-copy">
-        <strong>${escapeHtml(file.name || "Encrypted document")}</strong>
-        <span>${escapeHtml(file.meta || "Secure file")}</span>
+        <strong>${escapeHtml(file.name || "\u52a0\u5bc6\u6587\u4ef6")}</strong>
+        <span>${escapeHtml(file.meta || "\u5b89\u5168\u6587\u4ef6")}</span>
       </div>
-      <button class="inline-file-action" type="button" data-detail-action="download" aria-label="Download ${escapeHtml(file.name || "file")}">
+      <button class="inline-file-action" type="button" data-detail-action="download" aria-label="\u4e0b\u8f7d ${escapeHtml(file.name || "\u6587\u4ef6")}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
           <polyline points="7 10 12 15 17 10"></polyline>
@@ -1186,7 +1342,7 @@ function renderInlineFileCard(file) {
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  meta.textContent = "Shared file";
+  meta.textContent = "\u5df2\u5171\u4eab\u6587\u4ef6";
 
   body.append(card, meta);
   article.append(body);
@@ -1212,7 +1368,7 @@ function renderContactDetails(peer) {
   elements.contactDetailsContent.hidden = false;
   setAvatar(elements.detailsAvatar, peer.username);
   elements.detailsName.textContent = peer.username;
-  elements.detailsStatus.textContent = peer.online ? "Online now" : "Last active recently";
+  elements.detailsStatus.textContent = peer.online ? "在线" : "最近活跃";
   elements.detailsRole.textContent = preset.role;
   elements.detailsAbout.textContent = preset.about;
   elements.notificationsToggle.checked = !prefs.muted;
@@ -1259,8 +1415,8 @@ function renderSidebar() {
     ? (() => {
         const remoteResults = state.searchResults.map((user) => ({
           ...user,
-          sourceLabel: "Directory match",
-          searchHint: user.online ? "Available now" : "Contact suggestion"
+          sourceLabel: "联系人",
+          searchHint: user.online ? "当前在线" : "可发起会话"
         }));
         const merged = new Map();
         for (const item of [...localResults, ...remoteResults]) {
@@ -1273,8 +1429,8 @@ function renderSidebar() {
       })()
     : [];
   elements.sidebarMeta.textContent = query
-    ? `${mergedSearchRows.length} results`
-    : `${visibleCount} conversations`;
+    ? `${mergedSearchRows.length} 条结果`
+    : `${visibleCount} 个会话`;
   elements.searchGroup.hidden = !query;
   if (elements.pinnedGroup) {
     elements.pinnedGroup.hidden = query || pinnedConversations.length === 0;
@@ -1297,7 +1453,7 @@ function renderSidebar() {
     if (searchRows.length === 0) {
       const empty = document.createElement("div");
       empty.className = "list-empty";
-      empty.textContent = "No matching people or chats";
+      empty.textContent = "没有匹配的联系人或会话";
       elements.searchResultList.append(empty);
     } else {
       for (const user of searchRows) {
@@ -1330,7 +1486,7 @@ function renderListItem(item, isSearchResult) {
     indicators.push('<i class="online-dot"></i>');
   }
   if (!isSearchResult && draft) {
-    indicators.push('<span class="draft-badge">Draft</span>');
+    indicators.push('<span class="draft-badge">草稿</span>');
   }
 
   const button = document.createElement("button");
@@ -1361,20 +1517,20 @@ function renderListItem(item, isSearchResult) {
   meta.innerHTML = `
     <div class="list-row">
       <strong>${escapeHtml(item.username)}</strong>
-      <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "Online" : "Offline")) : formatRelative(item.lastAt))}</span>
+      <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "在线" : "离线")) : formatRelative(item.lastAt))}</span>
     </div>
     <div class="list-row is-subtle">
-      <span class="list-preview">${escapeHtml(isSearchResult ? (item.searchHint || "Start a secure chat") : messagePreview(item.previewText || "Encrypted message"))}</span>
+      <span class="list-preview">${escapeHtml(isSearchResult ? (item.searchHint || "发起新的加密会话") : messagePreview(item.previewText || "加密消息"))}</span>
       <span class="list-indicators">${indicators.join("")}</span>
     </div>
   `;
 
   const flags = [];
   if (prefs.pinned) {
-    flags.push('<em class="list-flag">Pinned</em>');
+    flags.push('<em class="list-flag">已置顶</em>');
   }
   if (prefs.muted) {
-    flags.push('<em class="list-flag">Muted</em>');
+    flags.push('<em class="list-flag">免打扰</em>');
   }
   if (isSearchResult && item.sourceLabel) {
     flags.push(`<em class="list-flag">${escapeHtml(item.sourceLabel)}</em>`);
@@ -1401,19 +1557,19 @@ function formatDaySeparator(timestamp) {
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
-  if (isSameDay(date, today)) return "Today";
-  if (isSameDay(date, yesterday)) return "Yesterday";
-  return date.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "short",
-    day: "numeric"
+  if (isSameDay(date, today)) return "\u4eca\u5929";
+  if (isSameDay(date, yesterday)) return "\u6628\u5929";
+  return date.toLocaleDateString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    weekday: "long"
   });
 }
 
 function createDaySeparator(timestamp) {
   const sep = document.createElement("div");
   sep.className = "message-day-sep";
-  sep.textContent = formatDaySeparator(timestamp);
+  sep.innerHTML = `<span>${escapeHtml(formatDaySeparator(timestamp))}</span>`;
   return sep;
 }
 
@@ -1431,35 +1587,41 @@ function isMessageConsecutive(prev, current) {
 function renderMessage(message, options = {}) {
   const article = document.createElement("article");
   const isConsecutive = options.consecutive ? " is-consecutive" : "";
-  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${isConsecutive}`;
-  article.dataset.messageId = message.id;
+  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${message.recalled ? " is-recalled" : ""}${isConsecutive}`;
+  article.dataset.messageId = message.id || message.tempId || "";
   article.dataset.messageText = message.text;
-  const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || "")}">Reply</button>`;
+  article.dataset.mine = message.mine ? "1" : "0";
+  const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || message.tempId || "")}">\u56de\u590d</button>`;
   let statusAction = "";
   if (message.failed) {
-    statusAction = `<span class="message-state is-error"><i class="dot"></i>Failed</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">Retry</button>`;
+    statusAction = `<span class="message-state is-error"><i class="dot"></i>\u53d1\u9001\u5931\u8d25</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">\u91cd\u8bd5</button>`;
   } else if (message.pending) {
     const stateClass = message.sendStatus === "queued" ? "is-queued" : "is-sending";
-    const stateLabel = message.sendStatus === "queued" ? "Queued" : "Sending";
+    const stateLabel = message.sendStatus === "queued" ? "\u5f85\u53d1\u9001" : "\u53d1\u9001\u4e2d";
     statusAction = `<span class="message-state ${stateClass}"><i class="dot"></i>${stateLabel}</span>`;
   } else if (message.mine && message.sendStatus === "sent") {
-    statusAction = `<span class="message-state is-sent"><i class="dot"></i>Sent</span>`;
+    statusAction = `<span class="message-state is-sent"><i class="dot"></i>\u5df2\u53d1\u9001</span>`;
   }
-  const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || "")}">Copy</button>`;
+  const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || message.tempId || "")}">\u590d\u5236</button>`;
   const replyMarkup = message.replyTo
     ? `
       <div class="message-reply">
-        <span>Replying to ${escapeHtml(message.replyTo.from || "message")}</span>
+        <span>\u56de\u590d ${escapeHtml(message.replyTo.from || "\u6d88\u606f")}</span>
         <p>${escapeHtml(replyPreviewText(message.replyTo))}</p>
       </div>
     `
     : "";
+  const bubbleMarkup = message.recalled
+    ? `<div class="bubble bubble-recalled">\u4f60\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f</div>`
+    : `<div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>`;
   const metaParts = [escapeHtml(formatTime(message.createdAt))];
-  if (statusAction) metaParts.push(statusAction);
-  if (!isConsecutive || !message.mine) {
+  if (statusAction && !message.recalled) metaParts.push(statusAction);
+  if (!message.recalled && (!isConsecutive || !message.mine)) {
     metaParts.push(replyAction);
   }
-  metaParts.push(copyAction);
+  if (!message.recalled) {
+    metaParts.push(copyAction);
+  }
   const avatarMarkup = isConsecutive
     ? ""
     : `<div class="message-avatar avatar avatar-tone-${avatarTone(message.from)}">${escapeHtml(avatarInitial(message.from))}</div>`;
@@ -1467,7 +1629,7 @@ function renderMessage(message, options = {}) {
     ${message.mine ? "" : avatarMarkup}
     <div class="message-body">
       ${replyMarkup}
-      <div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>
+      ${bubbleMarkup}
       <div class="message-meta">${metaParts.join('<span class="message-meta-sep">·</span>')}</div>
     </div>
   `;
@@ -1498,21 +1660,21 @@ function renderThread(options = {}) {
   elements.peerName.textContent = peer.username;
   let connectionLabel = "";
   if (state.connectionState === "reconnecting") {
-    connectionLabel = " · reconnecting";
+    connectionLabel = " · 重连中";
   } else if (state.connectionState === "offline") {
-    connectionLabel = " · offline queue";
+    connectionLabel = " · 离线队列";
   }
   const prefs = peerPrefs(peer.username);
   const statusTags = [];
   if (prefs.pinned) {
-    statusTags.push("Pinned");
+    statusTags.push("已置顶");
   }
   if (prefs.muted) {
-    statusTags.push("Muted");
+    statusTags.push("免打扰");
   }
   const threadQuery = state.threadSearchQuery.trim().toLowerCase();
   const statusSuffix = statusTags.length ? ` · ${statusTags.join(" · ")}` : "";
-  elements.peerStatus.textContent = `${peer.online ? "Online now" : "Offline"} · end-to-end encrypted${connectionLabel}${statusSuffix}`;
+  elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} · 端到端加密${connectionLabel}${statusSuffix}`;
   updateSecurityStatus(peer);
   setAvatar(elements.peerAvatar, peer.username);
 
@@ -1527,8 +1689,8 @@ function renderThread(options = {}) {
   );
   if (elements.threadSearchMeta) {
     elements.threadSearchMeta.textContent = threadQuery
-      ? `${visibleMessages.length} of ${messages.length} messages`
-      : `${messages.length} messages`;
+      ? `\u5df2\u7b5b\u9009 ${visibleMessages.length} / ${messages.length} \u6761\u6d88\u606f`
+      : `\u5171 ${messages.length} \u6761\u6d88\u606f`;
   }
   elements.messageList.textContent = "";
 
@@ -1539,7 +1701,7 @@ function renderThread(options = {}) {
     loadOlderButton.type = "button";
     loadOlderButton.className = "message-load-older-button";
     loadOlderButton.dataset.loadOlderPeer = peer.username;
-    loadOlderButton.textContent = paging.loadingOlder ? "Loading..." : "Load earlier messages";
+    loadOlderButton.textContent = paging.loadingOlder ? "加载中..." : "加载更早消息";
     loadOlderButton.disabled = paging.loadingOlder;
     loadOlderWrap.append(loadOlderButton);
     elements.messageList.append(loadOlderWrap);
@@ -1548,12 +1710,12 @@ function renderThread(options = {}) {
   if (messages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "message-empty";
-    empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>No messages yet. Send the first secure note to start the thread.</span>`;
+    empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>暂无消息，发送第一条加密消息开始会话。</span>`;
     elements.messageList.append(empty);
   } else if (visibleMessages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "message-empty";
-    empty.innerHTML = `<strong>No matching messages</strong><span>Try a shorter keyword or clear the in-thread search.</span>`;
+    empty.innerHTML = `<strong>没有匹配的消息</strong><span>请尝试缩短关键词，或清空当前会话搜索。</span>`;
     elements.messageList.append(empty);
   } else {
     if (virtualWindow && virtualWindow.start > 0) {
@@ -1591,7 +1753,7 @@ function renderThread(options = {}) {
   }
   setComposerBusy(false);
   if (scrollBehavior === "bottom") {
-    scrollMessagesToBottom();
+    scrollMessagesToBottom(true);
     return;
   }
   if (virtualWindow) {
@@ -1607,6 +1769,7 @@ function renderThread(options = {}) {
 
 function render() {
   syncLayoutState();
+  setActiveNavSection(state.activeNavSection);
   renderSidebar();
   renderThread();
   updateMeStatusDot(state.connectionState);
@@ -1965,6 +2128,11 @@ async function loadConversations() {
 }
 
 async function loadSearchResults(query) {
+  if (state.previewMode) {
+    state.searchResults = [];
+    renderSidebar();
+    return;
+  }
   if (!query.trim()) {
     state.searchResults = [];
     renderSidebar();
@@ -2255,6 +2423,8 @@ async function openConversation(username) {
     return;
   }
 
+  closeEmojiPanel();
+  hideMessageContextMenu();
   ensureConversationEntry(username);
   state.activePeer = username;
   state.detailsPanelOpen = false;
@@ -2803,6 +2973,9 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     if (state.replyTarget?.id === replyToId) {
       clearReplyTarget();
     }
+    if (!silent) {
+      showToast("\u5df2\u53d1\u9001");
+    }
     return true;
   } catch (error) {
     setPendingMessageState(tempId, "failed", error.message);
@@ -2845,7 +3018,26 @@ async function submitMessage(event) {
   setDraftForPeer(peer, "");
   elements.messageInput.value = "";
   autoResizeComposer();
+  closeEmojiPanel();
   renderThread({ scrollBehavior: "bottom" });
+  if (state.previewMode) {
+    const pending = findMessageById(peer, tempId);
+    if (pending) {
+      pending.pending = false;
+      pending.sendStatus = "sent";
+      pending.createdAt = Date.now();
+      const conversation = getConversation(peer);
+      if (conversation) {
+        conversation.previewText = text;
+        conversation.lastAt = pending.createdAt;
+      }
+      sortConversations();
+      renderSidebar();
+      renderThread({ scrollBehavior: "bottom" });
+      showToast("\u5df2\u53d1\u9001");
+    }
+    return;
+  }
   void sendMessageWithRetry(tempId, peer, text, tempId, false, replyTo?.id || "");
 }
 
@@ -2864,6 +3056,40 @@ async function retryPendingMessage(tempId) {
     false,
     pending.replyToId || ""
   );
+}
+
+function findMessageById(peer, messageId) {
+  if (!peer || !messageId) {
+    return null;
+  }
+  return (state.messageCache.get(peer) || []).find((item) => item.id === messageId || item.tempId === messageId) || null;
+}
+
+function recallMessageById(peer, messageId) {
+  const messageNode = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
+  if (messageNode) {
+    messageNode.classList.add("is-recalling");
+  }
+  window.setTimeout(() => {
+  const messages = state.messageCache.get(peer) || [];
+  const target = messages.find((item) => (item.id === messageId || item.tempId === messageId) && item.mine);
+  if (!target) {
+    return;
+  }
+  target.recalled = true;
+  target.text = "";
+  if (target.tempId) {
+    removePendingOutboxEntry(target.tempId);
+    state.pendingMessages.delete(target.tempId);
+  }
+  const conversation = getConversation(peer);
+  if (conversation && conversation.latestMessage && (conversation.latestMessage.id === target.id || conversation.latestMessage.id === target.tempId)) {
+    conversation.previewText = "\u4f60\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f";
+  }
+  renderSidebar();
+  renderThread({ scrollBehavior: "preserve" });
+  showToast("\u6d88\u606f\u5df2\u64a4\u56de");
+  }, messageNode ? 180 : 0);
 }
 
 function handleListClick(event) {
@@ -2925,6 +3151,7 @@ async function copyMessageFromButton(copyButton) {
 }
 
 function handleMessageListClick(event) {
+  hideMessageContextMenu();
   const loadOlderButton = event.target.closest(".message-load-older-button");
   if (loadOlderButton) {
     const peer = loadOlderButton.dataset.loadOlderPeer || "";
@@ -2940,7 +3167,7 @@ function handleMessageListClick(event) {
   if (replyButton) {
     const messageId = replyButton.dataset.replyId || "";
     const peer = state.activePeer;
-    const message = (state.messageCache.get(peer) || []).find((item) => item.id === messageId || item.tempId === messageId);
+    const message = findMessageById(peer, messageId);
     if (message) {
       setReplyTarget(message);
     }
@@ -2989,6 +3216,78 @@ function setPeerMutedState(peer, muted) {
   render();
 }
 
+function setActiveNavSection(section) {
+  state.activeNavSection = section === "contacts" ? "contacts" : "messages";
+  elements.navMessagesButton?.classList.toggle("is-active", state.activeNavSection === "messages");
+  elements.navContactsButton?.classList.toggle("is-active", state.activeNavSection === "contacts");
+  if (state.activeNavSection === "contacts") {
+    showToast("\u8054\u7cfb\u4eba\u89c6\u56fe\u5df2\u9884\u7559\uff0c\u53ef\u5148\u901a\u8fc7\u641c\u7d22\u53d1\u8d77\u4f1a\u8bdd");
+  }
+}
+
+function ensurePreviewWorkspace() {
+  if (state.me || state.previewMode || state.conversations.length > 0) {
+    return;
+  }
+  state.previewMode = true;
+  state.me = { ...PREVIEW_USER };
+  state.connectionState = "online";
+  elements.meUsername.textContent = PREVIEW_USER.username;
+  setAvatar(elements.meAvatar, PREVIEW_USER.username);
+  for (const item of PREVIEW_CONVERSATIONS) {
+    updatePeerPrefs(item.username, { pinned: item.pinned, muted: false });
+    upsertConversation({
+      username: item.username,
+      online: item.online,
+      avatarSeed: item.username,
+      previewText: item.previewText,
+      lastAt: item.lastAt,
+      unread: item.unread
+    });
+    state.messageCache.set(item.username, []);
+    rebuildConversationSearchIndex(item.username);
+  }
+  const primaryPeer = PREVIEW_CONVERSATIONS[0]?.username || "";
+  if (!primaryPeer) {
+    return;
+  }
+  const now = Date.now();
+  state.messageCache.set(primaryPeer, [
+    {
+      id: "preview-1",
+      from: primaryPeer,
+      to: PREVIEW_USER.username,
+      peer: primaryPeer,
+      mine: false,
+      text: "\u4f60\u597d\uff0c\u4eca\u5929\u7684\u4f1a\u8bae\u8d44\u6599\u51c6\u5907\u597d\u4e86\u5417\uff1f",
+      createdAt: now - 26 * 60 * 60 * 1000,
+      sendStatus: "sent"
+    },
+    {
+      id: "preview-2",
+      from: PREVIEW_USER.username,
+      to: primaryPeer,
+      peer: primaryPeer,
+      mine: true,
+      text: "\u51c6\u5907\u597d\u4e86\uff0c\u7a0d\u540e\u53d1\u4f60\u3002",
+      createdAt: now - 26 * 60 * 60 * 1000 + 60 * 1000,
+      sendStatus: "sent"
+    },
+    {
+      id: "preview-3",
+      from: PREVIEW_USER.username,
+      to: primaryPeer,
+      peer: primaryPeer,
+      mine: true,
+      text: "\u6587\u4ef6\u5df2\u53d1\u4f60\uff0c\u8bf7\u67e5\u6536\u3002",
+      createdAt: now - 10 * 60 * 1000,
+      sendStatus: "sent"
+    }
+  ]);
+  state.activePeer = primaryPeer;
+  localStorage.setItem(STORAGE.activePeer, primaryPeer);
+}
+
 function focusThreadSearch() {
   if (!elements.threadSearchInput) {
     return;
@@ -3015,20 +3314,19 @@ function handlePresenceAction(kind) {
 
 function handleComposerActionClick(event) {
   const actionButton = event.target.closest("[data-composer-action]");
+  const emojiButton = event.target.closest("[data-emoji-value]");
+  if (emojiButton) {
+    insertEmoji(emojiButton.dataset.emojiValue || "");
+    closeEmojiPanel();
+    return;
+  }
   if (!actionButton) {
     return;
   }
   const action = actionButton.dataset.composerAction || "";
-  if (action === "attach") {
-    showToast("附件上传入口已预留，后续可接入真实文件发送");
-    return;
-  }
   if (action === "emoji") {
-    showToast("表情面板入口已预留，后续可接入真实表情选择器");
+    toggleEmojiPanel();
     return;
-  }
-  if (action === "gif") {
-    showToast("GIF 入口已预留，后续可接入第三方内容库");
   }
 }
 
@@ -3083,6 +3381,18 @@ function handleGlobalKeydown(event) {
     clearReplyTarget();
     return;
   }
+  if (event.key === "Escape" && state.emojiPanelOpen) {
+    closeEmojiPanel();
+    return;
+  }
+  if (event.key === "Escape" && state.accountMenuOpen) {
+    closeAccountMenu();
+    return;
+  }
+  if (event.key === "Escape" && state.contextMenuMessageId) {
+    hideMessageContextMenu();
+    return;
+  }
   if (event.key === "Escape" && state.detailsPanelOpen) {
     setDetailsPanelOpen(false);
     return;
@@ -3109,6 +3419,27 @@ function bindEvents() {
   elements.logoutAllButton.addEventListener("click", () => {
     void logoutAllDevices();
   });
+  elements.settingsButton?.addEventListener("click", () => {
+    showToast("\u8bbe\u7f6e\u9762\u677f\u5373\u5c06\u63d0\u4f9b");
+  });
+  elements.accountMenuButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleAccountMenu(undefined, event.currentTarget);
+  });
+  elements.editAccountButton?.addEventListener("click", () => {
+    closeAccountMenu();
+    showToast("\u8d26\u53f7\u4fe1\u606f\u7f16\u8f91\u529f\u80fd\u5373\u5c06\u63d0\u4f9b");
+  });
+  elements.logoutMenuButton?.addEventListener("click", () => {
+    closeAccountMenu();
+    void logout();
+  });
+  elements.sidebarProfileButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleAccountMenu(undefined, event.currentTarget);
+  });
+  elements.navMessagesButton?.addEventListener("click", () => setActiveNavSection("messages"));
+  elements.navContactsButton?.addEventListener("click", () => setActiveNavSection("contacts"));
   elements.globalSearchInput.addEventListener("input", handleSearchInput);
   elements.sidebarSearchInput?.addEventListener("input", handleSearchInput);
   elements.emptySearchButton?.addEventListener("click", focusSidebarSearch);
@@ -3131,6 +3462,15 @@ function bindEvents() {
     scheduleMessageListRender();
     updateScrollBottomButton();
   }, { passive: true });
+  elements.messageList.addEventListener("contextmenu", (event) => {
+    const message = event.target.closest(".message");
+    if (!message || message.dataset.mine !== "1") {
+      hideMessageContextMenu();
+      return;
+    }
+    event.preventDefault();
+    showMessageContextMenu(message.dataset.messageId || "", event.clientX, event.clientY);
+  });
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
   elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
@@ -3156,6 +3496,19 @@ function bindEvents() {
   });
   elements.composerForm.addEventListener("click", handleComposerActionClick);
   elements.messageInput.addEventListener("input", handleComposerInput);
+  elements.contextCopyButton?.addEventListener("click", () => {
+    const target = state.contextMenuMessageId ? elements.messageList.querySelector(`[data-message-id="${state.contextMenuMessageId}"] .message-copy-button`) : null;
+    if (target) {
+      void copyMessageFromButton(target);
+    }
+    hideMessageContextMenu();
+  });
+  elements.contextRecallButton?.addEventListener("click", () => {
+    if (state.activePeer && state.contextMenuMessageId) {
+      recallMessageById(state.activePeer, state.contextMenuMessageId);
+    }
+    hideMessageContextMenu();
+  });
   elements.mobileBackButton.addEventListener("click", closeConversationOnMobile);
   elements.cancelReplyButton.addEventListener("click", () => {
     clearReplyTarget();
@@ -3168,6 +3521,17 @@ function bindEvents() {
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".account-menu-wrap")) {
+      closeAccountMenu();
+    }
+    if (!event.target.closest(".composer")) {
+      closeEmojiPanel();
+    }
+    if (!event.target.closest(".message-context-menu")) {
+      hideMessageContextMenu();
+    }
+  });
   window.addEventListener("online", () => {
     if (!state.token) {
       return;
@@ -3195,6 +3559,7 @@ function bindEvents() {
 function boot() {
   clearStoredSessionArtifacts(true, true);
   setAuthMode(state.authMode);
+  ensurePreviewWorkspace();
   bindEvents();
   render();
 

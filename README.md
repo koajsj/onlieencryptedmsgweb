@@ -64,6 +64,15 @@ cd /var/www/onlieencryptedmsgweb
 sudo bash scripts/deploy-debian.sh
 ```
 
+如果你想从空机器直接一条命令完成拉取和部署：
+
+```bash
+apt-get update && apt-get install -y git
+git clone https://github.com/koajsj/onlieencryptedmsgweb.git /var/www/onlieencryptedmsgweb
+cd /var/www/onlieencryptedmsgweb
+sudo bash scripts/deploy-debian.sh
+```
+
 如果你以后要换域名：
 
 ```bash
@@ -106,7 +115,16 @@ cd /var/www/onlieencryptedmsgweb
 sudo bash scripts/update-debian.sh
 ```
 
-更新脚本会先自动还原允许覆盖的构建产物，例如 `public/build-manifest.json` 和压缩后的前端文件，避免它们把 `git pull` 卡住。
+更新脚本现在会按下面的顺序执行：
+
+- 自动还原允许覆盖的构建产物，避免 `git pull` 被压缩文件卡住
+- `git fetch` + `git checkout main` + `git pull --ff-only`
+- `npm ci --include=dev`
+- `npm run build`
+- `systemctl restart secure-chat`
+- 如果服务器装了 Caddy，再自动 `validate + reload`
+
+它不会删除 `/var/lib/secure-chat/data` 里的生产数据，也不会重置你手工维护的 Caddy 证书状态。
 
 如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
@@ -191,6 +209,13 @@ Full (strict)
 - 服务器安全组是否放行 `80/443`
 - `systemctl status caddy --no-pager`
 - `systemctl status secure-chat --no-pager`
+
+如果 Cloudflare 提示 `521 Web Server Is Down`，通常就是下面几种情况：
+
+- `caddy` 没有安装或没有启动
+- `secure-chat` 服务没有在 `127.0.0.1:3000` 正常监听
+- 服务器防火墙没有放行 `80/443`
+- 域名还没真正解析到当前 VPS
 
 ### 443 被占用
 
