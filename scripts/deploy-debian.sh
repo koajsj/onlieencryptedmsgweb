@@ -26,6 +26,13 @@ NODE_MAJOR="20"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD_HASH=""
 GENERATED_ADMIN_PASSWORD=""
+SAFE_RESET_PATHS=(
+  "public/app.min.js"
+  "public/admin.min.js"
+  "public/styles.min.css"
+  "public/admin.min.css"
+  "public/build-manifest.json"
+)
 
 install_base_packages() {
   apt-get update
@@ -57,11 +64,34 @@ prepare_application_dir() {
   mkdir -p "$(dirname "${APP_DIR}")"
   git config --global --add safe.directory "${APP_DIR}" 2>/dev/null || true
   if [ -d "${APP_DIR}/.git" ]; then
+    reset_safe_generated_files
+    assert_clean_worktree_for_pull
     git -C "${APP_DIR}" fetch origin "${APP_BRANCH}"
     git -C "${APP_DIR}" checkout "${APP_BRANCH}"
     git -C "${APP_DIR}" pull --ff-only origin "${APP_BRANCH}"
   else
     git clone --branch "${APP_BRANCH}" "${REPO_URL}" "${APP_DIR}"
+  fi
+}
+
+reset_safe_generated_files() {
+  local path=""
+  for path in "${SAFE_RESET_PATHS[@]}"; do
+    if git -C "${APP_DIR}" ls-files --error-unmatch "${path}" >/dev/null 2>&1; then
+      git -C "${APP_DIR}" restore --source=HEAD --worktree --staged -- "${path}" 2>/dev/null || \
+        git -C "${APP_DIR}" restore --source=HEAD --worktree -- "${path}" 2>/dev/null || true
+    fi
+  done
+}
+
+assert_clean_worktree_for_pull() {
+  local remaining_changes=""
+  remaining_changes="$(git -C "${APP_DIR}" status --porcelain)"
+  if [ -n "${remaining_changes}" ]; then
+    echo "Refusing to update because the repository still has local changes:" >&2
+    echo "${remaining_changes}" >&2
+    echo "Commit, stash, or remove those changes before rerunning the deploy script." >&2
+    exit 1
   fi
 }
 

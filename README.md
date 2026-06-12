@@ -103,8 +103,12 @@ https://www.257823.xyz
 
 ```bash
 cd /var/www/onlieencryptedmsgweb
-sudo bash scripts/deploy-debian.sh
+sudo bash scripts/update-debian.sh
 ```
+
+更新脚本会先自动还原允许覆盖的构建产物，例如 `public/build-manifest.json` 和压缩后的前端文件，避免它们把 `git pull` 卡住。
+
+如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
 如果 `/etc/default/secure-chat` 里已经有管理员哈希，脚本不会重新生成密码。
 
