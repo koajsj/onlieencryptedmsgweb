@@ -11,7 +11,7 @@
 后台地址：
 
 ```text
-https://你的域名/admin.html
+https://257823.xyz/admin.html
 ```
 
 ## 1. 准备服务器
@@ -61,14 +61,14 @@ Full (strict)
 
 ```bash
 cd /var/www/onlieencryptedmsgweb
-DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh
+sudo bash scripts/deploy-debian.sh
 ```
 
-如果只想写一个域名：
+如果你以后要换域名：
 
 ```bash
 cd /var/www/onlieencryptedmsgweb
-DOMAIN=example.com sudo -E bash scripts/deploy-debian.sh
+DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh
 ```
 
 脚本会自动完成：
@@ -87,8 +87,8 @@ DOMAIN=example.com sudo -E bash scripts/deploy-debian.sh
 部署完成后直接访问：
 
 ```text
-https://你的域名
-https://www.你的域名
+https://257823.xyz
+https://www.257823.xyz
 ```
 
 注意：
@@ -103,7 +103,7 @@ https://www.你的域名
 
 ```bash
 cd /var/www/onlieencryptedmsgweb
-DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh
+sudo bash scripts/deploy-debian.sh
 ```
 
 如果 `/etc/default/secure-chat` 里已经有管理员哈希，脚本不会重新生成密码。

@@ -16,8 +16,8 @@ APP_BRANCH="${APP_BRANCH:-main}"
 REPO_URL="${REPO_URL:-https://github.com/koajsj/onlieencryptedmsgweb.git}"
 APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-3000}"
-DOMAIN="${DOMAIN:-}"
-WWW_DOMAIN="${WWW_DOMAIN:-}"
+DOMAIN="${DOMAIN:-257823.xyz}"
+WWW_DOMAIN="${WWW_DOMAIN:-www.257823.xyz}"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 ENV_FILE="/etc/default/${APP_NAME}"
 CADDYFILE="/etc/caddy/Caddyfile"
@@ -106,13 +106,6 @@ ensure_domains() {
     fi
     return
   fi
-
-  DOMAIN="$(hostname -f 2>/dev/null || true)"
-  if [ -z "${DOMAIN}" ] || [ "${DOMAIN}" = "localhost" ]; then
-    echo "DOMAIN is required. Example: DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh" >&2
-    exit 1
-  fi
-  WWW_DOMAIN="${WWW_DOMAIN:-www.${DOMAIN}}"
 }
 
 ensure_admin_credentials() {
