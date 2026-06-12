@@ -10,6 +10,9 @@ const test = require("node:test");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const SERVER_PATH = path.join(ROOT_DIR, "server.js");
+const TEST_ADMIN_USERNAME = "admin";
+const TEST_ADMIN_PASSWORD = "test-admin-pass";
+const TEST_ADMIN_PASSWORD_HASH = "scrypt:0123456789abcdeffedcba9876543210:1b8da2d25cf5bf40cecd23f19fbd6f225b891a051f41153d3cfb4b3ca8e8950fc8a851e67509171cd20a3484e9d9fecc8577c03810b52327fbfe3bb1b18bc7ff";
 
 const SAMPLE_BUNDLES = {
   Alice_1: {
@@ -72,6 +75,8 @@ async function startServer(envOverrides = {}) {
       HOST: "127.0.0.1",
       PORT: String(port),
       DATA_DIR: dataDir,
+      ADMIN_USERNAME: TEST_ADMIN_USERNAME,
+      ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
       ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -103,6 +108,8 @@ async function startServerAndWaitForExit(envOverrides = {}) {
       HOST: "127.0.0.1",
       PORT: String(port),
       DATA_DIR: dataDir,
+      ADMIN_USERNAME: TEST_ADMIN_USERNAME,
+      ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
       ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -641,8 +648,8 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.equal(message.status, 201);
 
     const adminLogin = await postJson(server.port, "/api/admin/login", {
-      username: "admin",
-      password: "qwer@1234"
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
     });
     assert.equal(adminLogin.status, 200);
     const adminToken = (await adminLogin.json()).token;
@@ -727,8 +734,8 @@ test("admin rename broadcasts user rename and keeps the session synchronized", a
     await Promise.all([aliceEvents.ready, bobEvents.ready]);
 
     const adminLogin = await postJson(server.port, "/api/admin/login", {
-      username: "admin",
-      password: "qwer@1234"
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
     });
     assert.equal(adminLogin.status, 200);
     const adminToken = (await adminLogin.json()).token;
@@ -769,24 +776,16 @@ test("admin rename broadcasts user rename and keeps the session synchronized", a
   }
 });
 
-test("admin credentials are fixed and environment overrides are ignored", async () => {
+test("admin credentials must come from environment configuration", async () => {
   const server = await startServer({
-    ADMIN_ACCOUNTS: "root:root:pass",
-    ADMIN_USERNAME: "other_admin",
-    ADMIN_PASSWORD: "other_password",
-    ADMIN_PASSWORD_HASH: "scrypt:bad"
+    ADMIN_USERNAME: "root_admin",
+    ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH
   });
 
   try {
-    const overrideLogin = await postJson(server.port, "/api/admin/login", {
-      username: "root",
-      password: "root:pass"
-    });
-    assert.equal(overrideLogin.status, 401);
-
     const fixedLogin = await postJson(server.port, "/api/admin/login", {
-      username: "admin",
-      password: "qwer@1234"
+      username: "root_admin",
+      password: TEST_ADMIN_PASSWORD
     });
     assert.equal(fixedLogin.status, 200);
     const cookie = fixedLogin.headers.get("set-cookie") || "";
@@ -797,7 +796,7 @@ test("admin credentials are fixed and environment overrides are ignored", async 
       headers: { Cookie: cookie.split(";")[0] }
     });
     assert.equal(me.status, 200);
-    assert.equal((await me.json()).admin.username, "admin");
+    assert.equal((await me.json()).admin.username, "root_admin");
   } finally {
     await server.stop();
   }
@@ -826,8 +825,8 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
     const ticketValue = (await ticketBeforeBan.json()).ticket;
 
     const adminLogin = await postJson(server.port, "/api/admin/login", {
-      username: "admin",
-      password: "qwer@1234"
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
     });
     const adminToken = (await adminLogin.json()).token;
 

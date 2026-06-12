@@ -38,9 +38,9 @@ const COOKIE_SECURE =
   process.env.COOKIE_SECURE === "1" || (process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "0");
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
-const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "qwer@1234";
-const RESERVED_USERNAME_KEYS = new Set([ADMIN_USERNAME]);
+const ADMIN_USERNAME = readConfiguredAdminUsername();
+const ADMIN_PASSWORD_HASH = readConfiguredAdminPasswordHash();
+const RESERVED_USERNAME_KEYS = new Set([ADMIN_USERNAME.toLowerCase()]);
 const AUDIT_TEXT_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.AUDIT_TEXT_RETENTION_DAYS || "30", 10) || 30);
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
 const TRUSTED_ORIGINS = new Set(
@@ -109,7 +109,7 @@ function findAdminAccount(username) {
   return username === ADMIN_USERNAME
     ? {
         username: ADMIN_USERNAME,
-        password: ADMIN_PASSWORD
+        passwordHash: ADMIN_PASSWORD_HASH
       }
     : null;
 }
@@ -619,6 +619,28 @@ async function verifyPassword(password, storedHash) {
   } catch (error) {
     return false;
   }
+}
+
+function isPasswordHashFormat(value) {
+  const parts = String(value || "").split(":");
+  const [salt, hash] = parts[0] === "scrypt" ? parts.slice(1) : parts;
+  return Boolean(salt) && /^[a-f0-9]{128}$/i.test(String(hash || ""));
+}
+
+function readConfiguredAdminUsername() {
+  const normalized = normalizeUsername(process.env.ADMIN_USERNAME || "");
+  if (!normalized) {
+    throw new Error("ADMIN_USERNAME must be set to 3-24 letters, numbers, or underscores");
+  }
+  return normalized.value;
+}
+
+function readConfiguredAdminPasswordHash() {
+  const hash = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
+  if (!isPasswordHashFormat(hash)) {
+    throw new Error("ADMIN_PASSWORD_HASH must be set to a valid scrypt hash");
+  }
+  return hash;
 }
 
 function findUserByKey(usernameKey) {
@@ -1438,7 +1460,7 @@ async function handleAdminLogin(req, res) {
   const username = String(body.username || "").trim();
   const password = String(body.password || "");
   const account = findAdminAccount(username);
-  if (!account || password !== account.password) {
+  if (!account || !(await verifyPassword(password, account.passwordHash))) {
     sendJson(res, 401, { error: "invalid admin credentials" });
     return;
   }
