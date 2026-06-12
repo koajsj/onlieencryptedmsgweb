@@ -39,7 +39,7 @@ const COOKIE_SECURE =
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const ADMIN_USERNAME = readConfiguredAdminUsername();
-const ADMIN_PASSWORD_HASH = readConfiguredAdminPasswordHash();
+const ADMIN_CREDENTIAL = readConfiguredAdminCredential();
 const RESERVED_USERNAME_KEYS = new Set([ADMIN_USERNAME.toLowerCase()]);
 const AUDIT_TEXT_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.AUDIT_TEXT_RETENTION_DAYS || "30", 10) || 30);
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
@@ -108,8 +108,7 @@ function ensureDataFiles() {
 function findAdminAccount(username) {
   return username === ADMIN_USERNAME
     ? {
-        username: ADMIN_USERNAME,
-        passwordHash: ADMIN_PASSWORD_HASH
+        username: ADMIN_USERNAME
       }
     : null;
 }
@@ -522,6 +521,19 @@ function normalizePassword(value) {
   return value.trim();
 }
 
+function readSubmittedUsername(body) {
+  if (!body || typeof body !== "object") {
+    return "";
+  }
+  const account =
+    body.username !== undefined
+      ? body.username
+      : body.account !== undefined
+        ? body.account
+        : body.email;
+  return typeof account === "string" ? account.trim() : "";
+}
+
 function normalizeMessageText(value) {
   if (typeof value !== "string") {
     return "";
@@ -635,12 +647,37 @@ function readConfiguredAdminUsername() {
   return normalized.value;
 }
 
-function readConfiguredAdminPasswordHash() {
+function readConfiguredAdminCredential() {
   const hash = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
-  if (!isPasswordHashFormat(hash)) {
-    throw new Error("ADMIN_PASSWORD_HASH must be set to a valid scrypt hash");
+  if (isPasswordHashFormat(hash)) {
+    return {
+      type: "hash",
+      value: hash
+    };
   }
-  return hash;
+
+  const password = normalizePassword(process.env.ADMIN_PASSWORD || "");
+  if (password.length >= 4 && password.length <= 72) {
+    return {
+      type: "plain",
+      value: password
+    };
+  }
+
+  throw new Error("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD must be set to a valid admin credential");
+}
+
+function verifyPlainSecret(password, expected) {
+  const providedDigest = crypto.createHash("sha256").update(String(password || ""), "utf8").digest();
+  const expectedDigest = crypto.createHash("sha256").update(String(expected || ""), "utf8").digest();
+  return crypto.timingSafeEqual(providedDigest, expectedDigest);
+}
+
+async function verifyConfiguredAdminPassword(password) {
+  if (ADMIN_CREDENTIAL.type === "hash") {
+    return verifyPassword(password, ADMIN_CREDENTIAL.value);
+  }
+  return verifyPlainSecret(password, ADMIN_CREDENTIAL.value);
 }
 
 function findUserByKey(usernameKey) {
@@ -1236,7 +1273,7 @@ async function handleRegister(req, res) {
     return;
   }
 
-  const normalizedUsername = normalizeUsername(body.username);
+  const normalizedUsername = normalizeUsername(readSubmittedUsername(body));
   const password = normalizePassword(body.password);
   if (!normalizedUsername) {
     sendJson(res, 400, { error: "username must be 3-24 characters using letters, numbers, or underscore" });
@@ -1334,7 +1371,7 @@ async function handleLogin(req, res) {
     return;
   }
 
-  const normalizedUsername = normalizeUsername(body.username);
+  const normalizedUsername = normalizeUsername(readSubmittedUsername(body));
   const password = normalizePassword(body.password);
   if (!normalizedUsername || !password) {
     sendJson(res, 400, { error: "username and password are required" });
@@ -1457,11 +1494,11 @@ async function handleAdminLogin(req, res) {
     });
     return;
   }
-  const username = String(body.username || "").trim();
+  const username = readSubmittedUsername(body);
   const password = String(body.password || "");
   const account = findAdminAccount(username);
-  if (!account || !(await verifyPassword(password, account.passwordHash))) {
-    sendJson(res, 401, { error: "invalid admin credentials" });
+  if (!account || !(await verifyConfiguredAdminPassword(password))) {
+    sendJson(res, 401, { error: "管理员账号或密码错误" });
     return;
   }
   const token = createSession(account.username, "admin");

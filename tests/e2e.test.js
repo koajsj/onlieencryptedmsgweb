@@ -283,6 +283,12 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.equal(loginBody.user.username, "Alice_1");
     assert.deepEqual(loginBody.keyBundle, SAMPLE_BUNDLES.Alice_1);
 
+    const aliasLogin = await postJson(server.port, "/api/login", {
+      account: "alice_1",
+      password: "pass1234"
+    });
+    assert.equal(aliasLogin.status, 200);
+
     const me = await getJson(server.port, "/api/me", loginBody.token);
     assert.equal(me.response.status, 200);
     assert.equal(me.json.user.username, "Alice_1");
@@ -701,6 +707,32 @@ test("admin can login, view stats/messages and ban users", async () => {
     });
     assert.equal(blockedLogin.status, 403);
     assert.equal((await blockedLogin.json()).error, "account banned");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin login accepts account alias and plain password configuration", async () => {
+  const server = await startServer({
+    ADMIN_PASSWORD_HASH: "",
+    ADMIN_PASSWORD: "qwer@1234"
+  });
+
+  try {
+    const login = await postJson(server.port, "/api/admin/login", {
+      account: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(login.status, 200);
+    const payload = await login.json();
+    assert.equal(payload.admin.username, "admin");
+
+    const invalid = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "bad-pass"
+    });
+    assert.equal(invalid.status, 401);
+    assert.equal((await invalid.json()).error, "管理员账号或密码错误");
   } finally {
     await server.stop();
   }

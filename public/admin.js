@@ -86,6 +86,25 @@ function showToast(message) {
   window.setTimeout(() => elements.toast.classList.remove("show"), 2200);
 }
 
+function translateAdminError(pathname, status, payload) {
+  const raw = String(payload?.error || "").trim();
+  const route = String(pathname || "").split("?")[0];
+  const mapped = {
+    "管理员账号或密码错误": "管理员账号或密码错误",
+    "invalid admin credentials": "管理员账号或密码错误",
+    unauthorized: "请先登录管理员账号",
+    "session expired": "管理员登录已过期，请重新登录",
+    "too many auth requests": "请求过于频繁，请稍后再试"
+  };
+  if (mapped[raw]) {
+    return mapped[raw];
+  }
+  if (route === "/api/admin/login" && status === 401) {
+    return "登录失败，请检查账号和密码";
+  }
+  return raw || `请求失败：${status}`;
+}
+
 function updateAdminHeader() {
   elements.adminMeta.textContent = `${state.admin.username || "管理员"} | ${state.admin.role || "admin"}`;
   if (elements.refreshMeta) {
@@ -183,7 +202,7 @@ async function api(pathname, options = {}) {
     payload = null;
   }
   if (!response.ok) {
-    throw new Error(payload?.error || `request failed: ${response.status}`);
+    throw new Error(translateAdminError(pathname, response.status, payload));
   }
   return payload;
 }

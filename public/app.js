@@ -5,7 +5,8 @@ const STORAGE = {
   authMode: "private-chat-auth-mode",
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
-  pendingOutbox: "private-chat-pending-outbox"
+  pendingOutbox: "private-chat-pending-outbox",
+  sessionIdentity: "private-chat-session-identity"
 };
 
 const AVATAR_TONES = 6;
@@ -242,6 +243,23 @@ function readJsonStorage(key, fallback) {
 
 function writeJsonStorage(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function readJsonSessionStorage(key, fallback) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function writeJsonSessionStorage(key, value) {
+  sessionStorage.setItem(key, JSON.stringify(value));
 }
 
 function escapeHtml(value) {
@@ -630,6 +648,54 @@ function saveDrafts() {
   writeJsonStorage(STORAGE.drafts, state.drafts);
 }
 
+function clearSessionIdentityCache() {
+  try {
+    sessionStorage.removeItem(STORAGE.sessionIdentity);
+  } catch (error) {
+    // Ignore sessionStorage cleanup failures.
+  }
+}
+
+async function persistSessionIdentity(identity, username = state.me?.username || "") {
+  if (!identity?.publicKeyBase64 || !identity?.privateKeyPkcs8Base64 || !username) {
+    clearSessionIdentityCache();
+    return;
+  }
+  writeJsonSessionStorage(STORAGE.sessionIdentity, {
+    username,
+    publicKeyBase64: identity.publicKeyBase64,
+    privateKeyPkcs8Base64: identity.privateKeyPkcs8Base64
+  });
+}
+
+async function restoreIdentityFromSessionCache(user) {
+  const cached = readJsonSessionStorage(STORAGE.sessionIdentity, null);
+  if (!cached || cached.username !== user?.username || cached.publicKeyBase64 !== user?.publicKey) {
+    return null;
+  }
+  try {
+    const publicKey = await importPublicKey(cached.publicKeyBase64);
+    const privateKey = await crypto.subtle.importKey(
+      "pkcs8",
+      base64ToBytes(cached.privateKeyPkcs8Base64),
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      ["deriveBits"]
+    );
+    state.importedPeerKeys.delete(cached.publicKeyBase64);
+    return {
+      username: user.username,
+      publicKey,
+      privateKey,
+      publicKeyBase64: cached.publicKeyBase64,
+      privateKeyPkcs8Base64: cached.privateKeyPkcs8Base64
+    };
+  } catch (error) {
+    clearSessionIdentityCache();
+    return null;
+  }
+}
+
 function rebuildConversationSearchIndex(username) {
   if (!username) {
     return;
@@ -966,6 +1032,41 @@ function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true, 
   if (clearPending) {
     localStorage.removeItem(STORAGE.pendingOutbox);
   }
+  if (clearToken) {
+    clearSessionIdentityCache();
+  }
+}
+
+function translateApiError(pathname, status, payload) {
+  const raw = String(payload?.error || "").trim();
+  const route = String(pathname || "").split("?")[0];
+  const authMessages = {
+    "username and password are required": "请输入账号和密码",
+    "invalid username or password": "账号或密码错误",
+    "username must be 3-24 characters using letters, numbers, or underscore": "用户名需为 3-24 位，只能使用字母、数字或下划线。",
+    "password must be 4-72 characters": "密码长度需为 4-72 位。",
+    "username already exists": "用户名已存在",
+    "username is reserved": "该用户名不可使用",
+    "account banned": "账号已被禁用",
+    "account key material is missing": "账号密钥异常，请重新登录或重新注册",
+    "too many auth requests": "请求过于频繁，请稍后再试",
+    unauthorized: "请先登录",
+    "session expired": "登录已过期，请重新登录"
+  };
+
+  if (raw in authMessages) {
+    return authMessages[raw];
+  }
+  if (route === "/api/login" && status === 401) {
+    return "登录失败，请检查账号和密码";
+  }
+  if (route === "/api/register" && status >= 400 && status < 500 && raw) {
+    return authMessages[raw] || "注册失败，请检查输入内容";
+  }
+  if (route === "/api/me" && status === 401) {
+    return "请先登录";
+  }
+  return raw || `请求失败：${status}`;
 }
 
 async function api(pathname, options = {}) {
@@ -1006,7 +1107,7 @@ async function api(pathname, options = {}) {
     if (response.status === 401 && state.token && !options.skipAuthReset) {
       clearSession(true);
     }
-    throw new Error(payload?.error || `request failed: ${response.status}`);
+    throw new Error(translateApiError(pathname, response.status, payload));
   }
   return payload;
 }
@@ -1885,12 +1986,14 @@ async function createIdentity(password) {
   const publicKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
   const privateKeyPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
   const publicKeyBase64 = bytesToBase64(publicKeyRaw);
+  const privateKeyPkcs8Base64 = bytesToBase64(privateKeyPkcs8);
   const keyBundle = await encryptPrivateKeyBundle(privateKeyPkcs8, password);
 
   return {
     publicKey: keyPair.publicKey,
     privateKey: keyPair.privateKey,
     publicKeyBase64,
+    privateKeyPkcs8Base64,
     keyBundle: {
       publicKey: publicKeyBase64,
       ...keyBundle
@@ -1901,6 +2004,7 @@ async function createIdentity(password) {
 async function restoreIdentity(username, password, keyBundle) {
   try {
     const privateKeyBytes = await decryptPrivateKeyBundle(password, keyBundle);
+    const privateKeyPkcs8Base64 = bytesToBase64(privateKeyBytes);
     const publicKey = await importPublicKey(keyBundle.publicKey);
     const privateKey = await crypto.subtle.importKey(
       "pkcs8",
@@ -1916,7 +2020,8 @@ async function restoreIdentity(username, password, keyBundle) {
       username,
       publicKey,
       privateKey,
-      publicKeyBase64: keyBundle.publicKey
+      publicKeyBase64: keyBundle.publicKey,
+      privateKeyPkcs8Base64
     };
   } catch (error) {
     throw new Error("无法解锁该账号的本地密钥");
@@ -2912,6 +3017,7 @@ async function submitAuth(event) {
     }
 
     setSession(payload.token, payload.user, identity);
+    await persistSessionIdentity(identity, payload.user.username);
     elements.authPasswordInput.value = "";
     await afterLogin();
     showToast(state.authMode === "login" ? "登录成功，已自动解锁加密会话" : "注册成功，已自动创建加密会话");
@@ -3556,18 +3662,53 @@ function bindEvents() {
   });
 }
 
-function boot() {
-  clearStoredSessionArtifacts(true, true);
+async function restoreAuthenticatedWorkspace() {
+  const payload = await api("/api/me", { skipAuthReset: true });
+  const user = payload?.user || null;
+  if (!user?.username) {
+    throw new Error("请先登录");
+  }
+
+  const identity = await restoreIdentityFromSessionCache(user);
+  if (!identity) {
+    clearSession(false, false);
+    elements.authUsernameInput.value = user.username;
+    elements.authPasswordInput.value = "";
+    setAuthMode("login");
+    setAuthFeedback("检测到已有登录状态，请重新输入密码以解锁本地密钥。", false);
+    elements.workspace.hidden = true;
+    elements.authScreen.hidden = false;
+    return false;
+  }
+
+  setSession("cookie", user, identity);
+  await persistSessionIdentity(identity, user.username);
+  await afterLogin();
+  return true;
+}
+
+async function boot() {
   setAuthMode(state.authMode);
-  ensurePreviewWorkspace();
   bindEvents();
   render();
+  elements.workspace.hidden = true;
+  elements.authScreen.hidden = false;
 
   if (!window.crypto?.subtle) {
     elements.authSubmitButton.disabled = true;
     elements.authTip.textContent = "当前环境缺少 Web Crypto，请使用 HTTPS 或 localhost 打开本站。";
     return;
   }
+
+  try {
+    const restored = await restoreAuthenticatedWorkspace();
+    if (!restored) {
+      return;
+    }
+  } catch (error) {
+    clearSession(true, true);
+    setAuthFeedback("请登录后继续使用加密会话。", false);
+  }
 }
 
-boot();
+void boot();
