@@ -16,35 +16,41 @@ APP_BRANCH="${APP_BRANCH:-main}"
 REPO_URL="${REPO_URL:-https://github.com/koajsj/onlieencryptedmsgweb.git}"
 APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-3000}"
+DOMAIN="${DOMAIN:-}"
+WWW_DOMAIN="${WWW_DOMAIN:-}"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 ENV_FILE="/etc/default/${APP_NAME}"
+CADDYFILE="/etc/caddy/Caddyfile"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD_HASH=""
-
-read_hidden_value() {
-  local prompt="$1"
-  local value=""
-  while [ -z "${value}" ]; do
-    read -r -s -p "${prompt}" value
-    echo
-  done
-  printf '%s' "${value}"
-}
+GENERATED_ADMIN_PASSWORD=""
 
 install_base_packages() {
   apt-get update
   apt-get install -y \
+    apt-transport-https \
     ca-certificates \
     curl \
+    debian-archive-keyring \
+    debian-keyring \
     git \
-    gpg
+    gpg \
+    lsb-release
 }
 
 install_nodejs() {
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
   apt-get install -y nodejs
+}
+
+install_caddy() {
+  install -d -m 0755 /usr/share/keyrings
+  curl -fsSL "https://dl.cloudsmith.io/public/caddy/stable/gpg.key" | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -fsSL "https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt" > /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update
+  apt-get install -y caddy
 }
 
 prepare_application_dir() {
@@ -93,6 +99,22 @@ read_env_value() {
   grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 | cut -d '=' -f 2-
 }
 
+ensure_domains() {
+  if [ -n "${DOMAIN}" ]; then
+    if [ -z "${WWW_DOMAIN}" ]; then
+      WWW_DOMAIN="www.${DOMAIN}"
+    fi
+    return
+  fi
+
+  DOMAIN="$(hostname -f 2>/dev/null || true)"
+  if [ -z "${DOMAIN}" ] || [ "${DOMAIN}" = "localhost" ]; then
+    echo "DOMAIN is required. Example: DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh" >&2
+    exit 1
+  fi
+  WWW_DOMAIN="${WWW_DOMAIN:-www.${DOMAIN}}"
+}
+
 ensure_admin_credentials() {
   local existing_username=""
   local existing_hash=""
@@ -110,24 +132,14 @@ ensure_admin_credentials() {
     exit 1
   fi
 
-  local password=""
-  local confirm=""
-  while true; do
-    password="$(read_hidden_value "Set admin password: ")"
-    confirm="$(read_hidden_value "Confirm admin password: ")"
-    if [ "${password}" != "${confirm}" ]; then
-      echo "Passwords do not match. Please try again." >&2
-      continue
-    fi
-    if [ "${#password}" -lt 4 ] || [ "${#password}" -gt 72 ]; then
-      echo "Admin password length must be between 4 and 72 characters." >&2
-      continue
-    fi
-    break
-  done
+  GENERATED_ADMIN_PASSWORD="$(node <<'EOF'
+const crypto = require("node:crypto");
+process.stdout.write(crypto.randomBytes(18).toString("base64url"));
+EOF
+  )"
 
   ADMIN_PASSWORD_HASH="$(
-    ADMIN_PASSWORD_INPUT="${password}" node <<'EOF'
+    ADMIN_PASSWORD_INPUT="${GENERATED_ADMIN_PASSWORD}" node <<'EOF'
 const crypto = require("node:crypto");
 const { promisify } = require("node:util");
 const scryptAsync = promisify(crypto.scrypt);
@@ -152,6 +164,8 @@ write_environment_file() {
     printf 'PORT=%s\n' "${APP_PORT}"
     printf 'DATA_DIR=%s\n' "${DATA_DIR}"
     printf 'NODE_ENV=production\n'
+    printf 'COOKIE_SECURE=1\n'
+    printf 'TRUST_PROXY=1\n'
     printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME}"
     printf 'ADMIN_PASSWORD_HASH=%s\n' "${ADMIN_PASSWORD_HASH}"
   } > "${ENV_FILE}"
@@ -181,6 +195,15 @@ EOF
   systemctl daemon-reload
 }
 
+write_caddy_config() {
+  cat > "${CADDYFILE}" <<EOF
+${DOMAIN}, ${WWW_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy ${APP_HOST}:${APP_PORT}
+}
+EOF
+}
+
 restart_services() {
   systemctl enable "${APP_NAME}"
   systemctl restart "${APP_NAME}"
@@ -189,26 +212,44 @@ restart_services() {
     journalctl -u "${APP_NAME}" -n 60 --no-pager >&2 || true
     exit 1
   fi
+
+  caddy validate --config "${CADDYFILE}"
+  systemctl enable caddy
+  systemctl restart caddy
+  if ! systemctl is-active --quiet caddy; then
+    echo "caddy failed to start. Recent logs:" >&2
+    journalctl -u caddy -n 60 --no-pager >&2 || true
+    exit 1
+  fi
 }
 
 print_summary() {
   echo "Deployment complete."
   echo "Application directory: ${APP_DIR}"
   echo "Data directory: ${DATA_DIR}"
-  echo "Application bind: http://${APP_HOST}:${APP_PORT}"
+  echo "Public URL: https://${DOMAIN}"
+  echo "Public URL: https://${WWW_DOMAIN}"
   echo "Admin username: ${ADMIN_USERNAME}"
-  echo "Admin password: configured on server and stored only as a hash in ${ENV_FILE}"
+  if [ -n "${GENERATED_ADMIN_PASSWORD}" ]; then
+    echo "Admin password: ${GENERATED_ADMIN_PASSWORD}"
+    echo "This password is shown only once. Save it now."
+  else
+    echo "Admin password: unchanged"
+  fi
 }
 
 main() {
   install_base_packages
   install_nodejs
+  install_caddy
+  ensure_domains
   prepare_application_dir
   prepare_data_dir
   ensure_admin_credentials
   write_environment_file
   write_systemd_service
   install_dependencies_and_build
+  write_caddy_config
   restart_services
   print_summary
 }

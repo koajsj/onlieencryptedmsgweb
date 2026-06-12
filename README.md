@@ -1,12 +1,12 @@
 # 在线加密聊天网站部署说明
 
-适用环境：Debian 12、Node.js 20、已有反向代理或面板环境。
+适用环境：Debian 12、个人域名、Cloudflare 托管 DNS、Caddy 自动 HTTPS、Node.js 20。
 
 ## 管理员账号
 
-管理员用户名来自服务器环境变量 `ADMIN_USERNAME`。
+管理员用户名默认是 `admin`，也可以在部署时通过 `ADMIN_USERNAME` 覆盖。
 
-管理员密码不会保存在仓库中，也不会在部署脚本执行完成后明文回显。首次部署时脚本会在服务器上提示输入密码，只把 `scrypt` 哈希写入 `/etc/default/secure-chat`。
+管理员密码不会保存在仓库中。首次部署时脚本会自动生成一串随机密码，只在部署完成时回显一次，并且只把 `scrypt` 哈希写入 `/etc/default/secure-chat`。
 
 后台地址：
 
@@ -19,9 +19,10 @@ https://你的域名/admin.html
 需要：
 
 - Debian 12 云服务器
+- 一个已经解析到服务器公网 IP 的域名
+- 域名已经接入 Cloudflare
+- 云服务器安全组放行 `80` 和 `443`
 - 可以 SSH 登录服务器，并且有 `sudo` 权限
-- 服务器上已经有你自己的反向代理、网站面板或网关
-- 该上游代理可以转发到 `127.0.0.1:3000`
 
 先登录服务器：
 
@@ -37,80 +38,75 @@ git clone https://github.com/koajsj/onlieencryptedmsgweb.git /var/www/onlieencry
 cd /var/www/onlieencryptedmsgweb
 ```
 
-## 2. 首次部署
+## 2. Cloudflare 基础配置
 
-脚本默认只启动 Node 服务，绑定到 `127.0.0.1:3000`，不会安装 Caddy，也不会占用 `80/443`。
+Cloudflare 中至少保留两条记录：
 
-直接执行：
+| Type | Name | Content | Proxy status |
+| --- | --- | --- | --- |
+| A | `@` | 服务器公网 IPv4 | Proxied |
+| CNAME | `www` | `你的根域名` | Proxied |
 
-```bash
-sudo bash scripts/deploy-debian.sh
+SSL/TLS 模式必须是：
+
+```text
+Full (strict)
 ```
 
-如果你要改端口或用户名：
+不要用 `Flexible`，否则会导致循环跳转。
+
+## 3. 首次部署
+
+默认方式：
 
 ```bash
-APP_PORT=3100 ADMIN_USERNAME=siteadmin sudo -E bash scripts/deploy-debian.sh
+cd /var/www/onlieencryptedmsgweb
+DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh
+```
+
+如果只想写一个域名：
+
+```bash
+cd /var/www/onlieencryptedmsgweb
+DOMAIN=example.com sudo -E bash scripts/deploy-debian.sh
 ```
 
 脚本会自动完成：
 
-- 安装 Node.js 20、Git
-- 拉取或更新仓库
+- 安装 Node.js 20、Git、Caddy
+- 更新仓库到 `main`
 - 安装依赖并构建前端压缩文件
 - 写入 `/etc/systemd/system/secure-chat.service`
 - 写入 `/etc/default/secure-chat`
+- 写入 `/etc/caddy/Caddyfile`
 - 把运行数据放到 `/var/lib/secure-chat/data`
 - 启动并启用 `secure-chat`
+- 启动并启用 `caddy`
+- 自动接管 `80/443`
 
-首次部署过程中会提示你在服务器终端里输入管理员密码，两次确认后只保存哈希。
-
-## 3. 配置反向代理
-
-本项目默认监听：
+部署完成后直接访问：
 
 ```text
-127.0.0.1:3000
+https://你的域名
+https://www.你的域名
 ```
 
-你可以在现有 Nginx、Caddy、宝塔、1Panel 或其他网关里，把域名反代到这个地址。
+注意：
 
-Nginx 示例：
-
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name example.com www.example.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
-        proxy_buffering off;
-    }
-}
-```
-
-说明：
-
-- 不要把仓库里的脚本再改成监听 `0.0.0.0:443`
-- 反代层需要保留 `Host` 和 `X-Forwarded-*` 请求头
-- SSE 已启用，反代层不要打开响应缓冲
+- 这条默认部署路径会占用 `443`
+- 不需要你自己额外配置反向代理
+- 如果服务器上已经有别的服务占用了 `80/443`，需要先停掉那个服务
 
 ## 4. 日常更新
 
-以后更新代码，在服务器执行：
+以后更新代码，只需要执行：
 
 ```bash
 cd /var/www/onlieencryptedmsgweb
-sudo bash scripts/deploy-debian.sh
+DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian.sh
 ```
 
-更新时脚本会复用已有 `/etc/default/secure-chat`，不会再次要求输入管理员密码，也不会覆盖已有管理员哈希。
+如果 `/etc/default/secure-chat` 里已经有管理员哈希，脚本不会重新生成密码。
 
 ## 5. 常用检查命令
 
@@ -132,10 +128,22 @@ journalctl -u secure-chat -n 200 --no-pager
 journalctl -u secure-chat -f
 ```
 
+看 Caddy 状态：
+
+```bash
+systemctl status caddy --no-pager
+```
+
+看 Caddy 日志：
+
+```bash
+journalctl -u caddy -n 200 --no-pager
+```
+
 看监听端口：
 
 ```bash
-ss -lntp | grep 3000
+ss -lntp | grep -E ':80|:443|:3000'
 ```
 
 本机健康检查：
@@ -161,7 +169,36 @@ curl -s http://127.0.0.1:3000/health
 
 这些是运行时数据，不应该提交到 GitHub。
 
-## 7. 本地开发
+## 7. 常见问题
+
+### 访问提示重定向过多
+
+通常是 Cloudflare 的 SSL/TLS 设成了 `Flexible`。改成：
+
+```text
+Full (strict)
+```
+
+### 域名打不开
+
+检查：
+
+- `@` 和 `www` 是否都解析到了当前服务器
+- 服务器安全组是否放行 `80/443`
+- `systemctl status caddy --no-pager`
+- `systemctl status secure-chat --no-pager`
+
+### 443 被占用
+
+检查：
+
+```bash
+ss -lntp | grep ':443'
+```
+
+如果有 Nginx、Apache、宝塔面板站点或其他 Web 服务占用了 `443`，先停掉它，再重新执行部署脚本。
+
+## 8. 本地开发
 
 本地运行前，需要自己显式提供管理员配置：
 
