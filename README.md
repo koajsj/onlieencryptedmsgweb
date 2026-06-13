@@ -6,7 +6,7 @@
 
 管理员用户名默认是 `admin`，也可以在部署时通过 `ADMIN_USERNAME` 覆盖。
 
-管理员密码不会保存在仓库中。首次部署时脚本会自动生成一串随机密码，只在部署完成时回显一次，并且只把 `scrypt` 哈希写入 `/etc/default/secure-chat`。
+管理员密码默认是仓库内置的明文口令（不要在公共文档里写出来）。生产环境建议至少在部署前用 `ADMIN_PASSWORD` 环境变量覆盖一次，仓库本身只保存一份默认值。脚本会把最终的 `ADMIN_PASSWORD` 写入 `/etc/default/secure-chat`，权限 0600。
 
 后台地址：
 
@@ -128,7 +128,7 @@ sudo bash scripts/update-debian.sh
 
 如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
-如果 `/etc/default/secure-chat` 里已经有管理员哈希，脚本不会重新生成密码。
+如果 `/etc/default/secure-chat` 里已经有管理员口令，脚本不会重新写入。
 
 ## 5. 常用检查命令
 
@@ -229,11 +229,13 @@ ss -lntp | grep ':443'
 
 ## 8. 本地开发
 
-本地运行前，需要自己显式提供管理员配置：
+直接 `npm start` 即可使用仓库内置的管理员用户名和密码。要换成自己的值，可以设置环境变量：
 
 ```bash
-ADMIN_USERNAME=admin ADMIN_PASSWORD_HASH='你的scrypt哈希' npm start
+ADMIN_USERNAME=admin ADMIN_PASSWORD='你的口令' npm start
 ```
+
+也仍然支持旧的 `ADMIN_PASSWORD_HASH`（`scrypt:salt:hash` 形式）来直接喂入哈希。
 
 安装依赖：
 

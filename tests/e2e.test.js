@@ -834,6 +834,33 @@ test("admin credentials must come from environment configuration", async () => {
   }
 });
 
+test("admin login works out of the box with the built-in default credentials", async () => {
+  const server = await startServer({
+    ADMIN_USERNAME: "",
+    ADMIN_PASSWORD_HASH: "",
+    ADMIN_PASSWORD: ""
+  });
+
+  try {
+    const defaultLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(defaultLogin.status, 200);
+    const payload = await defaultLogin.json();
+    assert.equal(payload.admin.username, "admin");
+
+    const wrongLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "not-the-default"
+    });
+    assert.equal(wrongLogin.status, 401);
+    assert.equal((await wrongLogin.json()).error, "管理员账号或密码错误");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("admin user pagination, batch ban and event ticket blocking work", async () => {
   const server = await startServer();
   try {
@@ -919,5 +946,159 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
     assert.ok(String(exportResponse.json.content || "").includes("EXPORT WATERMARK"));
   } finally {
     await server.stop();
+  }
+});
+
+test("login always runs password verification regardless of whether the account exists", async () => {
+  const server = await startServer();
+
+  try {
+    const register = await postJson(server.port, "/api/register", {
+      username: "TimingA",
+      password: "rightpass1",
+      publicKey: Buffer.alloc(65, 31).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 32).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 33).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 34).toString("base64")
+    });
+    assert.equal(register.status, 201);
+
+    const existingWrong = await postJson(server.port, "/api/login", {
+      username: "TimingA",
+      password: "wrongpass1"
+    });
+    assert.equal(existingWrong.status, 401);
+    assert.equal((await existingWrong.json()).error, "invalid username or password");
+
+    const missingUser = await postJson(server.port, "/api/login", {
+      username: "NoSuchUser",
+      password: "wrongpass1"
+    });
+    assert.equal(missingUser.status, 401);
+    assert.equal((await missingUser.json()).error, "invalid username or password");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin login locks the account after repeated failed attempts", async () => {
+  const server = await startServer({
+    ADMIN_LOGIN_MAX_FAILURES: "3",
+    ADMIN_LOGIN_LOCKOUT_MS: "1200",
+    ADMIN_LOGIN_FAILURE_WINDOW_MS: "60000"
+  });
+
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const failed = await postJson(server.port, "/api/admin/login", {
+        username: TEST_ADMIN_USERNAME,
+        password: "wrong-password"
+      });
+      assert.equal(failed.status, 401, `attempt ${attempt + 1} should be 401`);
+    }
+    const locked = await postJson(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: "wrong-password"
+    });
+    assert.equal(locked.status, 429);
+    assert.match((await locked.json()).error, /too many failed attempts/);
+
+    const stillLocked = await postJson(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    });
+    assert.equal(stillLocked.status, 429);
+
+    await delay(1300);
+
+    const recovered = await postJson(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    });
+    assert.equal(recovered.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("events ticket creation caps concurrent SSE connections per user", async () => {
+  const server = await startServer({
+    MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER: "2"
+  });
+
+  try {
+    const register = await postJson(server.port, "/api/register", {
+      username: "SseCap",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 71).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 72).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 73).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 74).toString("base64")
+    });
+    const token = (await register.json()).token;
+
+    const first = await openEvents(server.port, token);
+    const second = await openEvents(server.port, token);
+    await Promise.all([first.ready, second.ready]);
+
+    const rejected = await postJson(server.port, "/api/events/token", {}, token);
+    assert.equal(rejected.status, 429);
+    assert.equal((await rejected.json()).error, "too many concurrent connections");
+
+    first.close();
+    second.close();
+    await delay(50);
+
+    const allowed = await postJson(server.port, "/api/events/token", {}, token);
+    assert.equal(allowed.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin audit log uses HMAC and the chain verifies on startup", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-audit-test-"));
+  const server = await startServer({
+    DATA_DIR: dataDir,
+    AUDIT_HMAC_KEY: ""
+  });
+
+  try {
+    const adminLogin = await postJson(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    });
+    assert.equal(adminLogin.status, 200);
+
+    const adminLogout = await postJson(
+      server.port,
+      "/api/admin/logout",
+      {},
+      (await adminLogin.json()).token
+    );
+    assert.equal(adminLogout.status, 200);
+  } finally {
+    await server.stop();
+  }
+
+  const auditFile = path.join(dataDir, "admin_audit.jsonl");
+  const lines = fs.readFileSync(auditFile, "utf8").split(/\r?\n/).filter(Boolean);
+  assert.ok(lines.length >= 2);
+  const entries = lines.map((line) => JSON.parse(line));
+  for (const entry of entries) {
+    assert.equal(entry.hashAlgo, "hmac-sha256");
+    assert.match(entry.hash, /^[a-f0-9]{64}$/);
+  }
+  assert.equal(entries[0].prevHash, "GENESIS");
+  for (let i = 1; i < entries.length; i += 1) {
+    assert.equal(entries[i].prevHash, entries[i - 1].hash);
+  }
+
+  const verifyServer = await startServer({ DATA_DIR: dataDir });
+  try {
+    const health = await getJson(verifyServer.port, "/health", "");
+    assert.equal(health.response.status, 200);
+  } finally {
+    await verifyServer.stop();
   }
 });

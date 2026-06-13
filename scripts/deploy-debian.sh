@@ -24,8 +24,7 @@ CADDYFILE="/etc/caddy/Caddyfile"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD_HASH=""
-GENERATED_ADMIN_PASSWORD=""
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
 SAFE_RESET_PATHS=(
   "public/app.min.js"
   "public/admin.min.js"
@@ -140,13 +139,20 @@ ensure_domains() {
 
 ensure_admin_credentials() {
   local existing_username=""
+  local existing_password=""
   local existing_hash=""
   existing_username="$(read_env_value "ADMIN_USERNAME" || true)"
+  existing_password="$(read_env_value "ADMIN_PASSWORD" || true)"
   existing_hash="$(read_env_value "ADMIN_PASSWORD_HASH" || true)"
+
+  if [ -n "${existing_username}" ] && [ -n "${existing_password}" ]; then
+    ADMIN_USERNAME="${existing_username}"
+    ADMIN_PASSWORD="${existing_password}"
+    return
+  fi
 
   if [ -n "${existing_username}" ] && [ -n "${existing_hash}" ]; then
     ADMIN_USERNAME="${existing_username}"
-    ADMIN_PASSWORD_HASH="${existing_hash}"
     return
   fi
 
@@ -155,30 +161,10 @@ ensure_admin_credentials() {
     exit 1
   fi
 
-  GENERATED_ADMIN_PASSWORD="$(node <<'EOF'
-const crypto = require("node:crypto");
-process.stdout.write(crypto.randomBytes(18).toString("base64url"));
-EOF
-  )"
-
-  ADMIN_PASSWORD_HASH="$(
-    ADMIN_PASSWORD_INPUT="${GENERATED_ADMIN_PASSWORD}" node <<'EOF'
-const crypto = require("node:crypto");
-const { promisify } = require("node:util");
-const scryptAsync = promisify(crypto.scrypt);
-
-(async () => {
-  const password = String(process.env.ADMIN_PASSWORD_INPUT || "");
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = (await scryptAsync(password, salt, 64)).toString("hex");
-  process.stdout.write(`scrypt:${salt}:${hash}`);
-})().catch((error) => {
-  console.error(error.message);
-  process.exit(1);
-});
-EOF
-  )"
-  unset ADMIN_PASSWORD_INPUT
+  if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
+    echo "ADMIN_PASSWORD must be 4-72 characters" >&2
+    exit 1
+  fi
 }
 
 write_environment_file() {
@@ -190,7 +176,7 @@ write_environment_file() {
     printf 'COOKIE_SECURE=1\n'
     printf 'TRUST_PROXY=1\n'
     printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME}"
-    printf 'ADMIN_PASSWORD_HASH=%s\n' "${ADMIN_PASSWORD_HASH}"
+    printf 'ADMIN_PASSWORD=%s\n' "${ADMIN_PASSWORD}"
   } > "${ENV_FILE}"
   chmod 0600 "${ENV_FILE}"
 }
@@ -253,12 +239,7 @@ print_summary() {
   echo "Public URL: https://${DOMAIN}"
   echo "Public URL: https://${WWW_DOMAIN}"
   echo "Admin username: ${ADMIN_USERNAME}"
-  if [ -n "${GENERATED_ADMIN_PASSWORD}" ]; then
-    echo "Admin password: ${GENERATED_ADMIN_PASSWORD}"
-    echo "This password is shown only once. Save it now."
-  else
-    echo "Admin password: unchanged"
-  fi
+  echo "Admin password: configured (override with ADMIN_PASSWORD env var before running this script)"
 }
 
 main() {

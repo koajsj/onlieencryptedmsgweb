@@ -38,6 +38,8 @@ const COOKIE_SECURE =
   process.env.COOKIE_SECURE === "1" || (process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "0");
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
+const DEFAULT_ADMIN_USERNAME_VALUE = "admin";
+const DEFAULT_ADMIN_PASSWORD_VALUE = "qwer@1234";
 const ADMIN_USERNAME = readConfiguredAdminUsername();
 const ADMIN_CREDENTIAL = readConfiguredAdminCredential();
 const RESERVED_USERNAME_KEYS = new Set([ADMIN_USERNAME.toLowerCase()]);
@@ -70,6 +72,31 @@ const contentTypes = {
   ".txt": "text/plain; charset=utf-8"
 };
 
+const ADMIN_LOGIN_FAILURE_WINDOW_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.ADMIN_LOGIN_FAILURE_WINDOW_MS || `${15 * 60 * 1000}`, 10) || 15 * 60 * 1000
+);
+const ADMIN_LOGIN_LOCKOUT_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.ADMIN_LOGIN_LOCKOUT_MS || `${15 * 60 * 1000}`, 10) || 15 * 60 * 1000
+);
+const ADMIN_LOGIN_MAX_FAILURES = Math.max(
+  1,
+  Number.parseInt(process.env.ADMIN_LOGIN_MAX_FAILURES || "5", 10) || 5
+);
+const MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER = Math.max(
+  1,
+  Number.parseInt(process.env.MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER || "5", 10) || 5
+);
+const DUMMY_PASSWORD_HASH =
+  "scrypt:" +
+  "00000000000000000000000000000000" +
+  ":" +
+  "00000000000000000000000000000000" +
+  "00000000000000000000000000000000" +
+  "00000000000000000000000000000000" +
+  "00000000000000000000000000000000";
+
 const sessions = new Map();
 const onlineConnections = new Map();
 const rateBuckets = new Map();
@@ -78,6 +105,7 @@ const eventTickets = new Map();
 const messageBuckets = new Map();
 const messageClientIndex = new Map();
 const usersByKey = new Map();
+const adminLoginFailures = new Map();
 const scryptAsync = promisify(crypto.scrypt);
 
 let users = [];
@@ -130,6 +158,42 @@ function applyAuditTextRetention() {
   }
 }
 
+const ADMIN_AUDIT_HMAC_ALGO = "hmac-sha256";
+const ADMIN_AUDIT_SHA_ALGO = "sha256";
+const ADMIN_AUDIT_HMAC_DOMAIN = "secure-chat/admin-audit-hmac-v1";
+
+function getAuditHmacKey() {
+  const fromEnv = String(process.env.AUDIT_HMAC_KEY || "").trim();
+  if (fromEnv) {
+    const hexMatch = fromEnv.match(/^[a-f0-9]{32,128}$/i);
+    if (hexMatch) {
+      return { key: Buffer.from(fromEnv, "hex"), source: "env:hex" };
+    }
+    return { key: crypto.createHash("sha256").update(fromEnv, "utf8").digest(), source: "env:utf8" };
+  }
+  const seed = ADMIN_CREDENTIAL.type === "plain"
+    ? ADMIN_CREDENTIAL.value
+    : ADMIN_CREDENTIAL.value;
+  const derived = crypto
+    .createHmac("sha256", ADMIN_AUDIT_HMAC_DOMAIN)
+    .update(seed, "utf8")
+    .digest();
+  return { key: derived, source: `derived:${ADMIN_CREDENTIAL.type}` };
+}
+
+function computeAdminAuditEntryHash(prevHash, entryBase, algo, hmacKey) {
+  const payload = `${prevHash}|${JSON.stringify(entryBase)}`;
+  if (algo === ADMIN_AUDIT_HMAC_ALGO) {
+    return crypto.createHmac("sha256", hmacKey).update(payload).digest("hex");
+  }
+  return crypto.createHash("sha256").update(payload).digest("hex");
+}
+
+function entryBaseFromEntry(entry) {
+  const { prevHash: _prev, hash: _hash, hashAlgo: _algo, ...rest } = entry;
+  return rest;
+}
+
 function loadAdminAuditState() {
   ensureDataFiles();
   const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
@@ -160,17 +224,65 @@ function recordAdminAction(action, session, req, details = {}) {
     ip: getClientAddress(req),
     details
   };
-  const hash = crypto
-    .createHash("sha256")
-    .update(`${adminAuditLastHash}|${JSON.stringify(entryBase)}`)
-    .digest("hex");
+  const { key: hmacKey } = getAuditHmacKey();
+  const hash = computeAdminAuditEntryHash(
+    adminAuditLastHash,
+    entryBase,
+    ADMIN_AUDIT_HMAC_ALGO,
+    hmacKey
+  );
   const entry = {
     ...entryBase,
     prevHash: adminAuditLastHash,
+    hashAlgo: ADMIN_AUDIT_HMAC_ALGO,
     hash
   };
   appendAdminAuditEntry(entry);
   adminAuditLastHash = hash;
+}
+
+function verifyAdminAuditChain() {
+  ensureDataFiles();
+  const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) {
+    return { ok: true, checked: 0, mismatches: [] };
+  }
+  const { key: hmacKey, source: hmacKeySource } = getAuditHmacKey();
+  let prevHash = "GENESIS";
+  const mismatches = [];
+  let checked = 0;
+  for (const [index, line] of lines.entries()) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch (error) {
+      mismatches.push({ line: index + 1, reason: `invalid json: ${error.message}` });
+      break;
+    }
+    const algo = entry.hashAlgo || ADMIN_AUDIT_SHA_ALGO;
+    if (algo !== ADMIN_AUDIT_HMAC_ALGO && algo !== ADMIN_AUDIT_SHA_ALGO) {
+      mismatches.push({ line: index + 1, reason: `unsupported hashAlgo: ${algo}` });
+      break;
+    }
+    if (String(entry.prevHash || "") !== prevHash) {
+      mismatches.push({ line: index + 1, reason: "prevHash mismatch" });
+      break;
+    }
+    const entryBase = entryBaseFromEntry(entry);
+    const expected = computeAdminAuditEntryHash(prevHash, entryBase, algo, hmacKey);
+    if (algo === ADMIN_AUDIT_HMAC_ALGO) {
+      if (!/^[a-f0-9]{64}$/i.test(String(entry.hash || "")) || expected !== String(entry.hash).toLowerCase()) {
+        mismatches.push({ line: index + 1, reason: "hash mismatch" });
+        break;
+      }
+    } else if (String(entry.hash || "").toLowerCase() !== expected) {
+      mismatches.push({ line: index + 1, reason: "hash mismatch" });
+      break;
+    }
+    prevHash = String(entry.hash);
+    checked += 1;
+  }
+  return { ok: mismatches.length === 0, checked, mismatches, hmacKeySource };
 }
 
 function maskAuditText(value) {
@@ -481,6 +593,58 @@ function rejectIfForbiddenOrLimited(req, res, key, limit, limitMessage) {
   return false;
 }
 
+function adminLoginLockState(username) {
+  if (!username) {
+    return null;
+  }
+  return adminLoginFailures.get(username.toLowerCase()) || null;
+}
+
+function adminLoginLockActive(state) {
+  if (!state || !state.lockedUntil) {
+    return false;
+  }
+  return state.lockedUntil > Date.now();
+}
+
+function recordAdminLoginFailure(username) {
+  const key = String(username || "").toLowerCase();
+  if (!key) {
+    return null;
+  }
+  const now = Date.now();
+  const previous = adminLoginFailures.get(key);
+  const recentFailures = previous && now - (previous.lastFailedAt || 0) <= ADMIN_LOGIN_FAILURE_WINDOW_MS
+    ? previous.count
+    : 0;
+  const count = recentFailures + 1;
+  const lockedUntil = count > ADMIN_LOGIN_MAX_FAILURES ? now + ADMIN_LOGIN_LOCKOUT_MS : 0;
+  const next = { count, lockedUntil, lastFailedAt: now };
+  adminLoginFailures.set(key, next);
+  return next;
+}
+
+function clearAdminLoginFailures(username) {
+  if (!username) {
+    return;
+  }
+  adminLoginFailures.delete(String(username).toLowerCase());
+}
+
+function cleanAdminLoginFailures() {
+  const now = Date.now();
+  for (const [key, state] of adminLoginFailures) {
+    if (!state) {
+      adminLoginFailures.delete(key);
+      continue;
+    }
+    const lastFailedAt = Number(state.lastFailedAt || 0);
+    if (now - lastFailedAt > ADMIN_LOGIN_FAILURE_WINDOW_MS && now > Number(state.lockedUntil || 0)) {
+      adminLoginFailures.delete(key);
+    }
+  }
+}
+
 function cacheControlForStaticFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === ".html") {
@@ -640,11 +804,11 @@ function isPasswordHashFormat(value) {
 }
 
 function readConfiguredAdminUsername() {
-  const normalized = normalizeUsername(process.env.ADMIN_USERNAME || "");
-  if (!normalized) {
-    throw new Error("ADMIN_USERNAME must be set to 3-24 letters, numbers, or underscores");
+  const fromEnv = normalizeUsername(process.env.ADMIN_USERNAME || "");
+  if (fromEnv) {
+    return fromEnv.value;
   }
-  return normalized.value;
+  return DEFAULT_ADMIN_USERNAME_VALUE;
 }
 
 function readConfiguredAdminCredential() {
@@ -656,15 +820,18 @@ function readConfiguredAdminCredential() {
     };
   }
 
-  const password = normalizePassword(process.env.ADMIN_PASSWORD || "");
-  if (password.length >= 4 && password.length <= 72) {
+  const fromEnv = normalizePassword(process.env.ADMIN_PASSWORD || "");
+  if (fromEnv.length >= 4 && fromEnv.length <= 72) {
     return {
       type: "plain",
-      value: password
+      value: fromEnv
     };
   }
 
-  throw new Error("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD must be set to a valid admin credential");
+  return {
+    type: "plain",
+    value: DEFAULT_ADMIN_PASSWORD_VALUE
+  };
 }
 
 function verifyPlainSecret(password, expected) {
@@ -1379,7 +1546,8 @@ async function handleLogin(req, res) {
   }
 
   const user = findUserByKey(normalizedUsername.key);
-  if (!user || !(await verifyPassword(password, user.passwordHash))) {
+  const passwordOk = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
+  if (!user || !passwordOk) {
     sendJson(res, 401, { error: "invalid username or password" });
     return;
   }
@@ -1496,11 +1664,22 @@ async function handleAdminLogin(req, res) {
   }
   const username = readSubmittedUsername(body);
   const password = String(body.password || "");
-  const account = findAdminAccount(username);
-  if (!account || !(await verifyConfiguredAdminPassword(password))) {
-    sendJson(res, 401, { error: "管理员账号或密码错误" });
+  const lockState = adminLoginLockState(username);
+  if (adminLoginLockActive(lockState)) {
+    sendJson(res, 429, { error: "too many failed attempts, try again later" });
     return;
   }
+  const account = findAdminAccount(username);
+  const passwordOk = await verifyConfiguredAdminPassword(password);
+  if (!account || !passwordOk) {
+    const next = recordAdminLoginFailure(username);
+    const message = next && next.lockedUntil > Date.now()
+      ? "too many failed attempts, try again later"
+      : "管理员账号或密码错误";
+    sendJson(res, next && next.lockedUntil > Date.now() ? 429 : 401, { error: message });
+    return;
+  }
+  clearAdminLoginFailures(account.username);
   const token = createSession(account.username, "admin");
   recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
@@ -2157,6 +2336,11 @@ function handleCreateEventTicket(req, res, url) {
   ) {
     return;
   }
+  const activeConnections = (onlineConnections.get(session.username) || new Set()).size;
+  if (activeConnections >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
+    sendJson(res, 429, { error: "too many concurrent connections" });
+    return;
+  }
   sendJson(res, 200, {
     ticket: createEventTicketForSession(session),
     expiresInMs: EVENT_TICKET_TTL_MS
@@ -2271,6 +2455,14 @@ try {
   loadData();
   applyAuditTextRetention();
   loadAdminAuditState();
+  const auditCheck = verifyAdminAuditChain();
+  if (!auditCheck.ok) {
+    console.warn(
+      `[audit] chain verification failed at line ${auditCheck.mismatches[0]?.line ?? "?"}: ${auditCheck.mismatches[0]?.reason ?? "unknown"}`
+    );
+  } else if (auditCheck.checked > 0) {
+    console.log(`[audit] verified ${auditCheck.checked} entries (key source: ${auditCheck.hmacKeySource})`);
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
@@ -2278,6 +2470,7 @@ try {
 setInterval(cleanRateBuckets, RATE_WINDOW_MS).unref();
 setInterval(cleanSessions, Math.min(5 * 60 * 1000, SESSION_TTL_MS)).unref();
 setInterval(cleanEventTickets, EVENT_TICKET_TTL_MS).unref();
+setInterval(cleanAdminLoginFailures, ADMIN_LOGIN_FAILURE_WINDOW_MS).unref();
 setInterval(applyAuditTextRetention, 60 * 60 * 1000).unref();
 
 const server = http.createServer((req, res) => {
