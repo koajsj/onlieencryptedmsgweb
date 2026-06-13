@@ -1145,6 +1145,7 @@ svg {
   align-items: center;
   gap: 6px;
   font-size: 12px;
+  row-gap: 8px;
 }
 
 .message.mine .message-meta {
@@ -1390,7 +1391,11 @@ svg {
 }
 
 .message-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-wrap: wrap;
+  row-gap: 8px;
 }
 
 .message.is-own .message-meta {
@@ -1398,11 +1403,24 @@ svg {
 }
 
 .message-meta button {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--text-muted);
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .message.is-own .message-meta button {
   color: rgba(255, 255, 255, 0.78);
+}
+
+.message-meta-sep {
+  color: inherit;
+  opacity: 0.55;
 }
 
 .message.is-recalling {
@@ -1647,6 +1665,10 @@ svg {
     justify-content: flex-start;
   }
 
+  .topbar-search {
+    width: 100%;
+  }
+
   .topbar-logout {
     margin-left: auto;
   }
@@ -1657,6 +1679,10 @@ svg {
 
   .thread-tools-actions {
     flex-wrap: wrap;
+  }
+
+  .thread-tools-actions .ghost-button {
+    flex: 0 1 auto;
   }
 }
 
@@ -1680,6 +1706,7 @@ svg {
   .sidebar-nav {
     flex-direction: row;
     align-items: center;
+    flex-wrap: wrap;
     padding: 10px;
     gap: 10px;
   }
@@ -1687,10 +1714,13 @@ svg {
   .sidebar-nav-main {
     display: flex;
     flex: 1;
+    flex-wrap: wrap;
+    min-width: 0;
   }
 
   .nav-button {
     flex: 1;
+    min-width: 140px;
     grid-template-columns: 18px auto;
     align-items: center;
     justify-content: center;
@@ -1700,7 +1730,7 @@ svg {
 
   .sidebar-profile-button {
     margin-top: 0;
-    width: min(232px, 42%);
+    width: min(260px, 100%);
   }
 
   body.is-mobile .chat-panel {
@@ -1721,11 +1751,18 @@ svg {
 
   .thread-header {
     gap: 10px;
+    flex-wrap: wrap;
   }
 
   .thread-copy strong,
   .contact-profile-card strong {
     font-size: 20px;
+  }
+
+  .thread-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 
   .message-body {
@@ -1760,13 +1797,23 @@ svg {
 
   .topbar-search-shortcut,
   .topbar-logout,
-  .status-pill span,
-  .sidebar-profile-button {
+  .status-pill span {
     display: none;
   }
 
   .topbar-actions {
     gap: 10px;
+  }
+
+  .topbar-brand,
+  .topbar-actions,
+  .user-chip,
+  .user-chip-button {
+    width: 100%;
+  }
+
+  .topbar-actions {
+    justify-content: space-between;
   }
 
   .user-chip {
@@ -1775,6 +1822,24 @@ svg {
 
   .user-chip-copy span {
     display: none;
+  }
+
+  .sidebar-nav {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar-nav-main {
+    width: 100%;
+  }
+
+  .nav-button {
+    min-width: 0;
+  }
+
+  .sidebar-profile-button {
+    display: grid;
+    width: 100%;
   }
 
   .thread-actions {
@@ -1792,6 +1857,11 @@ svg {
 
   .composer {
     padding: 12px;
+  }
+
+  .composer-reply {
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   .composer-main {
@@ -1815,6 +1885,14 @@ svg {
 
   .message-stream {
     padding: 18px 16px 84px;
+  }
+
+  .message-meta {
+    column-gap: 10px;
+  }
+
+  .message-meta-sep {
+    display: none;
   }
 
   .contact-panel {

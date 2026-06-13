@@ -777,6 +777,11 @@ label span {
   justify-content: flex-end;
 }
 
+.panel-head .filters,
+.panel-head .toolbar {
+  min-width: 0;
+}
+
 .filters input,
 .filters select {
   min-width: 150px;
@@ -810,6 +815,7 @@ label span {
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.9);
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
@@ -843,6 +849,7 @@ td.actions {
   display: flex;
   gap: 6px;
   min-width: 180px;
+  flex-wrap: wrap;
 }
 
 .messages-list {
@@ -980,11 +987,21 @@ td.actions {
 
   .sidebar {
     position: static;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .sidebar-nav {
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   }
 
   .sidebar-footer {
     margin-top: 0;
+  }
+
+  .profile-menu {
+    left: auto;
+    right: 0;
   }
 
   .overview-grid {
@@ -1021,13 +1038,21 @@ td.actions {
     flex-direction: column;
   }
 
+  .sidebar {
+    grid-template-columns: 1fr;
+  }
+
   .toolbar,
   .filters,
   .batch-bar,
   .pager-actions,
-  .dialog-actions,
+  .dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
   .detail-columns {
-    display: grid;
     grid-template-columns: 1fr;
   }
 
@@ -1043,20 +1068,129 @@ td.actions {
     grid-template-columns: 1fr;
   }
 
-  .filters input,
-  .filters select,
-  .filters button,
-  .batch-bar input,
-  .batch-bar button,
-  .pager-actions button,
-  .toolbar button {
-    width: 100%;
+  .toolbar > * {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+
+  .filters > * {
+    flex: 1 1 calc(50% - var(--space-2));
+    min-width: 0;
+  }
+
+  .batch-bar > * {
+    flex: 1 1 calc(50% - var(--space-2));
+    min-width: 0;
+  }
+
+  .pager-actions > *,
+  .dialog-actions > * {
+    flex: 1 1 140px;
     min-width: 0;
   }
 
   .batch-bar #usersPager {
     margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .table-wrap table {
     width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  .table-wrap table {
+    font-size: 12px;
+  }
+
+  #usersPanel .table-wrap table {
+    min-width: 0;
+  }
+
+  #usersPanel th,
+  #usersPanel td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: top;
+  }
+
+  #usersPanel th:nth-child(1),
+  #usersPanel td:nth-child(1) {
+    width: 44px;
+  }
+
+  #usersPanel th:nth-child(2),
+  #usersPanel td:nth-child(2) {
+    width: 26%;
+  }
+
+  #usersPanel th:nth-child(3),
+  #usersPanel td:nth-child(3) {
+    width: 16%;
+  }
+
+  #usersPanel th:nth-child(4),
+  #usersPanel td:nth-child(4) {
+    width: 26%;
+  }
+
+  #usersPanel th:nth-child(5),
+  #usersPanel td:nth-child(5) {
+    width: 32%;
+  }
+
+  #accessLogsPanel .table-wrap table {
+    min-width: 720px;
+  }
+
+  #accessLogsPanel th,
+  #accessLogsPanel td {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    vertical-align: top;
+  }
+
+  #accessLogsPanel th:nth-child(1),
+  #accessLogsPanel td:nth-child(1) {
+    width: 112px;
+  }
+
+  #accessLogsPanel th:nth-child(2),
+  #accessLogsPanel td:nth-child(2) {
+    width: 92px;
+  }
+
+  #accessLogsPanel th:nth-child(3),
+  #accessLogsPanel td:nth-child(3) {
+    width: 96px;
+  }
+
+  #accessLogsPanel th:nth-child(4),
+  #accessLogsPanel td:nth-child(4) {
+    width: 88px;
+  }
+
+  #accessLogsPanel th:nth-child(5),
+  #accessLogsPanel td:nth-child(5) {
+    width: auto;
+  }
+
+  #accessLogsPanel th:nth-child(6),
+  #accessLogsPanel td:nth-child(6) {
+    width: 86px;
+  }
+
+  #accessLogsPanel th:nth-child(7),
+  #accessLogsPanel td:nth-child(7) {
+    width: 64px;
   }
 
   th,
@@ -1064,7 +1198,67 @@ td.actions {
     padding: 10px 8px;
   }
 
-  .dialog-actions button {
-    width: 100%;
+  .mask-toggle {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
+
+  .msg-meta {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 560px) {
+  .admin-root {
+    width: min(100% - 8px, 1480px);
+    margin: 4px auto;
+  }
+
+  .login-branding,
+  .sidebar-brand,
+  .panel-head,
+  .detail-head {
+    flex-wrap: wrap;
+  }
+
+  .topbar h2,
+  .panel-head h3 {
+    min-width: 0;
+  }
+
+  .sidebar-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .toolbar > *,
+  .filters > *,
+  .batch-bar > *,
+  .pager-actions > *,
+  .dialog-actions > * {
+    flex-basis: 100%;
+  }
+
+  .filters {
+    gap: 10px;
+  }
+
+  .batch-bar {
+    gap: 10px;
+  }
+
+  #usersPanel .table-wrap table {
+    min-width: 580px;
+  }
+
+  #accessLogsPanel .table-wrap table {
+    min-width: 680px;
+  }
+
+  .profile-button {
+    min-height: 52px;
+  }
+
+  .messages-list {
+    max-height: min(520px, 58vh);
   }
 }
