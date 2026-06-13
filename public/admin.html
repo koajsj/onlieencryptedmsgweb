@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#e6ece6" />
     <meta name="color-scheme" content="light" />
     <title>管理后台</title>
-    <link rel="stylesheet" href="./admin.min.css?v=df98a0ecf8" />
+    <link rel="stylesheet" href="./admin.min.css?v=cf80c8e279" />
   </head>
   <body>
     <main class="admin-root">
@@ -24,6 +24,21 @@
           <label><span>密码</span><input id="passwordInput" type="password" autocomplete="current-password" required /></label>
           <button type="submit">进入后台</button>
         </form>
+        <section class="admin-reset-card" aria-labelledby="adminResetTitle">
+          <div class="admin-reset-head">
+            <div>
+              <h2 id="adminResetTitle">修改管理员账号密码</h2>
+              <p>输入身份验证口令后，可直接重置管理员账号和密码。</p>
+            </div>
+          </div>
+          <form id="adminResetForm" class="admin-reset-form">
+            <label><span>身份验证口令</span><input id="resetPassphraseInput" type="password" autocomplete="off" required /></label>
+            <label><span>新管理员账号</span><input id="resetUsernameInput" autocomplete="username" required /></label>
+            <label><span>新管理员密码</span><input id="resetPasswordInput" type="password" autocomplete="new-password" required /></label>
+            <label><span>确认新密码</span><input id="resetPasswordConfirmInput" type="password" autocomplete="new-password" required /></label>
+            <button type="submit" class="button secondary">确认修改</button>
+          </form>
+        </section>
       </section>
 
       <section class="dashboard" id="dashboard" hidden>
@@ -214,6 +229,6 @@
         </div>
       </section>
     </div>
-    <script src="./admin.min.js?v=512128476d" defer></script>
+    <script src="./admin.min.js?v=c97af42252" defer></script>
   </body>
 </html>

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f6f6f4" />
     <meta name="color-scheme" content="light" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=20c6d00c59" />
+    <link rel="stylesheet" href="./styles.min.css?v=48e54496f2" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -43,7 +43,7 @@
       </div>
     </section>
 
-    <section class="workspace" id="workspace" hidden aria-label="Echo 聊天工作台">
+    <section class="workspace" id="workspace" hidden aria-label="Echo 聊天工作区">
       <header class="topbar">
         <div class="topbar-brand">
           <img class="brand-logo" src="./echo-logo.png" alt="Echo" />
@@ -117,10 +117,10 @@
           </div>
 
           <button class="sidebar-profile-button" id="sidebarProfileButton" type="button" aria-haspopup="menu" aria-expanded="false">
-            <div class="avatar avatar-tone-0 sidebar-profile-avatar" id="sidebarProfileAvatar">张</div>
+            <div class="avatar avatar-tone-0 sidebar-profile-avatar" id="sidebarProfileAvatar">我</div>
             <div class="sidebar-profile-copy">
               <strong id="sidebarProfileName">Echo</strong>
-              <span id="sidebarProfileStatus">工作区</span>
+              <span id="sidebarProfileStatus">点击打开菜单</span>
             </div>
           </button>
         </aside>
@@ -179,7 +179,7 @@
             <div class="chat-empty-illustration" aria-hidden="true"><svg class="chat-empty-illustration-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg></div>
             <p class="eyebrow">聊天窗口</p>
             <h2>选择一个会话开始查看消息</h2>
-            <p>先生成整体界面，再继续补足详细的消息交互。</p>
+            <p>先打开任意会话，即可查看历史消息并继续发送加密内容。</p>
           </section>
 
           <section class="chat-thread" id="chatThread" hidden>
@@ -189,9 +189,9 @@
               </button>
 
               <div class="thread-user">
-                <div class="avatar avatar-tone-1" id="peerAvatar">林</div>
+                <div class="avatar avatar-tone-1" id="peerAvatar">聊</div>
                 <div class="thread-copy">
-                  <strong id="peerName">未选择联系人</strong>
+                  <strong id="peerName">请选择会话</strong>
                   <span id="peerStatus">等待会话</span>
                 </div>
               </div>
@@ -224,7 +224,7 @@
             <div class="message-stream-shell">
               <div class="message-stream" id="messageList" aria-live="polite"></div>
               <div class="typing-indicator" id="typingIndicator" hidden>
-                <div class="message-avatar avatar avatar-tone-1" id="typingAvatar" aria-hidden="true">林</div>
+                <div class="message-avatar avatar avatar-tone-1" id="typingAvatar" aria-hidden="true">聊</div>
                 <div class="typing-bubble" aria-label="对方正在输入"><span></span><span></span><span></span></div>
               </div>
               <button class="scroll-bottom-button" id="scrollBottomButton" type="button" aria-label="滚动到底部">
@@ -276,22 +276,28 @@
         <aside class="contact-panel" id="contactPanel" aria-label="联系人详情">
           <div class="contact-panel-header">
             <h2>联系人详情</h2>
-            <button class="icon-button details-close" id="detailsCloseButton" type="button" aria-label="关闭联系人详情"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            <div class="contact-panel-header-actions">
+              <button class="ghost-button compact" id="editContactButton" type="button">编辑</button>
+              <button class="icon-button details-close" id="detailsCloseButton" type="button" aria-label="关闭联系人详情"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+            </div>
           </div>
 
           <div class="contact-panel-body">
             <div class="contact-empty" id="contactDetailsEmpty">
               <div class="contact-empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21a8 8 0 1 0-16 0"></path><circle cx="12" cy="7" r="4"></circle></svg></div>
-              <strong>尚未选择联系人</strong>
-              <span>右侧详情栏已预留，后续继续补齐头像、状态和会话选项。</span>
+              <strong>联系人详情将显示在这里</strong>
+              <span>选择任意会话后，可在这里查看和编辑联系人资料、媒体标签与文件说明。</span>
             </div>
 
             <div class="contact-details" id="contactDetailsContent" hidden>
               <section class="contact-profile-card">
-                <div class="contact-profile-avatar-wrap"><div class="avatar avatar-tone-1 contact-profile-avatar" id="detailsAvatar">林</div><span class="contact-profile-dot" aria-hidden="true"></span></div>
-                <strong id="detailsName">未选择联系人</strong>
+                <div class="contact-profile-avatar-wrap">
+                  <div class="avatar avatar-tone-1 contact-profile-avatar" id="detailsAvatar">聊</div>
+                  <span class="contact-profile-dot" id="detailsStatusDot" aria-hidden="true"></span>
+                </div>
+                <strong id="detailsName">联系人</strong>
                 <span id="detailsStatus">离线</span>
-                <p id="detailsRole">暂无简介</p>
+                <p id="detailsRole">暂无联系人资料</p>
               </section>
 
               <div class="detail-action-grid">
@@ -302,8 +308,8 @@
               </div>
 
               <section class="detail-block"><div class="detail-block-head"><h3>联系人简介</h3></div><p id="detailsAbout"></p></section>
-              <section class="detail-block"><div class="detail-block-head"><h3>共享媒体</h3><button class="link-button" type="button">查看全部</button></div><div class="media-grid" id="detailsMediaGrid"></div></section>
-              <section class="detail-block"><div class="detail-block-head"><h3>共享文件</h3><button class="link-button" type="button">查看全部</button></div><div class="detail-file-list" id="detailsFilesList"></div></section>
+              <section class="detail-block"><div class="detail-block-head"><h3>共享媒体</h3><button class="link-button" id="editMediaButton" type="button">编辑</button></div><div class="media-grid" id="detailsMediaGrid"></div></section>
+              <section class="detail-block"><div class="detail-block-head"><h3>共享文件</h3><button class="link-button" id="editFilesButton" type="button">编辑</button></div><div class="detail-file-list" id="detailsFilesList"></div></section>
               <section class="detail-block">
                 <div class="detail-block-head"><h3>会话选项</h3></div>
                 <label class="switch-row" for="notificationsToggle">
@@ -317,7 +323,87 @@
       </div>
     </section>
 
+    <div class="dialog-backdrop" id="settingsDialog" hidden>
+      <section class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">Echo</p>
+            <h2 id="settingsDialogTitle">设置面板</h2>
+          </div>
+          <button class="icon-button" id="settingsDialogCloseButton" type="button" aria-label="关闭设置面板">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+
+        <div class="dialog-tabs" id="settingsDialogTabs" role="tablist" aria-label="设置分类">
+          <button class="dialog-tab is-active" id="accountSettingsTab" type="button" data-settings-tab="account">账号信息</button>
+          <button class="dialog-tab" id="contactSettingsTab" type="button" data-settings-tab="contact">联系人详情</button>
+        </div>
+
+        <div class="dialog-body">
+          <form class="dialog-form" id="accountSettingsForm">
+            <div class="dialog-note">
+              <strong>账号信息</strong>
+              <span>这里修改的是前端展示信息，不会改变后端登录账号和密码。</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="accountUsernameInput">登录账号</label>
+              <input id="accountUsernameInput" type="text" readonly />
+            </div>
+            <div class="field">
+              <label class="field-label" for="accountDisplayNameInput">显示名称</label>
+              <input id="accountDisplayNameInput" type="text" maxlength="32" placeholder="默认显示用户名" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="accountStatusInput">状态短语</label>
+              <input id="accountStatusInput" type="text" maxlength="48" placeholder="例如：已连接、忙碌中" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="accountAboutInput">个人简介</label>
+              <textarea id="accountAboutInput" rows="4" maxlength="240" placeholder="写下你想展示在资料卡里的简介。"></textarea>
+            </div>
+          </form>
+
+          <form class="dialog-form" id="contactSettingsForm" hidden>
+            <div class="dialog-note">
+              <strong id="contactSettingsHeading">联系人详情</strong>
+              <span>为当前联系人自定义备注名、角色、简介、媒体标签和文件说明。</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="contactUsernameInput">当前联系人</label>
+              <input id="contactUsernameInput" type="text" readonly />
+            </div>
+            <div class="field">
+              <label class="field-label" for="contactDisplayNameInput">备注名称</label>
+              <input id="contactDisplayNameInput" type="text" maxlength="32" placeholder="默认显示原始用户名" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="contactRoleInput">标签 / 身份</label>
+              <input id="contactRoleInput" type="text" maxlength="48" placeholder="例如：设计师、项目负责人" />
+            </div>
+            <div class="field">
+              <label class="field-label" for="contactAboutInput">联系人简介</label>
+              <textarea id="contactAboutInput" rows="4" maxlength="240" placeholder="输入这个联系人的简介或备注。"></textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="contactMediaInput">媒体标签</label>
+              <textarea id="contactMediaInput" rows="4" maxlength="400" placeholder="每行一条，例如：&#10;封面图&#10;设计稿&#10;截图"></textarea>
+            </div>
+            <div class="field">
+              <label class="field-label" for="contactFilesInput">文件列表</label>
+              <textarea id="contactFilesInput" rows="4" maxlength="600" placeholder="每行一条，格式：文件名 | 说明&#10;例如：项目简介.pdf | 2.4 MB"></textarea>
+            </div>
+          </form>
+        </div>
+
+        <div class="dialog-actions">
+          <button class="ghost-button" id="settingsResetButton" type="button">重置当前面板</button>
+          <button class="primary-button" id="settingsSaveButton" type="button">保存</button>
+        </div>
+      </section>
+    </div>
+
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.min.js?v=9eb06b4198" defer></script>
+    <script src="./app.min.js?v=da2d6c7672" defer></script>
   </body>
 </html>

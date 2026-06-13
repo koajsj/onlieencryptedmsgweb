@@ -40,9 +40,7 @@ const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const DEFAULT_ADMIN_USERNAME_VALUE = "admin";
 const DEFAULT_ADMIN_PASSWORD_VALUE = "qwer@1234";
-const ADMIN_USERNAME = readConfiguredAdminUsername();
-const ADMIN_CREDENTIAL = readConfiguredAdminCredential();
-const RESERVED_USERNAME_KEYS = new Set([ADMIN_USERNAME.toLowerCase()]);
+const ADMIN_CONFIG_ENV_FILE = process.env.ADMIN_CONFIG_ENV_FILE || "/etc/default/secure-chat";
 const AUDIT_TEXT_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.AUDIT_TEXT_RETENTION_DAYS || "30", 10) || 30);
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
 const TRUSTED_ORIGINS = new Set(
@@ -134,9 +132,9 @@ function ensureDataFiles() {
 }
 
 function findAdminAccount(username) {
-  return username === ADMIN_USERNAME
+  return username === adminConfig.username
     ? {
-        username: ADMIN_USERNAME
+        username: adminConfig.username
       }
     : null;
 }
@@ -161,24 +159,11 @@ function applyAuditTextRetention() {
 const ADMIN_AUDIT_HMAC_ALGO = "hmac-sha256";
 const ADMIN_AUDIT_SHA_ALGO = "sha256";
 const ADMIN_AUDIT_HMAC_DOMAIN = "secure-chat/admin-audit-hmac-v1";
+let adminConfig = readConfiguredAdminConfig();
+const adminAuditHmacKeyState = readAuditHmacKeyState(adminConfig.credential);
 
 function getAuditHmacKey() {
-  const fromEnv = String(process.env.AUDIT_HMAC_KEY || "").trim();
-  if (fromEnv) {
-    const hexMatch = fromEnv.match(/^[a-f0-9]{32,128}$/i);
-    if (hexMatch) {
-      return { key: Buffer.from(fromEnv, "hex"), source: "env:hex" };
-    }
-    return { key: crypto.createHash("sha256").update(fromEnv, "utf8").digest(), source: "env:utf8" };
-  }
-  const seed = ADMIN_CREDENTIAL.type === "plain"
-    ? ADMIN_CREDENTIAL.value
-    : ADMIN_CREDENTIAL.value;
-  const derived = crypto
-    .createHmac("sha256", ADMIN_AUDIT_HMAC_DOMAIN)
-    .update(seed, "utf8")
-    .digest();
-  return { key: derived, source: `derived:${ADMIN_CREDENTIAL.type}` };
+  return adminAuditHmacKeyState;
 }
 
 function computeAdminAuditEntryHash(prevHash, entryBase, algo, hmacKey) {
@@ -675,7 +660,7 @@ function normalizeUsername(value) {
 }
 
 function isReservedUsernameKey(usernameKey) {
-  return RESERVED_USERNAME_KEYS.has(String(usernameKey || "").trim().toLowerCase());
+  return String(usernameKey || "").trim().toLowerCase() === String(adminConfig.username || "").trim().toLowerCase();
 }
 
 function normalizePassword(value) {
@@ -811,20 +796,27 @@ function readConfiguredAdminUsername() {
   return DEFAULT_ADMIN_USERNAME_VALUE;
 }
 
-function readConfiguredAdminCredential() {
-  const hash = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
-  if (isPasswordHashFormat(hash)) {
-    return {
-      type: "hash",
-      value: hash
-    };
-  }
+function readConfiguredAdminConfig() {
+  return {
+    username: readConfiguredAdminUsername(),
+    credential: readConfiguredAdminCredential()
+  };
+}
 
+function readConfiguredAdminCredential() {
   const fromEnv = normalizePassword(process.env.ADMIN_PASSWORD || "");
   if (fromEnv.length >= 4 && fromEnv.length <= 72) {
     return {
       type: "plain",
       value: fromEnv
+    };
+  }
+
+  const hash = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
+  if (isPasswordHashFormat(hash)) {
+    return {
+      type: "hash",
+      value: hash
     };
   }
 
@@ -834,6 +826,22 @@ function readConfiguredAdminCredential() {
   };
 }
 
+function readAuditHmacKeyState(credential) {
+  const fromEnv = String(process.env.AUDIT_HMAC_KEY || "").trim();
+  if (fromEnv) {
+    const hexMatch = fromEnv.match(/^[a-f0-9]{32,128}$/i);
+    if (hexMatch) {
+      return { key: Buffer.from(fromEnv, "hex"), source: "env:hex" };
+    }
+    return { key: crypto.createHash("sha256").update(fromEnv, "utf8").digest(), source: "env:utf8" };
+  }
+  const derived = crypto
+    .createHmac("sha256", ADMIN_AUDIT_HMAC_DOMAIN)
+    .update(String(credential?.value || ""), "utf8")
+    .digest();
+  return { key: derived, source: `derived:${String(credential?.type || "plain")}` };
+}
+
 function verifyPlainSecret(password, expected) {
   const providedDigest = crypto.createHash("sha256").update(String(password || ""), "utf8").digest();
   const expectedDigest = crypto.createHash("sha256").update(String(expected || ""), "utf8").digest();
@@ -841,10 +849,99 @@ function verifyPlainSecret(password, expected) {
 }
 
 async function verifyConfiguredAdminPassword(password) {
-  if (ADMIN_CREDENTIAL.type === "hash") {
-    return verifyPassword(password, ADMIN_CREDENTIAL.value);
+  const credential = adminConfig.credential;
+  if (credential.type === "hash") {
+    return verifyPassword(password, credential.value);
   }
-  return verifyPlainSecret(password, ADMIN_CREDENTIAL.value);
+  return verifyPlainSecret(password, credential.value);
+}
+
+function verifyAdminUpdatePassphrase(passphrase) {
+  const expected = normalizePassword(process.env.ADMIN_UPDATE_PASSPHRASE || "");
+  if (!expected) {
+    return { ok: false, reason: "missing" };
+  }
+  return {
+    ok: verifyPlainSecret(passphrase, expected),
+    reason: "invalid"
+  };
+}
+
+function parseEnvFile(content) {
+  const entries = new Map();
+  for (const line of String(content || "").split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+    entries.set(match[1], match[2]);
+  }
+  return entries;
+}
+
+function upsertEnvLines(lines, key, value) {
+  const nextLine = `${key}=${value}`;
+  let replaced = false;
+  const nextLines = lines
+    .filter((line) => !new RegExp(`^\\s*${key}=`).test(line))
+    .map((line) => line);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (new RegExp(`^\\s*${key}=`).test(lines[index])) {
+      nextLines.splice(index, 0, nextLine);
+      replaced = true;
+      break;
+    }
+  }
+  if (!replaced) {
+    nextLines.push(nextLine);
+  }
+  return nextLines;
+}
+
+function removeEnvKey(lines, key) {
+  return lines.filter((line) => !new RegExp(`^\\s*${key}=`).test(line));
+}
+
+function persistAdminConfigToEnvironment(nextConfig) {
+  const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
+  if (!envFilePath || !path.isAbsolute(envFilePath)) {
+    throw new Error("管理员配置文件路径无效");
+  }
+  const existingContent = fs.existsSync(envFilePath) ? fs.readFileSync(envFilePath, "utf8") : "";
+  let lines = String(existingContent || "").split(/\r?\n/).filter((line) => line.length > 0);
+  lines = upsertEnvLines(lines, "ADMIN_USERNAME", nextConfig.username);
+  if (nextConfig.credential.type === "plain") {
+    lines = upsertEnvLines(lines, "ADMIN_PASSWORD", nextConfig.credential.value);
+    lines = removeEnvKey(lines, "ADMIN_PASSWORD_HASH");
+  } else {
+    lines = upsertEnvLines(lines, "ADMIN_PASSWORD_HASH", nextConfig.credential.value);
+    lines = removeEnvKey(lines, "ADMIN_PASSWORD");
+  }
+  if (!parseEnvFile(existingContent).has("AUDIT_HMAC_KEY")) {
+    lines = upsertEnvLines(lines, "AUDIT_HMAC_KEY", adminAuditHmacKeyState.key.toString("hex"));
+  }
+  fs.mkdirSync(path.dirname(envFilePath), { recursive: true });
+  fs.writeFileSync(envFilePath, `${lines.join("\n")}\n`, "utf8");
+  try {
+    fs.chmodSync(envFilePath, 0o600);
+  } catch (error) {
+    // Ignore permission update failures on non-Linux environments.
+  }
+}
+
+function updateRuntimeAdminConfig(nextConfig) {
+  adminConfig = {
+    username: nextConfig.username,
+    credential: nextConfig.credential
+  };
+  process.env.ADMIN_USERNAME = nextConfig.username;
+  if (nextConfig.credential.type === "plain") {
+    process.env.ADMIN_PASSWORD = nextConfig.credential.value;
+    delete process.env.ADMIN_PASSWORD_HASH;
+  } else {
+    process.env.ADMIN_PASSWORD_HASH = nextConfig.credential.value;
+    delete process.env.ADMIN_PASSWORD;
+  }
 }
 
 function findUserByKey(usernameKey) {
@@ -1733,7 +1830,7 @@ async function handleAdminLogin(req, res) {
     const next = recordAdminLoginFailure(username);
     const message = next && next.lockedUntil > Date.now()
       ? "too many failed attempts, try again later"
-      : "invalid admin credentials";
+      : "管理员账号或密码错误";
     sendJson(res, next && next.lockedUntil > Date.now() ? 429 : 401, { error: message });
     return;
   }
@@ -1748,6 +1845,84 @@ async function handleAdminLogin(req, res) {
     }
   }, {
     "Set-Cookie": sessionCookieHeader(ADMIN_SESSION_COOKIE, token)
+  });
+}
+
+async function handleAdminAccountReset(req, res) {
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `auth:admin-account-reset:${address}`,
+      Math.max(5, Math.floor(MAX_AUTH_REQUESTS_PER_WINDOW / 2)),
+      "too many auth requests"
+    )
+  ) {
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJson(res, error?.message === "body too large" ? 413 : 400, {
+      error: error?.message === "body too large" ? "body too large" : "invalid json"
+    });
+    return;
+  }
+  const passphraseResult = verifyAdminUpdatePassphrase(String(body.verificationPassphrase || body.passphrase || ""));
+  if (!passphraseResult.ok) {
+    sendJson(res, passphraseResult.reason === "missing" ? 503 : 403, {
+      error: passphraseResult.reason === "missing" ? "管理员身份验证口令未配置" : "身份验证口令错误"
+    });
+    return;
+  }
+
+  const normalizedUsername = normalizeUsername(readSubmittedUsername(body));
+  const password = normalizePassword(body.password);
+  if (!normalizedUsername) {
+    sendJson(res, 400, { error: "管理员账号格式无效" });
+    return;
+  }
+  if (password.length < 4 || password.length > 72) {
+    sendJson(res, 400, { error: "管理员密码必须为 4-72 位" });
+    return;
+  }
+
+  const nextConfig = {
+    username: normalizedUsername.value,
+    credential: {
+      type: "hash",
+      value: await hashPassword(password)
+    }
+  };
+
+  try {
+    persistAdminConfigToEnvironment(nextConfig);
+  } catch (error) {
+    sendJson(res, 500, { error: "管理员配置写入失败" });
+    return;
+  }
+
+  const previousUsername = adminConfig.username;
+  updateRuntimeAdminConfig(nextConfig);
+  clearAdminLoginFailures(previousUsername);
+  clearAdminLoginFailures(nextConfig.username);
+  for (const sessionRecord of sessions.values()) {
+    if (sessionRecord.role === "admin") {
+      sessionRecord.username = nextConfig.username;
+    }
+  }
+  recordAdminAction("admin_account_reset", { username: nextConfig.username, role: "admin" }, req, {
+    previousUsername,
+    nextUsername: nextConfig.username
+  });
+  sendJson(res, 200, {
+    ok: true,
+    admin: {
+      username: nextConfig.username,
+      role: "admin"
+    }
   });
 }
 
@@ -2574,6 +2749,10 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && pathname === "/api/admin/login") {
     void handleAdminLogin(req, res);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/admin/account/reset") {
+    void handleAdminAccountReset(req, res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/admin/logout") {

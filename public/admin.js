@@ -5,6 +5,11 @@ const elements = {
   loginForm: document.querySelector("#loginForm"),
   usernameInput: document.querySelector("#usernameInput"),
   passwordInput: document.querySelector("#passwordInput"),
+  adminResetForm: document.querySelector("#adminResetForm"),
+  resetPassphraseInput: document.querySelector("#resetPassphraseInput"),
+  resetUsernameInput: document.querySelector("#resetUsernameInput"),
+  resetPasswordInput: document.querySelector("#resetPasswordInput"),
+  resetPasswordConfirmInput: document.querySelector("#resetPasswordConfirmInput"),
   dashboard: document.querySelector("#dashboard"),
   adminMeta: document.querySelector("#adminMeta"),
   refreshMeta: document.querySelector("#refreshMeta"),
@@ -146,9 +151,13 @@ function translateAdminError(pathname, status, payload) {
   const mapped = {
     "管理员账号或密码错误": "管理员账号或密码错误",
     "invalid admin credentials": "管理员账号或密码错误",
+    "身份验证口令错误": "身份验证口令错误",
+    "管理员身份验证口令未配置": "管理员身份验证口令未配置",
+    "管理员配置写入失败": "管理员配置写入失败",
     unauthorized: "请先登录管理员账号",
     "session expired": "管理员登录已过期，请重新登录",
-    "too many auth requests": "请求过于频繁，请稍后再试"
+    "too many auth requests": "请求过于频繁，请稍后再试",
+    "too many failed attempts, try again later": "失败次数过多，请稍后再试"
   };
   if (mapped[raw]) {
     return mapped[raw];
@@ -692,6 +701,25 @@ async function logout() {
   resetAdminState(true);
 }
 
+async function resetAdminAccount(username, password, passphrase) {
+  const payload = await api("/api/admin/account/reset", {
+    method: "POST",
+    auth: false,
+    body: {
+      username,
+      password,
+      passphrase
+    }
+  });
+  const nextUsername = String(payload.admin?.username || username || "");
+  elements.usernameInput.value = nextUsername;
+  elements.passwordInput.value = "";
+  elements.resetUsernameInput.value = nextUsername;
+  elements.resetPasswordInput.value = "";
+  elements.resetPasswordConfirmInput.value = "";
+  elements.resetPassphraseInput.value = "";
+}
+
 async function patchUser(username, body) {
   await api(`/api/admin/users/${encodeURIComponent(username)}`, {
     method: "PATCH",
@@ -907,6 +935,29 @@ function bindEvents() {
     }
   });
 
+  elements.adminResetForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const username = String(elements.resetUsernameInput.value || "").trim();
+    const password = String(elements.resetPasswordInput.value || "");
+    const passwordConfirm = String(elements.resetPasswordConfirmInput.value || "");
+    const passphrase = String(elements.resetPassphraseInput.value || "");
+    if (!username || !password || !passphrase) {
+      showToast("请填写完整信息");
+      return;
+    }
+    if (password !== passwordConfirm) {
+      showToast("两次输入的密码不一致");
+      elements.resetPasswordConfirmInput.focus();
+      return;
+    }
+    try {
+      await resetAdminAccount(username, password, passphrase);
+      showToast("管理员账号密码已更新，请重新登录");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
   elements.logoutButton.addEventListener("click", async () => {
     await logout();
     showToast("已退出");
@@ -1060,6 +1111,7 @@ function syncPermissionUi() {
 
 async function boot() {
   bindEvents();
+  elements.resetUsernameInput.value = "admin";
   state.token = readStoredAdminToken();
   try {
     const payload = await api("/api/admin/me");

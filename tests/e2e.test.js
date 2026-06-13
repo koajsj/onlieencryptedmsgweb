@@ -777,7 +777,7 @@ test("admin login accepts account alias and plain password configuration", async
       password: "bad-pass"
     });
     assert.equal(invalid.status, 401);
-    assert.equal((await invalid.json()).error, "invalid admin credentials");
+    assert.equal((await invalid.json()).error, "管理员账号或密码错误");
   } finally {
     await server.stop();
   }
@@ -900,7 +900,46 @@ test("admin login works out of the box with the built-in default credentials", a
       password: "not-the-default"
     });
     assert.equal(wrongLogin.status, 401);
-    assert.equal((await wrongLogin.json()).error, "invalid admin credentials");
+    assert.equal((await wrongLogin.json()).error, "管理员账号或密码错误");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD over stale hash", async () => {
+  const server = await startServer({
+    ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
+    ADMIN_PASSWORD: "qwer@1234",
+    ADMIN_UPDATE_PASSPHRASE: "test-passphrase",
+    ADMIN_CONFIG_ENV_FILE: path.join(os.tmpdir(), `secure-chat-admin-${Date.now()}.env`)
+  });
+
+  try {
+    const defaultLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(defaultLogin.status, 200);
+
+    const reset = await postJson(server.port, "/api/admin/account/reset", {
+      passphrase: "test-passphrase",
+      username: "root_admin",
+      password: "next-pass-123"
+    });
+    assert.equal(reset.status, 200);
+    assert.equal((await reset.json()).admin.username, "root_admin");
+
+    const oldLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(oldLogin.status, 401);
+
+    const newLogin = await postJson(server.port, "/api/admin/login", {
+      username: "root_admin",
+      password: "next-pass-123"
+    });
+    assert.equal(newLogin.status, 200);
   } finally {
     await server.stop();
   }

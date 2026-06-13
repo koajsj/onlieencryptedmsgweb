@@ -2,7 +2,9 @@
 
 const STORAGE = {
   activePeer: "private-chat-active-peer",
+  accountProfile: "private-chat-account-profile",
   authMode: "private-chat-auth-mode",
+  contactProfiles: "private-chat-contact-profiles",
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
   pendingOutbox: "private-chat-pending-outbox",
@@ -92,17 +94,41 @@ const elements = {
   contextCopyButton: document.querySelector("#contextCopyButton"),
   contextRecallButton: document.querySelector("#contextRecallButton"),
   contactPanel: document.querySelector("#contactPanel"),
+  editContactButton: document.querySelector("#editContactButton"),
   detailsCloseButton: document.querySelector("#detailsCloseButton"),
   contactDetailsEmpty: document.querySelector("#contactDetailsEmpty"),
   contactDetailsContent: document.querySelector("#contactDetailsContent"),
   detailsAvatar: document.querySelector("#detailsAvatar"),
   detailsName: document.querySelector("#detailsName"),
   detailsStatus: document.querySelector("#detailsStatus"),
+  detailsStatusDot: document.querySelector("#detailsStatusDot"),
   detailsRole: document.querySelector("#detailsRole"),
   detailsAbout: document.querySelector("#detailsAbout"),
   detailsMediaGrid: document.querySelector("#detailsMediaGrid"),
   detailsFilesList: document.querySelector("#detailsFilesList"),
-  notificationsToggle: document.querySelector("#notificationsToggle")
+  notificationsToggle: document.querySelector("#notificationsToggle"),
+  editMediaButton: document.querySelector("#editMediaButton"),
+  editFilesButton: document.querySelector("#editFilesButton"),
+  settingsDialog: document.querySelector("#settingsDialog"),
+  settingsDialogCloseButton: document.querySelector("#settingsDialogCloseButton"),
+  settingsDialogTabs: document.querySelector("#settingsDialogTabs"),
+  accountSettingsTab: document.querySelector("#accountSettingsTab"),
+  contactSettingsTab: document.querySelector("#contactSettingsTab"),
+  accountSettingsForm: document.querySelector("#accountSettingsForm"),
+  contactSettingsForm: document.querySelector("#contactSettingsForm"),
+  accountUsernameInput: document.querySelector("#accountUsernameInput"),
+  accountDisplayNameInput: document.querySelector("#accountDisplayNameInput"),
+  accountStatusInput: document.querySelector("#accountStatusInput"),
+  accountAboutInput: document.querySelector("#accountAboutInput"),
+  contactSettingsHeading: document.querySelector("#contactSettingsHeading"),
+  contactUsernameInput: document.querySelector("#contactUsernameInput"),
+  contactDisplayNameInput: document.querySelector("#contactDisplayNameInput"),
+  contactRoleInput: document.querySelector("#contactRoleInput"),
+  contactAboutInput: document.querySelector("#contactAboutInput"),
+  contactMediaInput: document.querySelector("#contactMediaInput"),
+  contactFilesInput: document.querySelector("#contactFilesInput"),
+  settingsResetButton: document.querySelector("#settingsResetButton"),
+  settingsSaveButton: document.querySelector("#settingsSaveButton")
 };
 
 const state = {
@@ -133,6 +159,8 @@ const state = {
   reconnectAttempts: 0,
   manualEventSourceClose: false,
   connectionState: "offline",
+  accountProfile: {},
+  contactProfiles: {},
   outboxFlushing: false,
   searchTimer: 0,
   searchRequestId: 0,
@@ -150,84 +178,11 @@ const state = {
   emojiPanelOpen: false,
   accountMenuOpen: false,
   accountMenuAnchor: null,
+  settingsDialogOpen: false,
+  settingsDialogSection: "account",
   contextMenuMessageId: "",
   previewMode: false
 };
-
-const CONTACT_DETAIL_PRESETS = [
-  {
-    role: "\u4ea7\u54c1\u8bbe\u8ba1\u7ec4\u3000\u8bbe\u8ba1\u4e3b\u7406",
-    about: "\u8d1f\u8d23\u4f1a\u8bae\u8d44\u6599\u3001\u4efb\u52a1\u8282\u594f\u4e0e\u56e2\u961f\u540c\u6b65\uff0c\u503e\u5411\u7b80\u6d01\u6c9f\u901a\u4e0e\u7a33\u5b9a\u63a8\u8fdb\u3002",
-    media: [
-      { tone: "workspace", label: "\u8def\u7ebf\u56fe" },
-      { tone: "plant", label: "\u529e\u516c\u684c\u9762" },
-      { tone: "mountain", label: "\u5916\u51fa\u8bb0\u5f55" },
-      { tone: "interior", label: "\u4f1a\u5ba2\u533a" }
-    ],
-    files: [
-      { name: "\u9879\u76ee\u7b80\u62a5\u7ec8\u7a3f.pdf", meta: "PDF \u00b7 2.4 MB", kind: "pdf" },
-      { name: "\u53d1\u5e03\u8282\u70b9\u6392\u671f.xlsx", meta: "XLS \u00b7 940 KB", kind: "xls" },
-      { name: "\u8bc4\u5ba1\u8bb0\u5f55.docx", meta: "DOC \u00b7 320 KB", kind: "doc" }
-    ],
-    inlineFile: { name: "\u9879\u76ee\u7b80\u62a5\u7ec8\u7a3f.pdf", meta: "PDF \u00b7 2.4 MB", kind: "pdf" }
-  },
-  {
-    role: "\u54c1\u724c\u89c6\u89c9\u7ec4\u3000\u8bbe\u8ba1\u8d1f\u8d23\u4eba",
-    about: "\u64c5\u957f\u628a\u8bc4\u5ba1\u5185\u5bb9\u6574\u7406\u6210\u53ef\u6267\u884c\u7684\u6e05\u5355\uff0c\u540c\u65f6\u4fdd\u6301\u754c\u9762\u7ec6\u8282\u548c\u8282\u594f\u3002",
-    media: [
-      { tone: "interior", label: "\u6c14\u6c1b\u677f" },
-      { tone: "workspace", label: "\u7ebf\u6846\u7a3f" },
-      { tone: "plant", label: "\u5de5\u4f5c\u5ba4" },
-      { tone: "mountain", label: "\u54c1\u724c\u6d3b\u52a8" }
-    ],
-    files: [
-      { name: "\u8bbe\u8ba1\u8d70\u67e5\u6e05\u5355.pdf", meta: "PDF \u00b7 1.8 MB", kind: "pdf" },
-      { name: "\u7d20\u6750\u6c47\u603b.xlsx", meta: "XLS \u00b7 760 KB", kind: "xls" },
-      { name: "\u54c1\u724c\u5907\u6ce8.docx", meta: "DOC \u00b7 280 KB", kind: "doc" }
-    ],
-    inlineFile: { name: "\u8bbe\u8ba1\u8d70\u67e5\u6e05\u5355.pdf", meta: "PDF \u00b7 1.8 MB", kind: "pdf" }
-  },
-  {
-    role: "\u8fd0\u8425\u56e2\u961f\u3000\u6267\u884c\u8d1f\u8d23\u4eba",
-    about: "\u4e60\u60ef\u7528\u7ed3\u6784\u5316\u7684\u6d88\u606f\u548c\u6587\u4ef6\u4ea4\u4ed8\u63a8\u8fdb\u9879\u76ee\uff0c\u8ddf\u8fdb\u660e\u786e\u4e14\u9ad8\u6548\u3002",
-    media: [
-      { tone: "plant", label: "\u6570\u636e\u770b\u677f" },
-      { tone: "workspace", label: "\u6392\u671f\u770b\u677f" },
-      { tone: "mountain", label: "\u5916\u573a\u8bb0\u5f55" },
-      { tone: "interior", label: "\u4f1a\u8bae\u5ba4" }
-    ],
-    files: [
-      { name: "\u5468\u5ea6\u4ea4\u63a5\u5355.pdf", meta: "PDF \u00b7 2.1 MB", kind: "pdf" },
-      { name: "\u4eba\u529b\u6a21\u578b.xlsx", meta: "XLS \u00b7 880 KB", kind: "xls" },
-      { name: "\u884c\u52a8\u7eaa\u8981.docx", meta: "DOC \u00b7 260 KB", kind: "doc" }
-    ],
-    inlineFile: { name: "\u5468\u5ea6\u4ea4\u63a5\u5355.pdf", meta: "PDF \u00b7 2.1 MB", kind: "pdf" }
-  },
-  {
-    role: "\u5e02\u573a\u7b56\u7565\u7ec4\u3000\u534f\u540c\u8d1f\u8d23\u4eba",
-    about: "\u8d1f\u8d23\u6295\u653e\u8ba1\u5212\u3001\u5ba1\u6279\u8282\u70b9\u4e0e\u6d88\u606f\u7559\u5b58\uff0c\u4f7f\u6bcf\u4e00\u6b21\u53d1\u5e03\u66f4\u6e05\u6670\u3002",
-    media: [
-      { tone: "mountain", label: "\u6295\u653e\u590d\u76d8" },
-      { tone: "workspace", label: "\u8f6c\u5316\u62a5\u8868" },
-      { tone: "interior", label: "\u5408\u4f5c\u4f1a\u8bae" },
-      { tone: "plant", label: "\u6d3b\u52a8\u6392\u671f" }
-    ],
-    files: [
-      { name: "\u6295\u653e\u590d\u76d8.pdf", meta: "PDF \u00b7 2.0 MB", kind: "pdf" },
-      { name: "\u9884\u4f30\u6a21\u578b.xlsx", meta: "XLS \u00b7 1.1 MB", kind: "xls" },
-      { name: "\u5408\u4f5c\u603b\u7ed3.docx", meta: "DOC \u00b7 300 KB", kind: "doc" }
-    ],
-    inlineFile: { name: "\u6295\u653e\u590d\u76d8.pdf", meta: "PDF \u00b7 2.0 MB", kind: "pdf" }
-  }
-];
-
-const PREVIEW_USER = { username: "\u5f20\u5b50\u8f69" };
-const PREVIEW_CONVERSATIONS = [
-  { username: "\u6797\u8bed\u6850", online: true, previewText: "\u6587\u4ef6\u5df2\u53d1\u4f60\uff0c\u8bf7\u67e5\u6536", lastAt: Date.now() - 8 * 60 * 1000, unread: 0, pinned: true },
-  { username: "\u738b\u601d\u8fdc", online: false, previewText: "\u597d\u7684\uff0c\u6211\u7a0d\u540e\u5904\u7406", lastAt: Date.now() - 23 * 60 * 1000, unread: 2, pinned: false },
-  { username: "\u8fd0\u8425\u56e2\u961f", online: true, previewText: "\u6570\u636e\u677f\u5df2\u66f4\u65b0", lastAt: Date.now() - 45 * 60 * 1000, unread: 3, pinned: false },
-  { username: "\u9648\u4e00\u5e06", online: false, previewText: "\u8c22\u8c22\u4f60\u7684\u5e2e\u52a9", lastAt: Date.now() - 24 * 60 * 60 * 1000, unread: 0, pinned: false }
-];
 
 function readJsonStorage(key, fallback) {
   try {
@@ -283,6 +238,154 @@ function persistSessionAuthToken(token) {
   }
 }
 
+function normalizeAccountProfile(profile) {
+  return {
+    displayName: String(profile?.displayName || "").trim().slice(0, 32),
+    statusText: String(profile?.statusText || "").trim().slice(0, 48),
+    about: String(profile?.about || "").trim().slice(0, 240)
+  };
+}
+
+function normalizeContactMediaEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries
+    .map((entry) => String(entry || "").trim().slice(0, 48))
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function normalizeContactFileEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries
+    .map((entry) => ({
+      name: String(entry?.name || "").trim().slice(0, 80),
+      meta: String(entry?.meta || "").trim().slice(0, 80),
+      kind: String(entry?.kind || "").trim().slice(0, 12).toLowerCase() || "file"
+    }))
+    .filter((entry) => entry.name)
+    .slice(0, 12);
+}
+
+function normalizeContactProfile(profile) {
+  return {
+    displayName: String(profile?.displayName || "").trim().slice(0, 32),
+    role: String(profile?.role || "").trim().slice(0, 48),
+    about: String(profile?.about || "").trim().slice(0, 240),
+    media: normalizeContactMediaEntries(profile?.media),
+    files: normalizeContactFileEntries(profile?.files)
+  };
+}
+
+function currentStorageOwner() {
+  return String(state.me?.username || "");
+}
+
+function readScopedStorageRecord(key, owner) {
+  const store = readJsonStorage(key, {});
+  const scoped = owner && store && typeof store === "object" ? store[owner] : {};
+  return scoped && typeof scoped === "object" ? scoped : {};
+}
+
+function writeScopedStorageRecord(key, owner, value) {
+  if (!owner) {
+    return;
+  }
+  const store = readJsonStorage(key, {});
+  store[owner] = value;
+  writeJsonStorage(key, store);
+}
+
+function renameScopedStorageOwner(key, previousOwner, nextOwner) {
+  if (!previousOwner || !nextOwner || previousOwner === nextOwner) {
+    return;
+  }
+  const store = readJsonStorage(key, {});
+  if (!store || typeof store !== "object" || !store[previousOwner]) {
+    return;
+  }
+  store[nextOwner] = store[previousOwner];
+  delete store[previousOwner];
+  writeJsonStorage(key, store);
+}
+
+function loadEditableProfiles() {
+  const owner = currentStorageOwner();
+  state.accountProfile = normalizeAccountProfile(readScopedStorageRecord(STORAGE.accountProfile, owner));
+  const rawContacts = readScopedStorageRecord(STORAGE.contactProfiles, owner);
+  const normalized = {};
+  for (const [username, profile] of Object.entries(rawContacts)) {
+    if (!username) {
+      continue;
+    }
+    normalized[username] = normalizeContactProfile(profile);
+  }
+  state.contactProfiles = normalized;
+}
+
+function saveAccountProfile() {
+  writeScopedStorageRecord(STORAGE.accountProfile, currentStorageOwner(), state.accountProfile);
+}
+
+function saveContactProfiles() {
+  writeScopedStorageRecord(STORAGE.contactProfiles, currentStorageOwner(), state.contactProfiles);
+}
+
+function accountDisplayName() {
+  return state.accountProfile.displayName || state.me?.username || "Echo";
+}
+
+function accountStatusText() {
+  return state.accountProfile.statusText || "";
+}
+
+function activeContactProfile(username) {
+  return normalizeContactProfile(state.contactProfiles[username]);
+}
+
+function contactDisplayName(username) {
+  return activeContactProfile(username).displayName || String(username || "");
+}
+
+function contactRoleLabel(username) {
+  return activeContactProfile(username).role || `@${String(username || "")}`;
+}
+
+function contactAboutText(username) {
+  return activeContactProfile(username).about || "暂无简介，可在设置面板中自定义。";
+}
+
+function parseMediaInput(value) {
+  return normalizeContactMediaEntries(String(value || "").split(/\r?\n/));
+}
+
+function inferFileKind(name) {
+  const match = String(name || "").trim().toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? match[1].slice(0, 12) : "file";
+}
+
+function parseFileInput(value) {
+  return normalizeContactFileEntries(
+    String(value || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [namePart, ...metaParts] = line.split("|");
+        const name = String(namePart || "").trim();
+        const meta = metaParts.join("|").trim();
+        return {
+          name,
+          meta,
+          kind: inferFileKind(name)
+        };
+      })
+  );
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -303,21 +406,12 @@ function avatarInitial(username) {
   return String(username || "?").slice(0, 1).toUpperCase();
 }
 
-function usernameSeed(username) {
-  let total = 0;
-  for (const char of String(username || "")) {
-    total += char.charCodeAt(0);
-  }
-  return total;
-}
-
 function setAvatar(node, username) {
+  if (!node) {
+    return;
+  }
   node.className = `avatar avatar-tone-${avatarTone(username)}`;
   node.textContent = avatarInitial(username);
-}
-
-function contactDetailPreset(username) {
-  return CONTACT_DETAIL_PRESETS[usernameSeed(username) % CONTACT_DETAIL_PRESETS.length];
 }
 
 function isDetailsDrawerLayout() {
@@ -367,6 +461,10 @@ function positionFloatingMenu(menu, anchor) {
   let left = rect.right - menuWidth;
   let top = rect.bottom + gap;
 
+  if (anchor === elements.sidebarProfileButton) {
+    left = rect.left;
+  }
+
   if (left < viewportGap) {
     left = rect.left;
   }
@@ -402,6 +500,83 @@ function toggleAccountMenu(force, anchor = elements.accountMenuButton || element
       positionFloatingMenu(elements.accountMenu, state.accountMenuAnchor);
     }
   }
+}
+
+function setSettingsDialogSection(section) {
+  const nextSection = section === "contact" ? "contact" : "account";
+  state.settingsDialogSection = nextSection;
+  elements.accountSettingsTab?.classList.toggle("is-active", nextSection === "account");
+  elements.contactSettingsTab?.classList.toggle("is-active", nextSection === "contact");
+  if (elements.accountSettingsForm) {
+    elements.accountSettingsForm.hidden = nextSection !== "account";
+  }
+  if (elements.contactSettingsForm) {
+    elements.contactSettingsForm.hidden = nextSection !== "contact";
+  }
+}
+
+function populateSettingsDialog() {
+  const accountProfile = normalizeAccountProfile(state.accountProfile);
+  if (elements.accountUsernameInput) {
+    elements.accountUsernameInput.value = state.me?.username || "";
+  }
+  if (elements.accountDisplayNameInput) {
+    elements.accountDisplayNameInput.value = accountProfile.displayName;
+  }
+  if (elements.accountStatusInput) {
+    elements.accountStatusInput.value = accountProfile.statusText;
+  }
+  if (elements.accountAboutInput) {
+    elements.accountAboutInput.value = accountProfile.about;
+  }
+
+  const peer = activePeerMeta();
+  const profile = peer ? activeContactProfile(peer.username) : normalizeContactProfile({});
+  if (elements.contactSettingsHeading) {
+    elements.contactSettingsHeading.textContent = peer ? `联系人详情 · ${contactDisplayName(peer.username)}` : "联系人详情";
+  }
+  if (elements.contactUsernameInput) {
+    elements.contactUsernameInput.value = peer?.username || "";
+  }
+  if (elements.contactDisplayNameInput) {
+    elements.contactDisplayNameInput.value = profile.displayName;
+  }
+  if (elements.contactRoleInput) {
+    elements.contactRoleInput.value = profile.role;
+  }
+  if (elements.contactAboutInput) {
+    elements.contactAboutInput.value = profile.about;
+  }
+  if (elements.contactMediaInput) {
+    elements.contactMediaInput.value = profile.media.join("\n");
+  }
+  if (elements.contactFilesInput) {
+    elements.contactFilesInput.value = profile.files
+      .map((file) => [file.name, file.meta].filter(Boolean).join(" | "))
+      .join("\n");
+  }
+  if (elements.contactSettingsTab) {
+    elements.contactSettingsTab.disabled = !peer;
+  }
+}
+
+function openSettingsDialog(section = "account") {
+  const nextSection = section === "contact" && state.activePeer ? "contact" : "account";
+  state.settingsDialogOpen = true;
+  if (elements.settingsDialog) {
+    elements.settingsDialog.hidden = false;
+  }
+  setSettingsDialogSection(nextSection);
+  populateSettingsDialog();
+  syncLayoutState();
+}
+
+function closeSettingsDialog() {
+  state.settingsDialogOpen = false;
+  if (elements.settingsDialog) {
+    elements.settingsDialog.hidden = true;
+  }
+  syncLayoutState();
 }
 
 function closeEmojiPanel() {
@@ -471,6 +646,9 @@ function updateWorkspaceStatus() {
     return;
   }
   if (!state.me) {
+    if (elements.meUsername) {
+      elements.meUsername.textContent = "未登录";
+    }
     elements.meStatus.textContent = "\u7b49\u5f85\u767b\u5f55";
     if (elements.sidebarProfileAvatar) {
       setAvatar(elements.sidebarProfileAvatar, "Echo");
@@ -484,17 +662,22 @@ function updateWorkspaceStatus() {
     updateMeStatusDot("offline");
     return;
   }
+  const displayName = accountDisplayName();
+  const profileStatus = accountStatusText();
   const pendingCount = state.pendingOutbox.length;
   const pendingSuffix = pendingCount > 0 ? ` \u00b7 \u5f85\u53d1\u9001 ${pendingCount}` : "";
-  elements.meStatus.textContent = `${connectionStatusLabel()} \u00b7 \u5df2\u52a0\u5bc6${pendingSuffix}`;
+  if (elements.meUsername) {
+    elements.meUsername.textContent = displayName;
+  }
+  elements.meStatus.textContent = `${profileStatus || connectionStatusLabel()} \u00b7 \u5df2\u52a0\u5bc6${pendingSuffix}`;
   if (elements.sidebarProfileAvatar) {
     setAvatar(elements.sidebarProfileAvatar, state.me.username);
   }
   if (elements.sidebarProfileName) {
-    elements.sidebarProfileName.textContent = state.me.username;
+    elements.sidebarProfileName.textContent = displayName;
   }
   if (elements.sidebarProfileStatus) {
-    elements.sidebarProfileStatus.textContent = state.previewMode ? "\u754c\u9762\u9884\u89c8" : connectionStatusLabel();
+    elements.sidebarProfileStatus.textContent = profileStatus || connectionStatusLabel();
   }
   updateMeStatusDot(state.connectionState);
 }
@@ -673,6 +856,7 @@ function resetLocalConversationState() {
   }
   state.conversationPrefs = normalizedPrefs;
   state.drafts = readJsonStorage(STORAGE.drafts, {});
+  loadEditableProfiles();
   loadPendingOutbox();
 }
 
@@ -970,6 +1154,7 @@ function syncLayoutState() {
   document.body.classList.toggle("is-mobile", isMobile());
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
   document.body.classList.toggle("is-details-open", isDetailsDrawerLayout() && state.detailsPanelOpen);
+  document.body.classList.toggle("is-dialog-open", state.settingsDialogOpen);
   if (state.accountMenuOpen && state.accountMenuAnchor && state.accountMenuAnchor.offsetParent === null) {
     closeAccountMenu();
     return;
@@ -1198,9 +1383,13 @@ function clearSession(showAuth = true, clearToken = true) {
   state.pendingOutbox = [];
   state.messagePageState.clear();
   state.pendingSequence = 0;
+  state.accountProfile = {};
+  state.contactProfiles = {};
   state.outboxFlushing = false;
   state.searchRequestId += 1;
   state.openConversationRequest += 1;
+  state.settingsDialogOpen = false;
+  state.settingsDialogSection = "account";
   state.previewMode = false;
 
   clearStoredSessionArtifacts(clearToken, true);
@@ -1208,6 +1397,9 @@ function clearSession(showAuth = true, clearToken = true) {
   elements.threadSearchInput.value = "";
   elements.messageInput.value = "";
   elements.messageInput.style.height = "auto";
+  if (elements.settingsDialog) {
+    elements.settingsDialog.hidden = true;
+  }
   syncReplyState();
   updateWorkspaceStatus();
   render();
@@ -1228,7 +1420,9 @@ function setSession(token, user, identity) {
   resetLocalConversationState();
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
-  elements.meUsername.textContent = user.username;
+  if (elements.meUsername) {
+    elements.meUsername.textContent = accountDisplayName();
+  }
   setAvatar(elements.meAvatar, user.username);
   cachePeerInfo(user);
   state.threadSearchQuery = "";
@@ -1463,41 +1657,6 @@ function renderDetailFileRow(file) {
   return wrapper;
 }
 
-function renderInlineFileCard(file) {
-  const article = document.createElement("article");
-  article.className = "message message-file";
-
-  const body = document.createElement("div");
-  body.className = "message-body";
-
-  const card = document.createElement("div");
-  card.className = "bubble bubble-file";
-  card.innerHTML = `
-    <div class="inline-file-card">
-      <div class="inline-file-icon" data-kind="${escapeHtml(file.kind || "pdf")}">${escapeHtml(String(file.kind || "pdf").toUpperCase())}</div>
-      <div class="inline-file-copy">
-        <strong>${escapeHtml(file.name || "\u52a0\u5bc6\u6587\u4ef6")}</strong>
-        <span>${escapeHtml(file.meta || "\u5b89\u5168\u6587\u4ef6")}</span>
-      </div>
-      <button class="inline-file-action" type="button" data-detail-action="download" aria-label="\u4e0b\u8f7d ${escapeHtml(file.name || "\u6587\u4ef6")}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-          <polyline points="7 10 12 15 17 10"></polyline>
-          <line x1="12" y1="15" x2="12" y2="3"></line>
-        </svg>
-      </button>
-    </div>
-  `;
-
-  const meta = document.createElement("div");
-  meta.className = "message-meta";
-  meta.textContent = "\u5df2\u5171\u4eab\u6587\u4ef6";
-
-  body.append(card, meta);
-  article.append(body);
-  return article;
-}
-
 function renderContactDetails(peer) {
   if (!elements.contactDetailsEmpty || !elements.contactDetailsContent) {
     return;
@@ -1505,36 +1664,59 @@ function renderContactDetails(peer) {
   if (!peer) {
     elements.contactDetailsEmpty.hidden = false;
     elements.contactDetailsContent.hidden = true;
+    if (elements.editContactButton) {
+      elements.editContactButton.disabled = true;
+    }
     if (isDetailsDrawerLayout()) {
       setDetailsPanelOpen(false);
     }
     return;
   }
 
-  const preset = contactDetailPreset(peer.username);
+  const profile = activeContactProfile(peer.username);
   const prefs = peerPrefs(peer.username);
+  const mediaEntries = profile.media;
+  const fileEntries = profile.files;
   elements.contactDetailsEmpty.hidden = true;
   elements.contactDetailsContent.hidden = false;
   setAvatar(elements.detailsAvatar, peer.username);
-  elements.detailsName.textContent = peer.username;
-  elements.detailsStatus.textContent = peer.online ? "在线" : "最近活跃";
-  elements.detailsRole.textContent = preset.role;
-  elements.detailsAbout.textContent = preset.about;
+  elements.detailsName.textContent = contactDisplayName(peer.username);
+  elements.detailsStatus.textContent = peer.online ? "在线" : "离线";
+  elements.detailsStatusDot?.classList.toggle("is-online", Boolean(peer.online));
+  elements.detailsRole.textContent = contactRoleLabel(peer.username);
+  elements.detailsAbout.textContent = contactAboutText(peer.username);
   elements.notificationsToggle.checked = !prefs.muted;
+  if (elements.editContactButton) {
+    elements.editContactButton.disabled = false;
+  }
 
   elements.detailsMediaGrid.textContent = "";
-  for (const item of preset.media) {
-    const thumb = document.createElement("div");
-    thumb.className = "media-thumb";
-    thumb.dataset.tone = item.tone;
-    thumb.setAttribute("role", "img");
-    thumb.setAttribute("aria-label", item.label);
-    elements.detailsMediaGrid.append(thumb);
+  if (mediaEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "media-thumb media-thumb-empty";
+    empty.textContent = "暂无媒体标签";
+    elements.detailsMediaGrid.append(empty);
+  } else {
+    for (const item of mediaEntries) {
+      const thumb = document.createElement("div");
+      thumb.className = "media-thumb media-thumb-label";
+      thumb.textContent = item;
+      thumb.setAttribute("role", "img");
+      thumb.setAttribute("aria-label", item);
+      elements.detailsMediaGrid.append(thumb);
+    }
   }
 
   elements.detailsFilesList.textContent = "";
-  for (const file of preset.files) {
-    elements.detailsFilesList.append(renderDetailFileRow(file));
+  if (fileEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "detail-file-row detail-file-empty";
+    empty.innerHTML = "<span>暂无文件说明，可在编辑面板中添加。</span>";
+    elements.detailsFilesList.append(empty);
+  } else {
+    for (const file of fileEntries) {
+      elements.detailsFilesList.append(renderDetailFileRow(file));
+    }
   }
 }
 
@@ -1631,8 +1813,8 @@ function renderListItem(item, isSearchResult) {
   const indicators = [];
   if (item.unread && !prefs.muted) {
     indicators.push(`<b class="unread-badge">${item.unread}</b>`);
-  } else if (item.online) {
-    indicators.push('<i class="online-dot"></i>');
+  } else {
+    indicators.push(`<i class="online-dot${item.online ? " is-online" : ""}"></i>`);
   }
   if (!isSearchResult && draft) {
     indicators.push('<span class="draft-badge">草稿</span>');
@@ -1654,18 +1836,16 @@ function renderListItem(item, isSearchResult) {
   const avatarWrap = document.createElement("div");
   avatarWrap.className = "list-item-avatar";
   avatarWrap.append(avatar);
-  if (item.online) {
-    const presence = document.createElement("i");
-    presence.className = "online-dot";
-    presence.setAttribute("aria-hidden", "true");
-    avatarWrap.append(presence);
-  }
+  const presence = document.createElement("i");
+  presence.className = `online-dot${item.online ? " is-online" : ""}`;
+  presence.setAttribute("aria-hidden", "true");
+  avatarWrap.append(presence);
 
   const meta = document.createElement("div");
   meta.className = "list-item-meta";
   meta.innerHTML = `
     <div class="list-row">
-      <strong>${escapeHtml(item.username)}</strong>
+      <strong>${escapeHtml(contactDisplayName(item.username))}</strong>
       <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "在线" : "离线")) : formatRelative(item.lastAt))}</span>
     </div>
     <div class="list-row is-subtle">
@@ -1806,7 +1986,7 @@ function renderThread(options = {}) {
   if (elements.threadSearchInput && elements.threadSearchInput.value !== state.threadSearchQuery) {
     elements.threadSearchInput.value = state.threadSearchQuery;
   }
-  elements.peerName.textContent = peer.username;
+  elements.peerName.textContent = contactDisplayName(peer.username);
   let connectionLabel = "";
   if (state.connectionState === "reconnecting") {
     connectionLabel = " · 重连中";
@@ -1873,8 +2053,6 @@ function renderThread(options = {}) {
     const slice = virtualWindow ? visibleMessages.slice(virtualWindow.start, virtualWindow.end) : visibleMessages;
     let prevMessage = null;
     let lastDayKey = "";
-    const inlineFile = !threadQuery && !virtualWindow ? contactDetailPreset(peer.username).inlineFile : null;
-    const inlineFileAfterIndex = inlineFile ? Math.min(2, Math.max(0, slice.length - 1)) : -1;
     for (let index = 0; index < slice.length; index += 1) {
       const message = slice[index];
       const dayKey = new Date(message.createdAt || 0).toDateString();
@@ -1885,9 +2063,6 @@ function renderThread(options = {}) {
       }
       const consecutive = isMessageConsecutive(prevMessage, message);
       elements.messageList.append(renderMessage(message, { consecutive }));
-      if (inlineFile && index === inlineFileAfterIndex) {
-        elements.messageList.append(renderInlineFileCard(inlineFile));
-      }
       prevMessage = message;
     }
     if (virtualWindow && virtualWindow.bottomSpacer > 0) {
@@ -1921,6 +2096,9 @@ function render() {
   setActiveNavSection(state.activeNavSection);
   renderSidebar();
   renderThread();
+  if (state.settingsDialogOpen) {
+    populateSettingsDialog();
+  }
   updateMeStatusDot(state.connectionState);
 }
 
@@ -2740,11 +2918,15 @@ async function handleUserRenamed(payload) {
   }
 
   if (state.me?.username === previousUsername) {
+    renameScopedStorageOwner(STORAGE.accountProfile, previousUsername, nextUsername);
+    renameScopedStorageOwner(STORAGE.contactProfiles, previousUsername, nextUsername);
     state.me = {
       ...state.me,
       username: nextUsername
     };
-    elements.meUsername.textContent = nextUsername;
+    if (elements.meUsername) {
+      elements.meUsername.textContent = accountDisplayName();
+    }
     setAvatar(elements.meAvatar, nextUsername);
   }
 
@@ -2757,6 +2939,11 @@ async function handleUserRenamed(payload) {
     state.drafts[nextUsername] = state.drafts[previousUsername];
     delete state.drafts[previousUsername];
     saveDrafts();
+  }
+  if (Object.prototype.hasOwnProperty.call(state.contactProfiles, previousUsername)) {
+    state.contactProfiles[nextUsername] = state.contactProfiles[previousUsername];
+    delete state.contactProfiles[previousUsername];
+    saveContactProfiles();
   }
 
   let pendingChanged = false;
@@ -3320,7 +3507,7 @@ function handleMessageListClick(event) {
   }
   const downloadButton = event.target.closest("[data-detail-action='download']");
   if (downloadButton) {
-    showToast("文件下载示例已展示，后续可接入真实附件接口");
+    showToast("当前仅保存文件说明，可按需接入真实附件下载接口");
     return;
   }
   const replyButton = event.target.closest(".message-reply-button");
@@ -3376,76 +3563,70 @@ function setPeerMutedState(peer, muted) {
   render();
 }
 
+function saveSettingsDialog() {
+  if (state.settingsDialogSection === "contact") {
+    const peer = state.activePeer;
+    if (!peer) {
+      showToast("请先选择联系人", "error");
+      return;
+    }
+    const nextProfile = normalizeContactProfile({
+      displayName: elements.contactDisplayNameInput?.value || "",
+      role: elements.contactRoleInput?.value || "",
+      about: elements.contactAboutInput?.value || "",
+      media: parseMediaInput(elements.contactMediaInput?.value || ""),
+      files: parseFileInput(elements.contactFilesInput?.value || "")
+    });
+    if (!nextProfile.displayName && !nextProfile.role && !nextProfile.about && nextProfile.media.length === 0 && nextProfile.files.length === 0) {
+      delete state.contactProfiles[peer];
+    } else {
+      state.contactProfiles[peer] = nextProfile;
+    }
+    saveContactProfiles();
+    render();
+    populateSettingsDialog();
+    showToast("联系人资料已保存");
+    return;
+  }
+
+  state.accountProfile = normalizeAccountProfile({
+    displayName: elements.accountDisplayNameInput?.value || "",
+    statusText: elements.accountStatusInput?.value || "",
+    about: elements.accountAboutInput?.value || ""
+  });
+  saveAccountProfile();
+  updateWorkspaceStatus();
+  renderThread({ scrollBehavior: "preserve" });
+  populateSettingsDialog();
+  showToast("账号信息已保存");
+}
+
+function resetSettingsDialogSection() {
+  if (state.settingsDialogSection === "contact") {
+    if (!state.activePeer) {
+      showToast("请先选择联系人", "error");
+      return;
+    }
+    delete state.contactProfiles[state.activePeer];
+    saveContactProfiles();
+    render();
+    populateSettingsDialog();
+    showToast("联系人资料已重置");
+    return;
+  }
+
+  state.accountProfile = normalizeAccountProfile({});
+  saveAccountProfile();
+  updateWorkspaceStatus();
+  renderThread({ scrollBehavior: "preserve" });
+  populateSettingsDialog();
+  showToast("账号信息已重置");
+}
+
 function setActiveNavSection(section) {
   state.activeNavSection = section === "contacts" ? "contacts" : "messages";
   elements.navMessagesButton?.classList.toggle("is-active", state.activeNavSection === "messages");
   elements.navContactsButton?.classList.toggle("is-active", state.activeNavSection === "contacts");
-  if (state.activeNavSection === "contacts") {
-    showToast("\u8054\u7cfb\u4eba\u89c6\u56fe\u5df2\u9884\u7559\uff0c\u53ef\u5148\u901a\u8fc7\u641c\u7d22\u53d1\u8d77\u4f1a\u8bdd");
-  }
-}
-
-function ensurePreviewWorkspace() {
-  if (state.me || state.previewMode || state.conversations.length > 0) {
-    return;
-  }
-  state.previewMode = true;
-  state.me = { ...PREVIEW_USER };
-  state.connectionState = "online";
-  elements.meUsername.textContent = PREVIEW_USER.username;
-  setAvatar(elements.meAvatar, PREVIEW_USER.username);
-  for (const item of PREVIEW_CONVERSATIONS) {
-    updatePeerPrefs(item.username, { pinned: item.pinned, muted: false });
-    upsertConversation({
-      username: item.username,
-      online: item.online,
-      avatarSeed: item.username,
-      previewText: item.previewText,
-      lastAt: item.lastAt,
-      unread: item.unread
-    });
-    state.messageCache.set(item.username, []);
-    rebuildConversationSearchIndex(item.username);
-  }
-  const primaryPeer = PREVIEW_CONVERSATIONS[0]?.username || "";
-  if (!primaryPeer) {
-    return;
-  }
-  const now = Date.now();
-  state.messageCache.set(primaryPeer, [
-    {
-      id: "preview-1",
-      from: primaryPeer,
-      to: PREVIEW_USER.username,
-      peer: primaryPeer,
-      mine: false,
-      text: "\u4f60\u597d\uff0c\u4eca\u5929\u7684\u4f1a\u8bae\u8d44\u6599\u51c6\u5907\u597d\u4e86\u5417\uff1f",
-      createdAt: now - 26 * 60 * 60 * 1000,
-      sendStatus: "sent"
-    },
-    {
-      id: "preview-2",
-      from: PREVIEW_USER.username,
-      to: primaryPeer,
-      peer: primaryPeer,
-      mine: true,
-      text: "\u51c6\u5907\u597d\u4e86\uff0c\u7a0d\u540e\u53d1\u4f60\u3002",
-      createdAt: now - 26 * 60 * 60 * 1000 + 60 * 1000,
-      sendStatus: "sent"
-    },
-    {
-      id: "preview-3",
-      from: PREVIEW_USER.username,
-      to: primaryPeer,
-      peer: primaryPeer,
-      mine: true,
-      text: "\u6587\u4ef6\u5df2\u53d1\u4f60\uff0c\u8bf7\u67e5\u6536\u3002",
-      createdAt: now - 10 * 60 * 1000,
-      sendStatus: "sent"
-    }
-  ]);
-  state.activePeer = primaryPeer;
-  localStorage.setItem(STORAGE.activePeer, primaryPeer);
 }
 
 function focusThreadSearch() {
@@ -3510,7 +3691,7 @@ function handleDetailActionClick(event) {
     return;
   }
   if (action === "download") {
-    showToast("文件下载示例已展示，后续可接入真实附件接口");
+    showToast("当前仅保存文件说明，可按需接入真实附件下载接口");
     return;
   }
   if (action === "call" || action === "video" || action === "more") {
@@ -3551,6 +3732,10 @@ function handleGlobalKeydown(event) {
     closeEmojiPanel();
     return;
   }
+  if (event.key === "Escape" && state.settingsDialogOpen) {
+    closeSettingsDialog();
+    return;
+  }
   if (event.key === "Escape" && state.accountMenuOpen) {
     closeAccountMenu();
     return;
@@ -3586,7 +3771,7 @@ function bindEvents() {
     void logoutAllDevices();
   });
   elements.settingsButton?.addEventListener("click", () => {
-    showToast("\u8bbe\u7f6e\u9762\u677f\u5373\u5c06\u63d0\u4f9b");
+    openSettingsDialog("account");
   });
   elements.accountMenuButton?.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -3594,7 +3779,7 @@ function bindEvents() {
   });
   elements.editAccountButton?.addEventListener("click", () => {
     closeAccountMenu();
-    showToast("\u8d26\u53f7\u4fe1\u606f\u7f16\u8f91\u529f\u80fd\u5373\u5c06\u63d0\u4f9b");
+    openSettingsDialog("account");
   });
   elements.logoutMenuButton?.addEventListener("click", () => {
     closeAccountMenu();
@@ -3649,6 +3834,27 @@ function bindEvents() {
   elements.headerVideoButton?.addEventListener("click", () => handlePresenceAction("video"));
   elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
   elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
+  elements.editContactButton?.addEventListener("click", () => {
+    if (!state.activePeer) {
+      showToast("请先选择联系人", "error");
+      return;
+    }
+    openSettingsDialog("contact");
+  });
+  elements.editMediaButton?.addEventListener("click", () => {
+    if (!state.activePeer) {
+      showToast("请先选择联系人", "error");
+      return;
+    }
+    openSettingsDialog("contact");
+  });
+  elements.editFilesButton?.addEventListener("click", () => {
+    if (!state.activePeer) {
+      showToast("请先选择联系人", "error");
+      return;
+    }
+    openSettingsDialog("contact");
+  });
   elements.contactPanel?.addEventListener("click", handleDetailActionClick);
   elements.notificationsToggle?.addEventListener("change", () => {
     if (!state.activePeer) {
@@ -3656,6 +3862,19 @@ function bindEvents() {
     }
     setPeerMutedState(state.activePeer, !elements.notificationsToggle.checked);
   });
+  elements.settingsDialogCloseButton?.addEventListener("click", closeSettingsDialog);
+  elements.settingsDialogTabs?.addEventListener("click", (event) => {
+    if (!isElementNode(event.target)) {
+      return;
+    }
+    const button = event.target.closest("[data-settings-tab]");
+    if (!button || button.hasAttribute("disabled")) {
+      return;
+    }
+    setSettingsDialogSection(button.dataset.settingsTab || "account");
+  });
+  elements.settingsSaveButton?.addEventListener("click", saveSettingsDialog);
+  elements.settingsResetButton?.addEventListener("click", resetSettingsDialogSection);
   elements.scrollBottomButton?.addEventListener("click", () => {
     scrollMessagesToBottom(true);
     state.scrollBottomNewCount = 0;
@@ -3700,6 +3919,11 @@ function bindEvents() {
     }
     if (!isElementNode(event.target) || !event.target.closest(".message-context-menu")) {
       hideMessageContextMenu();
+    }
+  });
+  elements.settingsDialog?.addEventListener("click", (event) => {
+    if (event.target === elements.settingsDialog) {
+      closeSettingsDialog();
     }
   });
   window.addEventListener("online", () => {

@@ -25,6 +25,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
+ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
 SAFE_RESET_PATHS=(
   "public/app.min.js"
   "public/admin.min.js"
@@ -141,9 +142,11 @@ ensure_admin_credentials() {
   local existing_username=""
   local existing_password=""
   local existing_hash=""
+  local existing_update_passphrase=""
   existing_username="$(read_env_value "ADMIN_USERNAME" || true)"
   existing_password="$(read_env_value "ADMIN_PASSWORD" || true)"
   existing_hash="$(read_env_value "ADMIN_PASSWORD_HASH" || true)"
+  existing_update_passphrase="$(read_env_value "ADMIN_UPDATE_PASSPHRASE" || true)"
 
   if [ -n "${existing_username}" ] && [ -n "${existing_password}" ]; then
     ADMIN_USERNAME="${existing_username}"
@@ -153,6 +156,9 @@ ensure_admin_credentials() {
 
   if [ -n "${existing_username}" ] && [ -n "${existing_hash}" ]; then
     ADMIN_USERNAME="${existing_username}"
+    if [ -n "${existing_update_passphrase}" ] && [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+      ADMIN_UPDATE_PASSPHRASE="${existing_update_passphrase}"
+    fi
     return
   fi
 
@@ -164,6 +170,10 @@ ensure_admin_credentials() {
   if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
     echo "ADMIN_PASSWORD must be 4-72 characters" >&2
     exit 1
+  fi
+
+  if [ -n "${existing_update_passphrase}" ] && [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+    ADMIN_UPDATE_PASSPHRASE="${existing_update_passphrase}"
   fi
 }
 
@@ -177,6 +187,9 @@ write_environment_file() {
     printf 'TRUST_PROXY=1\n'
     printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME}"
     printf 'ADMIN_PASSWORD=%s\n' "${ADMIN_PASSWORD}"
+    if [ -n "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+      printf 'ADMIN_UPDATE_PASSPHRASE=%s\n' "${ADMIN_UPDATE_PASSPHRASE}"
+    fi
   } > "${ENV_FILE}"
   chmod 0600 "${ENV_FILE}"
 }

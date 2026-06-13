@@ -11,6 +11,9 @@ APP_NAME="${APP_NAME:-secure-chat}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 APP_BRANCH="${APP_BRANCH:-main}"
+ENV_FILE="${ENV_FILE:-/etc/default/${APP_NAME}}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
 SAFE_RESET_PATHS=(
   "public/app.min.js"
   "public/admin.min.js"
@@ -18,6 +21,25 @@ SAFE_RESET_PATHS=(
   "public/admin.min.css"
   "public/build-manifest.json"
 )
+
+ensure_line() {
+  local key="$1"
+  local value="$2"
+  if grep -qE "^${key}=" "${ENV_FILE}" 2>/dev/null; then
+    sed -i "s|^${key}=.*$|${key}=${value}|" "${ENV_FILE}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}"
+  fi
+}
+
+normalize_environment_file() {
+  if [ ! -f "${ENV_FILE}" ]; then
+    return
+  fi
+  ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
+  ensure_line "ADMIN_PASSWORD" "${ADMIN_PASSWORD}"
+  chmod 0600 "${ENV_FILE}" 2>/dev/null || true
+}
 
 reset_safe_generated_files() {
   local path=""
@@ -73,6 +95,7 @@ reload_caddy_if_present() {
 }
 
 main() {
+  normalize_environment_file
   update_repository
   build_application
   restart_application

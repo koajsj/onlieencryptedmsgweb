@@ -253,6 +253,29 @@ label span {
   gap: 12px;
 }
 
+.admin-reset-card {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-line);
+}
+
+.admin-reset-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.admin-reset-head p {
+  margin: 8px 0 0;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+
+.admin-reset-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
 .dashboard {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
