@@ -355,6 +355,9 @@ async function api(pathname, options = {}) {
 function setLoggedIn(loggedIn) {
   elements.loginCard.hidden = loggedIn;
   elements.dashboard.hidden = !loggedIn;
+  if (loggedIn) {
+    syncMessageAuditControls();
+  }
 }
 
 function formatDateTime(value) {
@@ -744,7 +747,6 @@ function renderMessages() {
   for (const message of state.messages) {
     const article = document.createElement("article");
     article.className = "msg-item";
-    const text = message.auditText || "(无可见审计文本)";
     article.innerHTML = `
       <div class="msg-meta">
         <span>${message.from} -> ${message.to}</span>
@@ -752,7 +754,7 @@ function renderMessages() {
       </div>
       <div class="msg-text"></div>
     `;
-    article.querySelector(".msg-text").textContent = text;
+    article.querySelector(".msg-text").textContent = `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
     elements.messagesList.append(article);
   }
   elements.loadMoreMessagesButton.disabled = !state.hasMoreMessages || state.loadingMessages;
@@ -900,26 +902,23 @@ async function loadUsers() {
 function messageFilterQuery(reset) {
   const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
   const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
-  const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
   const since = dateInputToStartMs(elements.msgSinceInput.value);
   const until = dateInputToEndMs(elements.msgUntilInput.value);
-  const mask = elements.msgMaskCheckbox.checked ? "1" : "0";
   const before = !reset && state.nextBefore ? `&before=${encodeURIComponent(state.nextBefore)}` : "";
   const sinceParam = since ? `&since=${since}` : "";
   const untilParam = until ? `&until=${until}` : "";
-  return `/api/admin/messages?limit=120&from=${from}&to=${to}&q=${q}&mask=${mask}${sinceParam}${untilParam}${before}`;
+  return `/api/admin/messages?limit=120&from=${from}&to=${to}${sinceParam}${untilParam}${before}`;
 }
 
 function buildMessageExportQuery(reasonValue) {
   const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
   const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
-  const q = encodeURIComponent(String(elements.msgKeywordInput.value || "").trim());
   const since = dateInputToStartMs(elements.msgSinceInput.value);
   const until = dateInputToEndMs(elements.msgUntilInput.value);
   const reason = encodeURIComponent(String(reasonValue || "").trim());
   const sinceParam = since ? `&since=${since}` : "";
   const untilParam = until ? `&until=${until}` : "";
-  return `/api/admin/messages/export?reason=${reason}&from=${from}&to=${to}&q=${q}${sinceParam}${untilParam}`;
+  return `/api/admin/messages/export?reason=${reason}&from=${from}&to=${to}${sinceParam}${untilParam}`;
 }
 
 function resetMessageFilters() {
@@ -928,7 +927,6 @@ function resetMessageFilters() {
   elements.msgKeywordInput.value = "";
   elements.msgSinceInput.value = "";
   elements.msgUntilInput.value = "";
-  elements.msgMaskCheckbox.checked = true;
 }
 
 async function loadMessages(reset = false) {
@@ -979,6 +977,18 @@ async function refreshAll(resetMessages = true) {
   ]);
   await loadMessages(resetMessages);
   markAdminRefreshed();
+}
+
+function syncMessageAuditControls() {
+  if (elements.msgKeywordInput) {
+    elements.msgKeywordInput.value = "";
+    elements.msgKeywordInput.disabled = true;
+    elements.msgKeywordInput.placeholder = "明文关键词检索已禁用";
+  }
+  if (elements.msgMaskCheckbox) {
+    elements.msgMaskCheckbox.checked = false;
+    elements.msgMaskCheckbox.disabled = true;
+  }
 }
 
 async function login(username, password) {
@@ -1078,8 +1088,8 @@ async function exportMessages() {
     return;
   }
   const confirmed = await confirmDialog({
-    title: "导出审计内容",
-    message: "确认导出当前筛选条件下的聊天审计内容？",
+    title: "导出消息密文",
+    message: "确认导出当前筛选条件下的消息密文记录？",
     confirmLabel: "确认导出"
   });
   if (!confirmed) {

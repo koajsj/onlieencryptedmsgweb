@@ -154,6 +154,66 @@ test("server fails fast on malformed data files", async () => {
   }
 });
 
+test("existing legacy plaintext-only messages remain readable after upgrade", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-site-legacy-data-"));
+  const seeded = await startServer({ DATA_DIR: dataDir });
+  try {
+    const registerA = await postJson(seeded.port, "/api/register", {
+      username: "LegacyA",
+      password: "pass1234",
+      ...SAMPLE_BUNDLES.Alice
+    });
+    const registerB = await postJson(seeded.port, "/api/register", {
+      username: "LegacyB",
+      password: "pass1234",
+      ...SAMPLE_BUNDLES.Bob
+    });
+    assert.equal(registerA.status, 201);
+    assert.equal(registerB.status, 201);
+  } finally {
+    await seeded.stop();
+  }
+  fs.writeFileSync(
+    path.join(dataDir, "users.json"),
+    fs.readFileSync(path.join(dataDir, "users.json"), "utf8"),
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(dataDir, "messages.json"),
+    JSON.stringify([
+      {
+        id: "legacy-msg-1",
+        from: "LegacyA",
+        to: "LegacyB",
+        text: "legacy plaintext",
+        createdAt: Date.now() - 1000,
+        clientId: ""
+      }
+    ], null, 2),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(dataDir, "messages.jsonl"), "", "utf8");
+  fs.writeFileSync(path.join(dataDir, "admin_audit.jsonl"), "", "utf8");
+
+  const upgraded = await startServer({ DATA_DIR: dataDir });
+  try {
+    const login = await postJson(upgraded.port, "/api/login", {
+      username: "LegacyB",
+      password: "pass1234"
+    });
+    assert.equal(login.status, 200);
+    const { token } = await login.json();
+    const history = await getJson(upgraded.port, "/api/messages?with=LegacyA", token);
+    assert.equal(history.response.status, 200);
+    assert.equal(history.json.messages.length, 1);
+    assert.equal(history.json.messages[0].text, "legacy plaintext");
+    assert.equal(history.json.messages[0].ciphertext, undefined);
+  } finally {
+    await upgraded.stop();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 async function createEventsTicket(port, token) {
   const response = await postJson(port, "/api/events/token", {}, token);
   assert.equal(response.status, 200);
@@ -267,6 +327,14 @@ async function getJsonWithOptions(port, pathname, options = {}) {
       ...(options.cookie ? { Cookie: options.cookie } : {})
     }
   });
+  return {
+    response,
+    json: await response.json()
+  };
+}
+
+async function postJsonAndRead(port, pathname, body, token = "") {
+  const response = await postJson(port, pathname, body, token);
   return {
     response,
     json: await response.json()
@@ -678,6 +746,7 @@ test("admin can login, view stats/messages and ban users", async () => {
       aliceToken
     );
     assert.equal(message.status, 201);
+    const messageBody = await message.json();
 
     const adminLogin = await postJson(server.port, "/api/admin/login", {
       username: TEST_ADMIN_USERNAME,
@@ -723,7 +792,8 @@ test("admin can login, view stats/messages and ban users", async () => {
 
     const allMessages = await getJson(server.port, "/api/admin/messages?limit=20&mask=0", adminToken);
     assert.equal(allMessages.response.status, 200);
-    assert.ok(allMessages.json.messages.some((item) => item.auditText === "admin-visible-text"));
+    assert.ok(allMessages.json.messages.some((item) => item.auditText === null));
+    assert.ok(allMessages.json.messages.some((item) => item.ciphertext === messageBody.message.ciphertext));
 
     const banResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/AdminA`, {
       method: "PATCH",
@@ -1096,6 +1166,7 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
     );
     assert.equal(exportResponse.response.status, 200);
     assert.ok(String(exportResponse.json.content || "").includes("EXPORT WATERMARK"));
+    assert.ok(!String(exportResponse.json.content || "").includes("admin-visible-text"));
   } finally {
     await server.stop();
   }

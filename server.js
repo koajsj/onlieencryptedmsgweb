@@ -142,15 +142,11 @@ function findAdminAccount(username) {
     : null;
 }
 
-function applyAuditTextRetention() {
-  const cutoff = Date.now() - AUDIT_TEXT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+function purgeStoredMessagePlaintext() {
   let changed = false;
   for (const message of messages) {
-    if (!message.auditText) {
-      continue;
-    }
-    if (Number(message.createdAt) < cutoff) {
-      message.auditText = "";
+    if ("auditText" in message) {
+      delete message.auditText;
       changed = true;
     }
   }
@@ -287,19 +283,6 @@ function verifyAdminAuditChain() {
   return { ok: mismatches.length === 0, checked, mismatches, hmacKeySource };
 }
 
-function maskAuditText(value) {
-  const text = String(value || "");
-  if (!text) {
-    return "";
-  }
-  if (text.length <= 4) {
-    return "*".repeat(text.length);
-  }
-  const start = text.slice(0, 2);
-  const end = text.slice(-2);
-  return `${start}${"*".repeat(Math.max(2, text.length - 4))}${end}`;
-}
-
 function readJsonFile(filePath) {
   const raw = fs.readFileSync(filePath, "utf8");
   try {
@@ -357,7 +340,6 @@ function loadData() {
   }
   messages = loadedMessages.map((message) => ({
     ...message,
-    auditText: typeof message?.auditText === "string" ? message.auditText : "",
     clientId: typeof message?.clientId === "string" ? message.clientId : ""
   }));
   messages.sort((left, right) => Number(left.createdAt) - Number(right.createdAt));
@@ -1321,7 +1303,7 @@ function adminMessageView(message) {
     to: message.to,
     nonce: message.nonce,
     ciphertext: message.ciphertext,
-    auditText: String(message.auditText || ""),
+    auditText: null,
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     createdAt: message.createdAt
   };
@@ -1384,7 +1366,7 @@ function createMessageView(message, viewer) {
     peer,
     mine: message.from === viewer,
     publicKey: peerUser?.publicKey || "",
-    text: typeof message.text === "string" ? message.text : null,
+    text: typeof message.text === "string" && !message.ciphertext ? message.text : null,
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     nonce: message.nonce,
     ciphertext: message.ciphertext,
@@ -1411,7 +1393,7 @@ function buildConversationSummary(viewer, peer) {
           id: latest.id,
           from: latest.from,
           to: latest.to,
-          text: typeof latest.text === "string" ? latest.text : null,
+          text: typeof latest.text === "string" && !latest.ciphertext ? latest.text : null,
           replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
           nonce: latest.nonce,
           ciphertext: latest.ciphertext,
@@ -2409,23 +2391,25 @@ function handleAdminExportMessages(req, res, url) {
   }
   const fromFilter = String(url.searchParams.get("from") || "").trim();
   const toFilter = String(url.searchParams.get("to") || "").trim();
-  const keyword = String(url.searchParams.get("q") || "").trim().toLowerCase();
   const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
   const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
   const watermark = `EXPORT WATERMARK | admin=${session.username} | role=${session.role} | ip=${address} | at=${new Date().toISOString()} | reason=${reason}`;
   const rows = messages
     .filter((message) => (!fromFilter || message.from === fromFilter) && (!toFilter || message.to === toFilter))
     .filter((message) => (!since || Number(message.createdAt) >= since) && (!until || Number(message.createdAt) <= until))
-    .filter((message) => !keyword || String(message.auditText || "").toLowerCase().includes(keyword))
     .slice(-5000);
-  const contentRows = rows.map((message) => {
-    const text = String(message.auditText || "");
-    return `[${new Date(message.createdAt).toISOString()}] ${message.from} -> ${message.to} : ${text}`;
-  });
+  const contentRows = rows.map((message) =>
+    [
+      `[${new Date(message.createdAt).toISOString()}]`,
+      `${message.from} -> ${message.to}`,
+      `nonce=${message.nonce}`,
+      `ciphertext=${message.ciphertext}`
+    ].join(" ")
+  );
   recordAdminAction("admin_messages_export", session, req, {
     reason,
     count: rows.length,
-    filters: { fromFilter, toFilter, keyword, since, until }
+    filters: { fromFilter, toFilter, since, until }
   });
   sendJson(res, 200, {
     filename: `admin-export-${Date.now()}.txt`,
@@ -2455,14 +2439,11 @@ function handleAdminMessages(req, res, url) {
   const beforeCursor = parseMessageCursor(url.searchParams.get("before"));
   const fromFilter = String(url.searchParams.get("from") || "").trim();
   const toFilter = String(url.searchParams.get("to") || "").trim();
-  const keyword = String(url.searchParams.get("q") || "").trim().toLowerCase();
   const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
   const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
-  const mask = String(url.searchParams.get("mask") || "1") !== "0";
   const allMessages = [...messages]
     .filter((message) => (!fromFilter || message.from === fromFilter) && (!toFilter || message.to === toFilter))
     .filter((message) => (!since || Number(message.createdAt) >= since) && (!until || Number(message.createdAt) <= until))
-    .filter((message) => !keyword || String(message.auditText || "").toLowerCase().includes(keyword))
     .sort((left, right) => left.createdAt - right.createdAt);
   let cutoffIndex = allMessages.length;
   if (beforeCursor?.id) {
@@ -2476,11 +2457,7 @@ function handleAdminMessages(req, res, url) {
   const items = hasMore ? filtered.slice(filtered.length - limit) : filtered;
   const nextBefore = hasMore && items.length > 0 ? encodeMessageCursor(items[0]) : "";
   sendJson(res, 200, {
-    messages: items.map((message) => {
-      const row = adminMessageView(message);
-      row.auditText = mask ? maskAuditText(row.auditText) : row.auditText;
-      return row;
-    }),
+    messages: items.map((message) => adminMessageView(message)),
     hasMore,
     nextBefore
   });
@@ -2701,7 +2678,6 @@ async function handleSendMessage(req, res, url) {
   const peer = findUserByUsername(body.to);
   const nonce = String(body.nonce || "").trim();
   const ciphertext = String(body.ciphertext || "").trim();
-  const auditText = normalizeMessageText(body.text);
   const clientId = normalizeClientId(body.clientId);
   const replyToId = String(body.replyToId || "").trim();
   if (!peer || peer.username === session.username) {
@@ -2741,10 +2717,6 @@ async function handleSendMessage(req, res, url) {
     sendJson(res, 400, { error: "invalid message payload" });
     return;
   }
-  if (auditText.length > 4000) {
-    sendJson(res, 400, { error: "message text too long" });
-    return;
-  }
   const replyTo = resolveReplyTarget(session.username, peer.username, replyToId);
   if (replyToId && !replyTo) {
     sendJson(res, 400, { error: "reply target not found" });
@@ -2758,7 +2730,6 @@ async function handleSendMessage(req, res, url) {
     to: peer.username,
     nonce,
     ciphertext,
-    auditText,
     createdAt: Date.now(),
     replyToId: replyTo?.id || "",
     replyTo
@@ -2912,7 +2883,7 @@ function serveStatic(req, res, url) {
 
 try {
   loadData();
-  applyAuditTextRetention();
+  purgeStoredMessagePlaintext();
   loadAdminAuditState();
   void accessLogStore.ready.catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
@@ -2934,7 +2905,7 @@ setInterval(cleanRateBuckets, RATE_WINDOW_MS).unref();
 setInterval(cleanSessions, Math.min(5 * 60 * 1000, SESSION_TTL_MS)).unref();
 setInterval(cleanEventTickets, EVENT_TICKET_TTL_MS).unref();
 setInterval(cleanAdminLoginFailures, ADMIN_LOGIN_FAILURE_WINDOW_MS).unref();
-setInterval(applyAuditTextRetention, 60 * 60 * 1000).unref();
+setInterval(purgeStoredMessagePlaintext, 60 * 60 * 1000).unref();
 
 const server = http.createServer((req, res) => {
   const url = parseRequestUrl(req);

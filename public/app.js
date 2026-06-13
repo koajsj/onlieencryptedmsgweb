@@ -855,6 +855,10 @@ function buildReplyTarget(message) {
   };
 }
 
+function messagePlaintext(message) {
+  return typeof message?.text === "string" ? message.text : "";
+}
+
 function threadMessageMatchesQuery(message, query) {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   if (!normalizedQuery) {
@@ -1963,7 +1967,7 @@ function renderMessage(message, options = {}) {
   const isConsecutive = options.consecutive ? " is-consecutive" : "";
   article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${message.recalled ? " is-recalled" : ""}${isConsecutive}`;
   article.dataset.messageId = message.id || message.tempId || "";
-  article.dataset.messageText = message.text;
+  article.dataset.messageText = messagePlaintext(message);
   article.dataset.mine = message.mine ? "1" : "0";
   const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || message.tempId || "")}">\u56de\u590d</button>`;
   let statusAction = "";
@@ -1987,7 +1991,7 @@ function renderMessage(message, options = {}) {
     : "";
   const bubbleMarkup = message.recalled
     ? `<div class="bubble bubble-recalled">\u4f60\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f</div>`
-    : `<div class="bubble">${escapeHtml(message.text).replaceAll("\n", "<br />")}</div>`;
+    : `<div class="bubble">${escapeHtml(messagePlaintext(message)).replaceAll("\n", "<br />")}</div>`;
   const metaParts = [escapeHtml(formatTime(message.createdAt))];
   if (statusAction && !message.recalled) metaParts.push(statusAction);
   if (!message.recalled && (!isConsecutive || !message.mine)) {
@@ -2423,8 +2427,8 @@ async function decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPe
 
 async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "") {
   let text = "";
-  if (typeof message.text === "string" && !message.ciphertext) {
-    text = message.text;
+  if (!message?.ciphertext || !message?.nonce) {
+    text = messagePlaintext(message);
   } else {
     try {
       text = await decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPeer);
@@ -3079,7 +3083,7 @@ async function ingestEncryptedMessage(message) {
       to: message.to,
       peer,
       mine: message.mine,
-      text: String(message.text || "[无法解密]"),
+      text: "[无法解密]",
       createdAt: message.createdAt
     };
   }
@@ -3109,7 +3113,6 @@ async function ingestEncryptedMessage(message) {
       id: message.id,
       from: message.from,
       to: message.to,
-      text: decrypted.text,
       nonce: message.nonce,
       ciphertext: message.ciphertext,
       createdAt: message.createdAt
@@ -3345,7 +3348,6 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
       method: "POST",
       body: {
         to: peer,
-        text,
         clientId,
         replyToId,
         nonce: encrypted.nonce,
