@@ -10,4 +10,5 @@ data/messages.json
 data/message-key.json
 data/*.json
 data/*.jsonl
+data/*.sqlite*
 !data/.gitkeep
