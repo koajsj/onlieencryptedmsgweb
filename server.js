@@ -5,6 +5,8 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { promisify } = require("node:util");
+const { createAccessLogMiddleware } = require("./middleware/access-log");
+const { createAccessLogStore } = require("./services/access-log-store");
 
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.PORT || "3000", 10);
@@ -36,6 +38,7 @@ const MESSAGE_PERSIST_DEBOUNCE_MS = Math.max(
 const HSTS_MAX_AGE_SECONDS = Math.max(0, Number.parseInt(process.env.HSTS_MAX_AGE_SECONDS || "0", 10) || 0);
 const COOKIE_SECURE =
   process.env.COOKIE_SECURE === "1" || (process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "0");
+const ENABLE_ACCESS_LOG = process.env.ENABLE_ACCESS_LOG !== "0";
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const DEFAULT_ADMIN_USERNAME_VALUE = "admin";
@@ -161,6 +164,20 @@ const ADMIN_AUDIT_SHA_ALGO = "sha256";
 const ADMIN_AUDIT_HMAC_DOMAIN = "secure-chat/admin-audit-hmac-v1";
 let adminConfig = readConfiguredAdminConfig();
 const adminAuditHmacKeyState = readAuditHmacKeyState(adminConfig.credential);
+const accessLogStore = createAccessLogStore({
+  dataDir: DATA_DIR,
+  enabled: ENABLE_ACCESS_LOG,
+  logger: (error) => {
+    console.error(`[access-log] ${error instanceof Error ? error.message : String(error)}`);
+  }
+});
+const accessLogMiddleware = createAccessLogMiddleware({
+  enabled: ENABLE_ACCESS_LOG,
+  store: accessLogStore,
+  cookieSecure: COOKIE_SECURE,
+  getClientAddress,
+  getSession: getSessionFromRequest
+});
 
 function getAuditHmacKey() {
   return adminAuditHmacKeyState;
@@ -1220,6 +1237,7 @@ function fileSizeBytes(filePath) {
 }
 
 function adminHealthSnapshot() {
+  const accessLogHealth = accessLogStore.healthSnapshot();
   return {
     ok: true,
     startedAt: serverStartedAt,
@@ -1229,7 +1247,8 @@ function adminHealthSnapshot() {
       usersBytes: fileSizeBytes(USERS_FILE),
       messagesBytes: fileSizeBytes(MESSAGES_FILE),
       messagesLogBytes: fileSizeBytes(MESSAGES_LOG_FILE),
-      adminAuditBytes: fileSizeBytes(ADMIN_AUDIT_FILE)
+      adminAuditBytes: fileSizeBytes(ADMIN_AUDIT_FILE),
+      accessLogDbBytes: Number(accessLogHealth.dbBytes || 0)
     },
     runtime: {
       users: users.length,
@@ -1237,8 +1256,10 @@ function adminHealthSnapshot() {
       sessions: sessions.size,
       onlineUsers: listOnlineUsers().length,
       pendingMessageAppends: pendingMessageAppends.length,
-      messagesDirty
-    }
+      messagesDirty,
+      accessLogQueue: Number(accessLogHealth.pendingQueue || 0)
+    },
+    accessLogs: accessLogHealth
   };
 }
 
@@ -1712,6 +1733,7 @@ async function handleRegister(req, res) {
   persistUsers();
 
   const token = createSession(user.username);
+  accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 201, {
     token,
     user: publicUser(user),
@@ -1768,6 +1790,7 @@ async function handleLogin(req, res) {
   }
 
   const token = createSession(user.username);
+  accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 200, {
     token,
     user: publicUser(user),
@@ -1889,6 +1912,7 @@ async function handleAdminLogin(req, res) {
   }
   clearAdminLoginFailures(account.username);
   const token = createSession(account.username, "admin");
+  accessLogMiddleware.setUserId(req, account.username);
   recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
     token,
@@ -1899,6 +1923,25 @@ async function handleAdminLogin(req, res) {
   }, {
     "Set-Cookie": sessionCookieHeader(ADMIN_SESSION_COOKIE, token)
   });
+}
+
+function normalizeClientMetaPayload(body) {
+  return {
+    language: String(body?.language || "").trim().slice(0, 24),
+    screenResolution: String(body?.screenResolution || body?.screen_resolution || "").trim().slice(0, 32),
+    timezone: String(body?.timezone || "").trim().slice(0, 64),
+    platform: String(body?.platform || "").trim().slice(0, 48)
+  };
+}
+
+function readAccessLogFilters(url) {
+  return {
+    ip: String(url.searchParams.get("ip") || "").trim(),
+    userId: String(url.searchParams.get("userId") || url.searchParams.get("user_id") || "").trim(),
+    sessionId: String(url.searchParams.get("sessionId") || url.searchParams.get("session_id") || "").trim(),
+    since: Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0,
+    until: Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0
+  };
 }
 
 async function handleAdminAccountReset(req, res) {
@@ -2443,6 +2486,113 @@ function handleAdminMessages(req, res, url) {
   });
 }
 
+async function handleClientMeta(req, res, url) {
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:client-meta:${address}`,
+      Math.max(30, Math.floor(MAX_API_REQUESTS_PER_WINDOW / 2)),
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJson(res, error?.message === "body too large" ? 413 : 400, {
+      error: error?.message === "body too large" ? "body too large" : "invalid json"
+    });
+    return;
+  }
+  const meta = normalizeClientMetaPayload(body);
+  const sessionId = accessLogMiddleware.getSessionId(req);
+  if (sessionId && ENABLE_ACCESS_LOG) {
+    accessLogStore.enqueueClientMeta(sessionId, meta);
+  }
+  const session = getSessionFromRequest(req, url);
+  if (session?.username) {
+    accessLogMiddleware.setUserId(req, session.username);
+  }
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleAdminAccessSummary(req, res, url) {
+  const session = requireAdminPermission(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:admin:access-summary:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  sendJson(res, 200, {
+    summary: await accessLogStore.getDashboardSummary()
+  });
+}
+
+async function handleAdminAccessLogs(req, res, url) {
+  const session = requireAdminPermission(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:admin:access-logs:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const filters = readAccessLogFilters(url);
+  const page = parsePositiveInteger(url.searchParams.get("page"), 1, 1, 99999);
+  const limit = parsePositiveInteger(url.searchParams.get("limit"), 50, 1, 200);
+  const payload = await accessLogStore.getAccessLogs({
+    ...filters,
+    page,
+    limit
+  });
+  sendJson(res, 200, payload);
+}
+
+async function handleAdminAccessProfile(req, res, url) {
+  const session = requireAdminPermission(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:admin:access-profile:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const profile = await accessLogStore.getVisitorProfile(readAccessLogFilters(url));
+  sendJson(res, 200, {
+    profile
+  });
+}
+
 function handleUsers(req, res, url) {
   const session = requireSession(req, res, url);
   if (!session) {
@@ -2764,6 +2914,10 @@ try {
   loadData();
   applyAuditTextRetention();
   loadAdminAuditState();
+  void accessLogStore.ready.catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
   const auditCheck = verifyAdminAuditChain();
   if (!auditCheck.ok) {
     console.warn(
@@ -2788,16 +2942,28 @@ const server = http.createServer((req, res) => {
     sendJson(res, 400, { error: "invalid request url" });
     return;
   }
+  accessLogMiddleware.begin(req, res, url);
   const pathname = url.pathname;
 
   if (req.method === "GET" && pathname === "/health") {
+    const accessLogHealth = accessLogStore.healthSnapshot();
     sendJson(res, 200, {
       ok: true,
       users: users.length,
       messages: messages.length,
       onlineUsers: listOnlineUsers().length,
-      sessions: sessions.size
+      sessions: sessions.size,
+      accessLogs: {
+        enabled: accessLogHealth.enabled,
+        dbBytes: accessLogHealth.dbBytes,
+        pendingQueue: accessLogHealth.pendingQueue
+      }
     });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/client-meta") {
+    void handleClientMeta(req, res, url);
     return;
   }
 
@@ -2851,6 +3017,18 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && pathname === "/api/admin/audit") {
     handleAdminAuditLogs(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/admin/access/summary") {
+    void handleAdminAccessSummary(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/admin/access/logs") {
+    void handleAdminAccessLogs(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/admin/access/profile") {
+    void handleAdminAccessProfile(req, res, url);
     return;
   }
 

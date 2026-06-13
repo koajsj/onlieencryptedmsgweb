@@ -237,9 +237,35 @@ async function postJson(port, pathname, body, token = "") {
   });
 }
 
+async function postJsonWithOptions(port, pathname, body, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+    ...(options.cookie ? { Cookie: options.cookie } : {})
+  };
+  return fetch(`http://127.0.0.1:${port}${pathname}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+}
+
 async function getJson(port, pathname, token = "") {
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {}
+  });
+  return {
+    response,
+    json: await response.json()
+  };
+}
+
+async function getJsonWithOptions(port, pathname, options = {}) {
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+    headers: {
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...(options.cookie ? { Cookie: options.cookie } : {})
+    }
   });
   return {
     response,
@@ -1070,6 +1096,86 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
     );
     assert.equal(exportResponse.response.status, 200);
     assert.ok(String(exportResponse.json.content || "").includes("EXPORT WATERMARK"));
+  } finally {
+    await server.stop();
+  }
+});
+
+test("access log collection stores client metadata and exposes admin analytics", async () => {
+  const server = await startServer({
+    ENABLE_ACCESS_LOG: "1"
+  });
+
+  try {
+    const landing = await fetch(`http://127.0.0.1:${server.port}/`);
+    assert.equal(landing.status, 200);
+    const accessCookie = String(landing.headers.get("set-cookie") || "")
+      .split(",")
+      .find((item) => item.includes("secure_chat_visit="))?.split(";")[0] || "";
+    assert.match(accessCookie, /secure_chat_visit=/);
+
+    const metaResponse = await postJsonWithOptions(
+      server.port,
+      "/api/client-meta",
+      {
+        language: "zh-CN",
+        screenResolution: "1440x900",
+        timezone: "Asia/Shanghai",
+        platform: "Windows"
+      },
+      {
+        cookie: accessCookie
+      }
+    );
+    assert.equal(metaResponse.status, 200);
+
+    const register = await postJsonWithOptions(
+      server.port,
+      "/api/register",
+      {
+        username: "VisitorA",
+        password: "pass1234",
+        ...SAMPLE_BUNDLES.Alice
+      },
+      {
+        cookie: accessCookie
+      }
+    );
+    assert.equal(register.status, 201);
+    const registerBody = await register.json();
+
+    const conversations = await getJsonWithOptions(server.port, "/api/conversations", {
+      token: registerBody.token,
+      cookie: accessCookie
+    });
+    assert.equal(conversations.response.status, 200);
+
+    const adminLogin = await postJson(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    });
+    assert.equal(adminLogin.status, 200);
+    const adminToken = (await adminLogin.json()).token;
+
+    await delay(250);
+
+    const summary = await getJson(server.port, "/api/admin/access/summary", adminToken);
+    assert.equal(summary.response.status, 200);
+    assert.ok(summary.json.summary.totals.logRows >= 3);
+    assert.ok(summary.json.summary.totals.pageViews >= 1);
+    assert.ok(summary.json.summary.topPages.some((row) => row.path === "/"));
+
+    const logs = await getJson(server.port, "/api/admin/access/logs?sessionId=" + encodeURIComponent(accessCookie.split("=")[1]), adminToken);
+    assert.equal(logs.response.status, 200);
+    assert.ok(logs.json.rows.length >= 1);
+    assert.ok(logs.json.rows.some((row) => row.language === "zh-CN"));
+    assert.ok(logs.json.rows.some((row) => row.userId === "VisitorA"));
+
+    const profile = await getJson(server.port, "/api/admin/access/profile?userId=VisitorA", adminToken);
+    assert.equal(profile.response.status, 200);
+    assert.equal(profile.json.profile.userId, "VisitorA");
+    assert.ok(profile.json.profile.visits >= 1);
+    assert.equal(profile.json.profile.clientMeta.language, "zh-CN");
   } finally {
     await server.stop();
   }

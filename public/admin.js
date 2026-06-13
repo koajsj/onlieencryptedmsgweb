@@ -22,6 +22,22 @@ const elements = {
   currentIpText: document.querySelector("#currentIpText"),
   statsGrid: document.querySelector("#statsGrid"),
   healthGrid: document.querySelector("#healthGrid"),
+  accessOverviewGrid: document.querySelector("#accessOverviewGrid"),
+  accessTrend: document.querySelector("#accessTrend"),
+  accessTopPages: document.querySelector("#accessTopPages"),
+  accessTopIps: document.querySelector("#accessTopIps"),
+  accessIpInput: document.querySelector("#accessIpInput"),
+  accessUserIdInput: document.querySelector("#accessUserIdInput"),
+  accessSessionInput: document.querySelector("#accessSessionInput"),
+  accessSinceInput: document.querySelector("#accessSinceInput"),
+  accessUntilInput: document.querySelector("#accessUntilInput"),
+  applyAccessFilterButton: document.querySelector("#applyAccessFilterButton"),
+  resetAccessFilterButton: document.querySelector("#resetAccessFilterButton"),
+  accessProfileList: document.querySelector("#accessProfileList"),
+  accessLogsPager: document.querySelector("#accessLogsPager"),
+  prevAccessLogsPageButton: document.querySelector("#prevAccessLogsPageButton"),
+  nextAccessLogsPageButton: document.querySelector("#nextAccessLogsPageButton"),
+  accessLogsTbody: document.querySelector("#accessLogsTbody"),
   userSearchInput: document.querySelector("#userSearchInput"),
   userStatusSelect: document.querySelector("#userStatusSelect"),
   userSortSelect: document.querySelector("#userSortSelect"),
@@ -59,6 +75,7 @@ const elements = {
 };
 
 const ADMIN_TOKEN_STORAGE_KEY = "secure_chat_admin_token";
+const CLIENT_META_SENT_STORAGE_KEY = "secure_chat_client_meta_sent_v1";
 
 const state = {
   token: "",
@@ -66,6 +83,12 @@ const state = {
   dashboard: null,
   stats: {},
   health: null,
+  accessSummary: null,
+  accessLogs: [],
+  accessLogsPage: 1,
+  accessLogsLimit: 25,
+  accessLogsTotal: 0,
+  accessProfile: null,
   users: [],
   usersPage: 1,
   usersLimit: 30,
@@ -102,6 +125,11 @@ function resetAdminState(showLogin = false) {
   state.dashboard = null;
   state.stats = {};
   state.health = null;
+  state.accessSummary = null;
+  state.accessLogs = [];
+  state.accessLogsPage = 1;
+  state.accessLogsTotal = 0;
+  state.accessProfile = null;
   state.users = [];
   state.usersTotal = 0;
   state.selectedUsers.clear();
@@ -136,6 +164,50 @@ function persistAdminToken(token) {
     }
   } catch (error) {
     // Ignore storage failures and continue with the in-memory token.
+  }
+}
+
+function scheduleClientMetaReport() {
+  const run = () => {
+    void reportClientMetaOnce();
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(run, { timeout: 1200 });
+    return;
+  }
+  window.setTimeout(run, 60);
+}
+
+async function reportClientMetaOnce() {
+  try {
+    if (window.localStorage.getItem(CLIENT_META_SENT_STORAGE_KEY) === "1") {
+      return;
+    }
+  } catch (error) {
+    return;
+  }
+  const payload = {
+    language: navigator.language || "",
+    screenResolution:
+      window.screen && Number(window.screen.width) > 0 && Number(window.screen.height) > 0
+        ? `${window.screen.width}x${window.screen.height}`
+        : "",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    platform: navigator.userAgentData?.platform || navigator.platform || ""
+  };
+  try {
+    await fetch("/api/client-meta", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      keepalive: true,
+      body: JSON.stringify(payload)
+    });
+    window.localStorage.setItem(CLIENT_META_SENT_STORAGE_KEY, "1");
+  } catch (error) {
+    // Ignore silent telemetry errors.
   }
 }
 
@@ -459,6 +531,176 @@ function renderHealth() {
   }
 }
 
+function renderRankList(container, rows, valueKey, labelKey, suffix = "") {
+  container.textContent = "";
+  if (!rows || rows.length === 0) {
+    const empty = document.createElement("article");
+    empty.className = "empty-state";
+    empty.textContent = "暂无访问数据";
+    container.append(empty);
+    return;
+  }
+  const maxValue = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
+  for (const row of rows) {
+    const item = document.createElement("article");
+    item.className = "rank-item";
+    const value = Number(row[valueKey] || 0);
+    const label = escapeHtml(row[labelKey] || "-");
+    const meta = row.meta ? `<div class="rank-meta">${escapeHtml(row.meta)}</div>` : "";
+    item.innerHTML = `
+      <div class="rank-head">
+        <strong title="${label}">${label}</strong>
+        <span>${value}${suffix}</span>
+      </div>
+      <div class="bar-track"><span class="bar-fill" style="width:${Math.max(8, Math.round((value / maxValue) * 100))}%"></span></div>
+      ${meta}
+    `;
+    container.append(item);
+  }
+}
+
+function renderTrendList(container, rows) {
+  container.textContent = "";
+  if (!rows || rows.length === 0) {
+    const empty = document.createElement("article");
+    empty.className = "empty-state";
+    empty.textContent = "最近 7 天暂无页面访问";
+    container.append(empty);
+    return;
+  }
+  const maxValue = Math.max(1, ...rows.map((row) => Number(row.pv || 0)));
+  for (const row of rows) {
+    const item = document.createElement("article");
+    item.className = "trend-item";
+    const pv = Number(row.pv || 0);
+    const uv = Number(row.uv || 0);
+    item.innerHTML = `
+      <div class="trend-head">
+        <strong>${escapeHtml(row.label || "-")}</strong>
+        <span>${pv} PV / ${uv} UV</span>
+      </div>
+      <div class="bar-track"><span class="bar-fill" style="width:${Math.max(8, Math.round((pv / maxValue) * 100))}%"></span></div>
+      <div class="trend-meta">会话数 ${uv}</div>
+    `;
+    container.append(item);
+  }
+}
+
+function renderAccessSummary() {
+  elements.accessOverviewGrid.textContent = "";
+  const summary = state.accessSummary;
+  if (!summary) {
+    renderTrendList(elements.accessTrend, []);
+    renderRankList(elements.accessTopPages, [], "pv", "path");
+    renderRankList(elements.accessTopIps, [], "hits", "ip");
+    return;
+  }
+  const cards = [
+    ["总页面 PV", summary.totals?.pageViews || 0],
+    ["总页面 UV", summary.totals?.uniqueVisitors || 0],
+    ["近 24 小时 PV", summary.totals?.pageViews24h || 0],
+    ["近 24 小时 UV", summary.totals?.uniqueVisitors24h || 0]
+  ];
+  for (const [label, value] of cards) {
+    const card = document.createElement("article");
+    card.className = "overview-card";
+    card.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong>`;
+    elements.accessOverviewGrid.append(card);
+  }
+  renderTrendList(elements.accessTrend, summary.trend || []);
+  renderRankList(
+    elements.accessTopPages,
+    (summary.topPages || []).map((row) => ({
+      ...row,
+      meta: `页面访问 ${row.pv || 0} 次`
+    })),
+    "pv",
+    "path"
+  );
+  renderRankList(
+    elements.accessTopIps,
+    (summary.topIps || []).map((row) => ({
+      ...row,
+      meta: `${row.attribution || "未知"} · ${row.uv || 0} 个会话`
+    })),
+    "hits",
+    "ip"
+  );
+}
+
+function renderAccessProfile() {
+  elements.accessProfileList.textContent = "";
+  const profile = state.accessProfile;
+  if (!profile) {
+    const empty = document.createElement("article");
+    empty.className = "empty-state";
+    empty.textContent = "输入 IP、用户ID 或会话ID 后可查看访问画像";
+    elements.accessProfileList.append(empty);
+    return;
+  }
+  const items = [
+    { title: "首次访问", meta: formatDateTime(profile.firstVisitAt) },
+    { title: "最近访问", meta: formatDateTime(profile.lastVisitAt) },
+    { title: "访问次数", meta: `${profile.visits || 0} 次` },
+    {
+      title: "访问主体",
+      meta: `用户ID ${profile.userId || "-"} · 会话 ${profile.sessionId || "-"}`
+    },
+    {
+      title: "访问设备",
+      meta: `${profile.clientMeta?.browser || "-"} · ${profile.clientMeta?.os || "-"} · ${profile.clientMeta?.deviceType || "-"}`
+    },
+    {
+      title: "环境信息",
+      meta: `${profile.clientMeta?.language || "-"} · ${profile.clientMeta?.screenResolution || "-"} · ${profile.clientMeta?.timezone || "-"}`
+    },
+    {
+      title: "IP 属性",
+      meta: `${profile.ip || "-"} · ${profile.ipAttribution || "未知"}`
+    }
+  ];
+  for (const item of items) {
+    const article = document.createElement("article");
+    article.className = "detail-item";
+    article.innerHTML = `<strong>${escapeHtml(item.title)}</strong><div class="detail-item-meta">${escapeHtml(item.meta)}</div>`;
+    elements.accessProfileList.append(article);
+  }
+  if (Array.isArray(profile.topPages) && profile.topPages.length > 0) {
+    const wrapper = document.createElement("article");
+    wrapper.className = "detail-item";
+    const rows = profile.topPages.map((row) => `${row.path} (${row.hits})`).join(" | ");
+    wrapper.innerHTML = `<strong>常访问页面</strong><div class="detail-item-meta">${escapeHtml(rows)}</div>`;
+    elements.accessProfileList.append(wrapper);
+  }
+}
+
+function renderAccessLogs() {
+  elements.accessLogsTbody.textContent = "";
+  if (state.accessLogs.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="7"><div class="empty-state">当前筛选条件下没有访问日志</div></td>`;
+    elements.accessLogsTbody.append(tr);
+  } else {
+    for (const row of state.accessLogs) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${formatDateTime(row.createdAt)}</td>
+        <td>${escapeHtml(row.userId || "-")}</td>
+        <td title="${escapeHtml(row.sessionId || "-")}">${escapeHtml(row.sessionId || "-")}</td>
+        <td><div class="access-log-path"><strong>${escapeHtml(row.ip || "-")}</strong><span class="access-log-subtle">${escapeHtml(row.ipAttribution || "未知")}</span></div></td>
+        <td><div class="access-log-path"><strong>${escapeHtml(`${row.method || "GET"} ${row.path || "/"}`)}</strong><span class="access-log-subtle">${escapeHtml(row.requestKind || "other")} · ${escapeHtml(String(row.statusCode || 0))}</span></div></td>
+        <td><div class="access-log-path"><strong>${escapeHtml(row.browser || "-")}</strong><span class="access-log-subtle">${escapeHtml(row.os || "-")} · ${escapeHtml(row.deviceType || "-")}</span></div></td>
+        <td>${escapeHtml(`${row.requestTimeMs || 0} ms`)}</td>
+      `;
+      elements.accessLogsTbody.append(tr);
+    }
+  }
+  const totalPages = Math.max(1, Math.ceil(state.accessLogsTotal / state.accessLogsLimit));
+  elements.accessLogsPager.textContent = `第 ${state.accessLogsPage}/${totalPages} 页，共 ${state.accessLogsTotal} 条`;
+  elements.prevAccessLogsPageButton.disabled = state.accessLogsPage <= 1;
+  elements.nextAccessLogsPageButton.disabled = state.accessLogsPage >= totalPages;
+}
+
 function renderUsers() {
   elements.usersTbody.textContent = "";
   for (const user of state.users) {
@@ -582,6 +824,61 @@ async function loadHealth() {
   markAdminRefreshed();
 }
 
+function accessFilterQuery(page = state.accessLogsPage) {
+  const ip = encodeURIComponent(String(elements.accessIpInput.value || "").trim());
+  const userId = encodeURIComponent(String(elements.accessUserIdInput.value || "").trim());
+  const sessionId = encodeURIComponent(String(elements.accessSessionInput.value || "").trim());
+  const since = dateInputToStartMs(elements.accessSinceInput.value);
+  const until = dateInputToEndMs(elements.accessUntilInput.value);
+  const sinceParam = since ? `&since=${since}` : "";
+  const untilParam = until ? `&until=${until}` : "";
+  return `/api/admin/access/logs?page=${page}&limit=${state.accessLogsLimit}&ip=${ip}&userId=${userId}&sessionId=${sessionId}${sinceParam}${untilParam}`;
+}
+
+function accessProfileQuery() {
+  const ip = encodeURIComponent(String(elements.accessIpInput.value || "").trim());
+  const userId = encodeURIComponent(String(elements.accessUserIdInput.value || "").trim());
+  const sessionId = encodeURIComponent(String(elements.accessSessionInput.value || "").trim());
+  const since = dateInputToStartMs(elements.accessSinceInput.value);
+  const until = dateInputToEndMs(elements.accessUntilInput.value);
+  const sinceParam = since ? `&since=${since}` : "";
+  const untilParam = until ? `&until=${until}` : "";
+  return `/api/admin/access/profile?ip=${ip}&userId=${userId}&sessionId=${sessionId}${sinceParam}${untilParam}`;
+}
+
+async function loadAccessSummary() {
+  if (!hasPermission("admin:read")) {
+    return;
+  }
+  const payload = await api("/api/admin/access/summary");
+  state.accessSummary = payload.summary || null;
+  renderAccessSummary();
+  markAdminRefreshed();
+}
+
+async function loadAccessLogs() {
+  if (!hasPermission("admin:read")) {
+    return;
+  }
+  const payload = await api(accessFilterQuery(state.accessLogsPage));
+  state.accessLogs = payload.rows || [];
+  state.accessLogsTotal = Number(payload.total || 0);
+  state.accessLogsPage = Number(payload.page || state.accessLogsPage);
+  state.accessLogsLimit = Number(payload.limit || state.accessLogsLimit);
+  renderAccessLogs();
+  markAdminRefreshed();
+}
+
+async function loadAccessProfile() {
+  if (!hasPermission("admin:read")) {
+    return;
+  }
+  const payload = await api(accessProfileQuery());
+  state.accessProfile = payload.profile || null;
+  renderAccessProfile();
+  markAdminRefreshed();
+}
+
 async function loadUsers() {
   if (!hasPermission("admin:read")) {
     return;
@@ -670,7 +967,16 @@ async function loadAuditLogs() {
 }
 
 async function refreshAll(resetMessages = true) {
-  await Promise.all([loadDashboardStats(), loadStats(), loadHealth(), loadUsers(), loadAuditLogs()]);
+  await Promise.all([
+    loadDashboardStats(),
+    loadStats(),
+    loadHealth(),
+    loadAccessSummary(),
+    loadAccessLogs(),
+    loadAccessProfile(),
+    loadUsers(),
+    loadAuditLogs()
+  ]);
   await loadMessages(resetMessages);
   markAdminRefreshed();
 }
@@ -972,6 +1278,54 @@ function bindEvents() {
     }
   });
 
+  elements.applyAccessFilterButton.addEventListener("click", async () => {
+    state.accessLogsPage = 1;
+    try {
+      await Promise.all([loadAccessLogs(), loadAccessProfile()]);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.resetAccessFilterButton.addEventListener("click", async () => {
+    elements.accessIpInput.value = "";
+    elements.accessUserIdInput.value = "";
+    elements.accessSessionInput.value = "";
+    elements.accessSinceInput.value = "";
+    elements.accessUntilInput.value = "";
+    state.accessLogsPage = 1;
+    try {
+      await Promise.all([loadAccessLogs(), loadAccessProfile()]);
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.prevAccessLogsPageButton.addEventListener("click", async () => {
+    if (state.accessLogsPage <= 1) {
+      return;
+    }
+    state.accessLogsPage -= 1;
+    try {
+      await loadAccessLogs();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.nextAccessLogsPageButton.addEventListener("click", async () => {
+    const totalPages = Math.max(1, Math.ceil(state.accessLogsTotal / state.accessLogsLimit));
+    if (state.accessLogsPage >= totalPages) {
+      return;
+    }
+    state.accessLogsPage += 1;
+    try {
+      await loadAccessLogs();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
   elements.applyUserFilterButton.addEventListener("click", async () => {
     state.usersPage = 1;
     try {
@@ -1096,6 +1450,22 @@ function bindEvents() {
       elements.applyMsgFilterButton.click();
     });
   }
+
+  for (const input of [
+    elements.accessIpInput,
+    elements.accessUserIdInput,
+    elements.accessSessionInput,
+    elements.accessSinceInput,
+    elements.accessUntilInput
+  ]) {
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      elements.applyAccessFilterButton.click();
+    });
+  }
 }
 
 function syncPermissionUi() {
@@ -1111,6 +1481,7 @@ function syncPermissionUi() {
 
 async function boot() {
   bindEvents();
+  scheduleClientMetaReport();
   elements.resetUsernameInput.value = "admin";
   state.token = readStoredAdminToken();
   try {

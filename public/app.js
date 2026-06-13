@@ -17,6 +17,7 @@ const PRIVATE_KEY_ITERATIONS = 150000;
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
 const MESSAGE_VIRTUAL_THRESHOLD = 140;
 const MESSAGE_VIRTUAL_OVERSCAN = 480;
+const CLIENT_META_SENT_STORAGE_KEY = "secure_chat_client_meta_sent_v1";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -235,6 +236,50 @@ function persistSessionAuthToken(token) {
     }
   } catch (error) {
     // Ignore sessionStorage failures and continue with cookie auth.
+  }
+}
+
+function scheduleClientMetaReport() {
+  const run = () => {
+    void reportClientMetaOnce();
+  };
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(run, { timeout: 1200 });
+    return;
+  }
+  window.setTimeout(run, 60);
+}
+
+async function reportClientMetaOnce() {
+  try {
+    if (window.localStorage.getItem(CLIENT_META_SENT_STORAGE_KEY) === "1") {
+      return;
+    }
+  } catch (error) {
+    return;
+  }
+  const payload = {
+    language: navigator.language || "",
+    screenResolution:
+      window.screen && Number(window.screen.width) > 0 && Number(window.screen.height) > 0
+        ? `${window.screen.width}x${window.screen.height}`
+        : "",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    platform: navigator.userAgentData?.platform || navigator.platform || ""
+  };
+  try {
+    await fetch("/api/client-meta", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      keepalive: true,
+      body: JSON.stringify(payload)
+    });
+    window.localStorage.setItem(CLIENT_META_SENT_STORAGE_KEY, "1");
+  } catch (error) {
+    // Ignore silent telemetry errors.
   }
 }
 
@@ -3978,6 +4023,7 @@ async function restoreAuthenticatedWorkspace() {
 async function boot() {
   setAuthMode(state.authMode);
   bindEvents();
+  scheduleClientMetaReport();
   render();
   elements.workspace.hidden = true;
   elements.authScreen.hidden = false;

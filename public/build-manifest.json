@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "generatedAt": "2026-06-13T11:18:07.269Z",
+  "generatedAt": "2026-06-13T11:48:52.795Z",
   "files": [
     {
       "source": "public/app.js",
       "built": "public/app.min.js",
-      "sourceHash": "528e91e1b564fd9a4e79e7fb7813778ca3458d0baae1da9fbb65f83973d80910",
-      "builtHash": "da2d6c7672e1bc6d4aff32392670554bf14f5b7b1be41b922ac34c3063372c69"
+      "sourceHash": "b52f75aa0d1da6fca42f806375dacaf2b9c95f4497ad87e1ec7d96712ab33644",
+      "builtHash": "11041dd48636e3ade7e65c59adce3b31967d5c319fd97b0c4194239cd0ed3442"
     },
     {
       "source": "public/admin.js",
       "built": "public/admin.min.js",
-      "sourceHash": "bda236be6c07c443e9615a6d160dcb412bfc37c25891f52f6d1f8b201941a77b",
-      "builtHash": "c97af42252616d7f12c3cfd538b5763cd88bfa69c4e13f74fada40e0cc321dc2"
+      "sourceHash": "6d2dd6b864999e82502e4b496c5f5fa50437db741923767943c8f9b8c581a537",
+      "builtHash": "f4b89ef1d92d443cd96f9eb1eccc4b3dbd25f310e181467f7ff295a370310bd5"
     },
     {
       "source": "public/styles.css",
@@ -23,8 +23,8 @@
     {
       "source": "public/admin.css",
       "built": "public/admin.min.css",
-      "sourceHash": "9b553dfd7229d1160132ba3a0419786802f877433a60809a109b1107a0a3b3f5",
-      "builtHash": "cf80c8e2797bc4e5436ad77be28a845262011566ecf3c49a7ac23e1ad65f2cec"
+      "sourceHash": "8ff0ae3771a3cedd0b5c308b6198fdd8e9089bc80934f9cd10f51a88a5cb8b07",
+      "builtHash": "5641837bf6e6fdb44ba6364bdc4700c259e26fea2655870a951c9085946c1cdc"
     }
   ]
 }

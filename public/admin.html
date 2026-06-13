@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#e6ece6" />
     <meta name="color-scheme" content="light" />
     <title>管理后台</title>
-    <link rel="stylesheet" href="./admin.min.css?v=cf80c8e279" />
+    <link rel="stylesheet" href="./admin.min.css?v=5641837bf6" />
   </head>
   <body>
     <main class="admin-root">
@@ -53,6 +53,8 @@
           <nav class="sidebar-nav" aria-label="后台导航">
             <a href="#overviewPanel">总览面板</a>
             <a href="#healthPanel">运行健康</a>
+            <a href="#accessPanel">访问分析</a>
+            <a href="#accessLogsPanel">访问日志</a>
             <a href="#usersPanel">用户管理</a>
             <a href="#messagesPanel">聊天审计</a>
             <a href="#auditPanel">审计日志</a>
@@ -127,6 +129,104 @@
                 <h3><span class="sec-icon" aria-hidden="true">◇</span>运行健康</h3>
               </div>
               <div class="health-grid" id="healthGrid"></div>
+            </section>
+
+            <section class="panel access-panel" id="accessPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">◍</span>访问分析</h3>
+              </div>
+              <div class="overview-grid access-overview-grid" id="accessOverviewGrid"></div>
+              <div class="detail-columns access-columns">
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>访问趋势</h4>
+                    <span class="detail-badge">近 7 天</span>
+                  </div>
+                  <div class="trend-chart" id="accessTrend"></div>
+                </article>
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>高频页面</h4>
+                    <span class="detail-badge">按 PV 排序</span>
+                  </div>
+                  <div class="rank-list" id="accessTopPages"></div>
+                </article>
+              </div>
+              <div class="detail-columns access-columns">
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>高频 IP</h4>
+                    <span class="detail-badge">仅统计用途</span>
+                  </div>
+                  <div class="rank-list" id="accessTopIps"></div>
+                </article>
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>合规说明</h4>
+                    <span class="detail-badge">已保留</span>
+                  </div>
+                  <div class="detail-list">
+                    <article class="detail-item">
+                      <strong>访问日志静默采集</strong>
+                      <div class="detail-item-meta">前端不提示，不阻断交互，仅在后台统计。</div>
+                    </article>
+                    <article class="detail-item">
+                      <strong>不做地理定位与指纹识别</strong>
+                      <div class="detail-item-meta">后台仅显示 IP、设备和访问属性，不做地理位置解析。</div>
+                    </article>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section class="panel access-logs-panel" id="accessLogsPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">▤</span>访问日志</h3>
+                <div class="filters">
+                  <input id="accessIpInput" placeholder="搜索 IP" />
+                  <input id="accessUserIdInput" placeholder="搜索用户ID" />
+                  <input id="accessSessionInput" placeholder="搜索会话ID" />
+                  <input id="accessSinceInput" type="date" aria-label="访问日志开始日期" />
+                  <input id="accessUntilInput" type="date" aria-label="访问日志结束日期" />
+                  <button id="applyAccessFilterButton" type="button" class="button secondary">筛选</button>
+                  <button id="resetAccessFilterButton" type="button" class="button secondary tiny">重置</button>
+                </div>
+              </div>
+              <div class="detail-columns access-columns">
+                <article class="detail-card access-profile-card" id="accessProfileCard">
+                  <div class="detail-head">
+                    <h4>用户画像</h4>
+                    <span class="detail-badge">按当前筛选</span>
+                  </div>
+                  <div class="detail-list" id="accessProfileList"></div>
+                </article>
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>日志概览</h4>
+                    <span class="detail-badge" id="accessLogsPager">第 1/1 页，共 0 条</span>
+                  </div>
+                  <div class="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>时间</th>
+                          <th>用户ID</th>
+                          <th>会话ID</th>
+                          <th>IP</th>
+                          <th>请求</th>
+                          <th>设备</th>
+                          <th>耗时</th>
+                        </tr>
+                      </thead>
+                      <tbody id="accessLogsTbody"></tbody>
+                    </table>
+                  </div>
+                  <div class="pager-actions">
+                    <button id="prevAccessLogsPageButton" type="button" class="button secondary tiny">上一页</button>
+                    <button id="nextAccessLogsPageButton" type="button" class="button secondary tiny">下一页</button>
+                  </div>
+                </article>
+              </div>
             </section>
 
             <section class="panel users-panel" id="usersPanel">
@@ -229,6 +329,6 @@
         </div>
       </section>
     </div>
-    <script src="./admin.min.js?v=c97af42252" defer></script>
+    <script src="./admin.min.js?v=f4b89ef1d9" defer></script>
   </body>
 </html>
