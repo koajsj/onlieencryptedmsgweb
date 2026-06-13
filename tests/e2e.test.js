@@ -672,6 +672,14 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.ok(health.json.health.uptimeSeconds >= 0);
     assert.ok(health.json.health.files.messagesLogBytes >= 0);
 
+    const dashboard = await getJson(server.port, "/api/admin/dashboard/stats", adminToken);
+    assert.equal(dashboard.response.status, 200);
+    assert.equal(dashboard.json.dashboard.currentAdmin.username, TEST_ADMIN_USERNAME);
+    assert.ok(dashboard.json.dashboard.userTotal >= 2);
+    assert.ok(Array.isArray(dashboard.json.dashboard.recentLogins));
+    assert.ok(Array.isArray(dashboard.json.dashboard.recentUsers));
+    assert.equal(typeof dashboard.json.dashboard.currentIp, "string");
+
     const users = await getJson(server.port, "/api/admin/users", adminToken);
     assert.equal(users.response.status, 200);
     assert.ok(users.json.users.some((item) => item.username === "AdminA"));
@@ -712,6 +720,43 @@ test("admin can login, view stats/messages and ban users", async () => {
   }
 });
 
+test("session auth prefers a valid cookie and falls back to a valid bearer token", async () => {
+  const server = await startServer();
+
+  try {
+    const adminLogin = await postJson(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    });
+    assert.equal(adminLogin.status, 200);
+    const adminPayload = await adminLogin.json();
+    const adminToken = String(adminPayload.token || "");
+    const adminCookie = String(adminLogin.headers.get("set-cookie") || "").split(";")[0];
+    assert.ok(adminToken);
+    assert.ok(adminCookie);
+
+    const validCookieInvalidBearer = await fetch(`http://127.0.0.1:${server.port}/api/admin/me`, {
+      headers: {
+        Cookie: adminCookie,
+        Authorization: "Bearer stale-token"
+      }
+    });
+    assert.equal(validCookieInvalidBearer.status, 200);
+    assert.equal((await validCookieInvalidBearer.json()).admin.username, TEST_ADMIN_USERNAME);
+
+    const invalidCookieValidBearer = await fetch(`http://127.0.0.1:${server.port}/api/admin/me`, {
+      headers: {
+        Cookie: "secure_chat_admin_session=stale-cookie",
+        Authorization: `Bearer ${adminToken}`
+      }
+    });
+    assert.equal(invalidCookieValidBearer.status, 200);
+    assert.equal((await invalidCookieValidBearer.json()).admin.username, TEST_ADMIN_USERNAME);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("admin login accepts account alias and plain password configuration", async () => {
   const server = await startServer({
     ADMIN_PASSWORD_HASH: "",
@@ -732,7 +777,7 @@ test("admin login accepts account alias and plain password configuration", async
       password: "bad-pass"
     });
     assert.equal(invalid.status, 401);
-    assert.equal((await invalid.json()).error, "管理员账号或密码错误");
+    assert.equal((await invalid.json()).error, "invalid admin credentials");
   } finally {
     await server.stop();
   }
@@ -855,7 +900,7 @@ test("admin login works out of the box with the built-in default credentials", a
       password: "not-the-default"
     });
     assert.equal(wrongLogin.status, 401);
-    assert.equal((await wrongLogin.json()).error, "管理员账号或密码错误");
+    assert.equal((await wrongLogin.json()).error, "invalid admin credentials");
   } finally {
     await server.stop();
   }

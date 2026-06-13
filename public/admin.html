@@ -6,14 +6,19 @@
     <meta name="theme-color" content="#e6ece6" />
     <meta name="color-scheme" content="light" />
     <title>管理后台</title>
-    <link rel="stylesheet" href="./admin.min.css?v=d01c5b2316" />
+    <link rel="stylesheet" href="./admin.min.css?v=df98a0ecf8" />
   </head>
   <body>
     <main class="admin-root">
       <section class="login-card" id="loginCard">
-        <div class="login-mark">内部控制台</div>
-        <h1>管理员登录</h1>
-        <p class="login-copy">仅授权管理员可进入。登录后可管理用户、查看审计和导出记录。</p>
+        <div class="login-branding">
+          <img class="brand-logo admin-login-logo" src="./echo-logo.png" alt="Echo" />
+          <div>
+            <div class="login-mark">Echo Console</div>
+            <h1>管理员登录</h1>
+            <p class="login-copy">仅授权管理员可进入。登录后可管理用户、查看审计和导出记录。</p>
+          </div>
+        </div>
         <form id="loginForm">
           <label><span>账号</span><input id="usernameInput" autocomplete="username" required /></label>
           <label><span>密码</span><input id="passwordInput" type="password" autocomplete="current-password" required /></label>
@@ -22,101 +27,169 @@
       </section>
 
       <section class="dashboard" id="dashboard" hidden>
-        <header class="topbar">
-          <div class="topbar-copy">
-            <h2><span class="sec-icon" aria-hidden="true">◉</span>管理控制台</h2>
-            <p id="adminMeta">管理员</p>
-          </div>
-          <div class="toolbar">
-            <span class="status-pill" id="refreshMeta">尚未刷新</span>
-            <button id="refreshButton" type="button">刷新</button>
-            <button id="logoutButton" type="button" class="ghost">退出</button>
-          </div>
-        </header>
-
-        <section class="stats-grid" id="statsGrid"></section>
-
-        <section class="panel health-panel">
-          <div class="panel-head">
-            <h3><span class="sec-icon" aria-hidden="true">◇</span>运行健康</h3>
-          </div>
-          <div class="health-grid" id="healthGrid"></div>
-        </section>
-
-        <section class="panel users-panel">
-          <div class="panel-head">
-            <h3><span class="sec-icon" aria-hidden="true">▦</span>用户管理</h3>
-            <div class="filters">
-              <input id="userSearchInput" placeholder="搜索用户名" />
-              <select id="userStatusSelect">
-                <option value="all">全部</option>
-                <option value="active">正常</option>
-                <option value="banned">封禁</option>
-              </select>
-              <select id="userSortSelect">
-                <option value="username:asc">用户名升序</option>
-                <option value="username:desc">用户名降序</option>
-                <option value="createdAt:desc">最新注册</option>
-                <option value="createdAt:asc">最早注册</option>
-              </select>
-              <button id="applyUserFilterButton" type="button">筛选</button>
+        <aside class="sidebar">
+          <div class="sidebar-brand">
+            <img class="brand-logo" src="./echo-logo.png" alt="Echo" />
+            <div class="brand-copy">
+              <strong>Echo</strong>
+              <p>管理员控制中心</p>
             </div>
           </div>
-          <div class="batch-bar">
-            <label><input type="checkbox" id="selectAllUsers" /> 全选当前页</label>
-            <button id="batchBanButton" type="button" class="danger tiny">批量封禁</button>
-            <button id="batchUnbanButton" type="button" class="ok tiny">批量解封</button>
-            <span id="usersPager"></span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th></th>
-                  <th>用户名</th>
-                  <th>状态</th>
-                  <th>创建时间</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="usersTbody"></tbody>
-            </table>
-          </div>
-          <div class="pager-actions">
-            <button id="prevUsersPageButton" type="button" class="tiny">上一页</button>
-            <button id="nextUsersPageButton" type="button" class="tiny">下一页</button>
-          </div>
-        </section>
-
-        <section class="panel messages-panel">
-          <div class="panel-head">
-            <h3><span class="sec-icon" aria-hidden="true">◈</span>全站聊天审计</h3>
-            <div class="filters">
-              <input id="msgFromInput" placeholder="发送者" />
-              <input id="msgToInput" placeholder="接收者" />
-              <input id="msgKeywordInput" placeholder="关键词" />
-              <input id="msgSinceInput" type="date" aria-label="开始日期" />
-              <input id="msgUntilInput" type="date" aria-label="结束日期" />
-              <label class="mask-toggle"><input id="msgMaskCheckbox" type="checkbox" checked /> 脱敏显示</label>
-              <button id="applyMsgFilterButton" type="button">筛选</button>
-              <button id="resetMsgFilterButton" type="button" class="ghost tiny">重置</button>
+          <nav class="sidebar-nav" aria-label="后台导航">
+            <a href="#overviewPanel">总览面板</a>
+            <a href="#healthPanel">运行健康</a>
+            <a href="#usersPanel">用户管理</a>
+            <a href="#messagesPanel">聊天审计</a>
+            <a href="#auditPanel">审计日志</a>
+          </nav>
+          <div class="sidebar-footer">
+            <button
+              id="adminProfileButton"
+              type="button"
+              class="profile-button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="adminProfileMenu"
+            >
+              <span class="profile-avatar" id="adminAvatarText">管</span>
+              <span class="profile-copy">
+                <strong id="adminProfileName">管理员</strong>
+                <span id="adminProfileRole">admin</span>
+              </span>
+            </button>
+            <div id="adminProfileMenu" class="profile-menu" hidden>
+              <div class="profile-menu-head">
+                <strong id="adminMenuName">管理员</strong>
+                <span id="adminMenuRole">admin</span>
+              </div>
+              <button id="adminMenuRefreshButton" type="button" class="button secondary tiny">刷新当前面板</button>
+              <button id="adminMenuLogoutButton" type="button" class="button danger tiny">退出登录</button>
             </div>
           </div>
-          <div class="batch-bar">
-            <button id="loadMoreMessagesButton" type="button" class="tiny">加载更早消息</button>
-            <input id="exportReasonInput" placeholder="导出原因(必填)" />
-            <button id="exportMessagesButton" type="button" class="tiny">导出文本</button>
-          </div>
-          <div class="messages-list" id="messagesList"></div>
-        </section>
+        </aside>
 
-        <section class="panel audit-panel">
-          <div class="panel-head">
-            <h3><span class="sec-icon" aria-hidden="true">◎</span>管理员审计日志</h3>
-            <button id="refreshAuditButton" type="button" class="tiny">刷新日志</button>
+        <div class="main-stage">
+          <header class="topbar">
+            <div class="topbar-copy">
+              <h2><span class="sec-icon" aria-hidden="true">◉</span>管理控制台</h2>
+              <p id="adminMeta">管理员</p>
+            </div>
+            <div class="toolbar">
+              <span class="status-pill" id="refreshMeta">尚未刷新</span>
+              <button id="refreshButton" type="button" class="button secondary">刷新</button>
+              <button id="logoutButton" type="button" class="button secondary">退出</button>
+            </div>
+          </header>
+
+          <div class="content-stack">
+            <section class="panel overview-panel" id="overviewPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">◌</span>管理员信息面板</h3>
+              </div>
+              <div class="overview-grid" id="overviewGrid"></div>
+              <div class="detail-columns">
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>最近登录记录</h4>
+                    <span class="detail-badge" id="systemStatusText">系统状态 -</span>
+                  </div>
+                  <div class="detail-list" id="recentLoginsList"></div>
+                </article>
+                <article class="detail-card">
+                  <div class="detail-head">
+                    <h4>最近注册用户</h4>
+                    <span class="detail-badge" id="currentIpText">IP -</span>
+                  </div>
+                  <div class="detail-list" id="recentUsersList"></div>
+                </article>
+              </div>
+            </section>
+
+            <section class="stats-grid" id="statsGrid"></section>
+
+            <section class="panel health-panel" id="healthPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">◇</span>运行健康</h3>
+              </div>
+              <div class="health-grid" id="healthGrid"></div>
+            </section>
+
+            <section class="panel users-panel" id="usersPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">▦</span>用户管理</h3>
+                <div class="filters">
+                  <input id="userSearchInput" placeholder="搜索用户名" />
+                  <select id="userStatusSelect">
+                    <option value="all">全部</option>
+                    <option value="active">正常</option>
+                    <option value="banned">封禁</option>
+                  </select>
+                  <select id="userSortSelect">
+                    <option value="username:asc">用户名升序</option>
+                    <option value="username:desc">用户名降序</option>
+                    <option value="createdAt:desc">最新注册</option>
+                    <option value="createdAt:asc">最早注册</option>
+                  </select>
+                  <button id="applyUserFilterButton" type="button" class="button secondary">筛选</button>
+                </div>
+              </div>
+              <div class="batch-bar">
+                <label><input type="checkbox" id="selectAllUsers" /> 全选当前页</label>
+                <button id="batchBanButton" type="button" class="button danger tiny">批量封禁</button>
+                <button id="batchUnbanButton" type="button" class="button secondary tiny">批量解封</button>
+                <span id="usersPager"></span>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>用户名</th>
+                      <th>状态</th>
+                      <th>创建时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="usersTbody"></tbody>
+                </table>
+              </div>
+              <div class="pager-actions">
+                <button id="prevUsersPageButton" type="button" class="button secondary tiny">上一页</button>
+                <button id="nextUsersPageButton" type="button" class="button secondary tiny">下一页</button>
+              </div>
+            </section>
+
+            <section class="panel messages-panel" id="messagesPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">◈</span>全站聊天审计</h3>
+                <div class="filters">
+                  <input id="msgFromInput" placeholder="发送者" />
+                  <input id="msgToInput" placeholder="接收者" />
+                  <input id="msgKeywordInput" placeholder="关键词" />
+                  <input id="msgSinceInput" type="date" aria-label="开始日期" />
+                  <input id="msgUntilInput" type="date" aria-label="结束日期" />
+                  <label class="mask-toggle"><input id="msgMaskCheckbox" type="checkbox" checked /> 脱敏显示</label>
+                  <button id="applyMsgFilterButton" type="button" class="button secondary">筛选</button>
+                  <button id="resetMsgFilterButton" type="button" class="button secondary tiny">重置</button>
+                </div>
+              </div>
+              <div class="batch-bar">
+                <button id="loadMoreMessagesButton" type="button" class="button secondary tiny">加载更早消息</button>
+                <input id="exportReasonInput" placeholder="导出原因(必填)" />
+                <button id="exportMessagesButton" type="button" class="button primary tiny">导出文本</button>
+              </div>
+              <div class="messages-list" id="messagesList"></div>
+            </section>
+
+            <section class="panel audit-panel" id="auditPanel">
+              <div class="panel-head">
+                <h3><span class="sec-icon" aria-hidden="true">◎</span>管理员审计日志</h3>
+                <button id="refreshAuditButton" type="button" class="button secondary tiny">刷新日志</button>
+              </div>
+              <div class="messages-list" id="auditList"></div>
+            </section>
           </div>
-          <div class="messages-list" id="auditList"></div>
-        </section>
+        </div>
       </section>
     </main>
 
@@ -141,6 +214,6 @@
         </div>
       </section>
     </div>
-    <script src="./admin.min.js?v=b996a46b1e" defer></script>
+    <script src="./admin.min.js?v=512128476d" defer></script>
   </body>
 </html>

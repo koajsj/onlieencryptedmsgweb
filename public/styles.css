@@ -448,6 +448,7 @@ svg {
   display: grid;
   grid-template-columns: 96px minmax(300px, 360px) minmax(480px, 1fr) minmax(280px, 320px);
   gap: 14px;
+  overflow: visible;
 }
 
 .sidebar-nav,
@@ -459,11 +460,14 @@ svg {
 }
 
 .sidebar-nav {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
   padding: 18px 12px;
+  overflow: visible;
+  z-index: 8;
 }
 
 .sidebar-nav-main {
@@ -1250,7 +1254,7 @@ svg {
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 24;
+  z-index: 80;
   min-width: 188px;
   padding: 8px;
   border-radius: 18px;
@@ -1299,6 +1303,8 @@ svg {
   border-radius: 20px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.78);
+  position: relative;
+  z-index: 9;
 }
 
 .sidebar-profile-avatar {

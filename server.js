@@ -925,12 +925,19 @@ function parseBearerToken(req) {
 }
 
 function getSessionFromRequest(req, url) {
+  const cookies = parseCookies(req);
+  const cookieToken = cookies.get(sessionCookieNameForPath(url.pathname)) || "";
+  if (cookieToken) {
+    const cookieSession = sessions.get(cookieToken);
+    if (cookieSession) {
+      return cookieSession;
+    }
+  }
   const bearerToken = parseBearerToken(req);
-  const token = bearerToken || parseCookies(req).get(sessionCookieNameForPath(url.pathname)) || "";
-  if (!token) {
+  if (!bearerToken) {
     return null;
   }
-  return sessions.get(token) || null;
+  return sessions.get(bearerToken) || null;
 }
 
 function requireSession(req, res, url) {
@@ -1082,6 +1089,57 @@ function adminHealthSnapshot() {
       onlineUsers: listOnlineUsers().length,
       pendingMessageAppends: pendingMessageAppends.length,
       messagesDirty
+    }
+  };
+}
+
+function readRecentAdminAuditEntries(limit = 80) {
+  const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
+  return lines
+    .slice(Math.max(0, lines.length - limit))
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch (error) {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function adminDashboardSnapshot(session, req) {
+  const auditEntries = readRecentAdminAuditEntries(200);
+  const recentLogins = auditEntries
+    .filter((entry) => entry.action === "admin_login")
+    .slice(-5)
+    .reverse()
+    .map((entry) => ({
+      at: entry.at,
+      ip: String(entry.ip || ""),
+      username: String(entry.actor || session.username || "")
+    }));
+  const recentUsers = [...users]
+    .sort((left, right) => Number(right.createdAt) - Number(left.createdAt))
+    .slice(0, 5)
+    .map((user) => ({
+      username: user.username,
+      createdAt: user.createdAt,
+      banned: Boolean(user.banned)
+    }));
+  const health = adminHealthSnapshot();
+  return {
+    userTotal: users.length,
+    activeUsers: listOnlineUsers().length,
+    currentAdmin: {
+      username: session.username,
+      role: session.role
+    },
+    currentIp: getClientAddress(req),
+    recentLogins,
+    recentUsers,
+    systemStatus: {
+      ok: Boolean(health.ok),
+      label: health.ok ? "正常" : "异常"
     }
   };
 }
@@ -1675,7 +1733,7 @@ async function handleAdminLogin(req, res) {
     const next = recordAdminLoginFailure(username);
     const message = next && next.lockedUntil > Date.now()
       ? "too many failed attempts, try again later"
-      : "管理员账号或密码错误";
+      : "invalid admin credentials";
     sendJson(res, next && next.lockedUntil > Date.now() ? 429 : 401, { error: message });
     return;
   }
@@ -1759,6 +1817,28 @@ function handleAdminHealth(req, res, url) {
   }
   sendJson(res, 200, {
     health: adminHealthSnapshot()
+  });
+}
+
+function handleAdminDashboardStats(req, res, url) {
+  const session = requireAdminPermission(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:admin:dashboard-stats:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  sendJson(res, 200, {
+    dashboard: adminDashboardSnapshot(session, req)
   });
 }
 
@@ -2510,6 +2590,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && pathname === "/api/admin/health") {
     handleAdminHealth(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/admin/dashboard/stats") {
+    handleAdminDashboardStats(req, res, url);
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/users") {

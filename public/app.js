@@ -6,6 +6,7 @@ const STORAGE = {
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
   pendingOutbox: "private-chat-pending-outbox",
+  sessionToken: "private-chat-session-token",
   sessionIdentity: "private-chat-session-identity"
 };
 
@@ -262,6 +263,26 @@ function writeJsonSessionStorage(key, value) {
   sessionStorage.setItem(key, JSON.stringify(value));
 }
 
+function readSessionAuthToken() {
+  try {
+    return String(sessionStorage.getItem(STORAGE.sessionToken) || "");
+  } catch (error) {
+    return "";
+  }
+}
+
+function persistSessionAuthToken(token) {
+  try {
+    if (token) {
+      sessionStorage.setItem(STORAGE.sessionToken, String(token));
+    } else {
+      sessionStorage.removeItem(STORAGE.sessionToken);
+    }
+  } catch (error) {
+    // Ignore sessionStorage failures and continue with cookie auth.
+  }
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -317,6 +338,21 @@ function setAccountMenuExpanded(expanded) {
   const value = expanded ? "true" : "false";
   elements.accountMenuButton?.setAttribute("aria-expanded", value);
   elements.sidebarProfileButton?.setAttribute("aria-expanded", value);
+}
+
+function isElementNode(value) {
+  return value instanceof Element;
+}
+
+function isAccountMenuEventTarget(target) {
+  if (!isElementNode(target)) {
+    return false;
+  }
+  return Boolean(
+    target.closest(".account-menu-wrap") ||
+    target.closest("#sidebarProfileButton") ||
+    target.closest("#accountMenu")
+  );
 }
 
 function positionFloatingMenu(menu, anchor) {
@@ -934,6 +970,10 @@ function syncLayoutState() {
   document.body.classList.toggle("is-mobile", isMobile());
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
   document.body.classList.toggle("is-details-open", isDetailsDrawerLayout() && state.detailsPanelOpen);
+  if (state.accountMenuOpen && state.accountMenuAnchor && state.accountMenuAnchor.offsetParent === null) {
+    closeAccountMenu();
+    return;
+  }
   if (state.accountMenuOpen && elements.accountMenu && state.accountMenuAnchor) {
     positionFloatingMenu(elements.accountMenu, state.accountMenuAnchor);
   }
@@ -1033,6 +1073,7 @@ function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true, 
     localStorage.removeItem(STORAGE.pendingOutbox);
   }
   if (clearToken) {
+    persistSessionAuthToken("");
     clearSessionIdentityCache();
   }
 }
@@ -1074,6 +1115,10 @@ async function api(pathname, options = {}) {
     Accept: "application/json",
     ...(options.headers || {})
   };
+  const sessionToken = options.auth === false ? "" : readSessionAuthToken();
+  if (sessionToken && !headers.Authorization) {
+    headers.Authorization = `Bearer ${sessionToken}`;
+  }
 
   let body = options.body;
   if (body && !(body instanceof FormData)) {
@@ -1173,6 +1218,9 @@ function clearSession(showAuth = true, clearToken = true) {
 }
 
 function setSession(token, user, identity) {
+  if (token && token !== "cookie") {
+    persistSessionAuthToken(token);
+  }
   state.token = token ? "cookie" : "";
   state.me = user;
   state.identity = identity;
@@ -3199,6 +3247,9 @@ function recallMessageById(peer, messageId) {
 }
 
 function handleListClick(event) {
+  if (!isElementNode(event.target)) {
+    return;
+  }
   const item = event.target.closest(".list-item");
   if (!item) {
     return;
@@ -3257,6 +3308,9 @@ async function copyMessageFromButton(copyButton) {
 }
 
 function handleMessageListClick(event) {
+  if (!isElementNode(event.target)) {
+    return;
+  }
   hideMessageContextMenu();
   const loadOlderButton = event.target.closest(".message-load-older-button");
   if (loadOlderButton) {
@@ -3419,6 +3473,9 @@ function handlePresenceAction(kind) {
 }
 
 function handleComposerActionClick(event) {
+  if (!isElementNode(event.target)) {
+    return;
+  }
   const actionButton = event.target.closest("[data-composer-action]");
   const emojiButton = event.target.closest("[data-emoji-value]");
   if (emojiButton) {
@@ -3437,6 +3494,9 @@ function handleComposerActionClick(event) {
 }
 
 function handleDetailActionClick(event) {
+  if (!isElementNode(event.target)) {
+    return;
+  }
   const actionButton = event.target.closest("[data-detail-action]");
   if (!actionButton) {
     return;
@@ -3569,6 +3629,10 @@ function bindEvents() {
     updateScrollBottomButton();
   }, { passive: true });
   elements.messageList.addEventListener("contextmenu", (event) => {
+    if (!isElementNode(event.target)) {
+      hideMessageContextMenu();
+      return;
+    }
     const message = event.target.closest(".message");
     if (!message || message.dataset.mine !== "1") {
       hideMessageContextMenu();
@@ -3628,13 +3692,13 @@ function bindEvents() {
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
   document.addEventListener("click", (event) => {
-    if (!event.target.closest(".account-menu-wrap")) {
+    if (!isAccountMenuEventTarget(event.target)) {
       closeAccountMenu();
     }
-    if (!event.target.closest(".composer")) {
+    if (!isElementNode(event.target) || !event.target.closest(".composer")) {
       closeEmojiPanel();
     }
-    if (!event.target.closest(".message-context-menu")) {
+    if (!isElementNode(event.target) || !event.target.closest(".message-context-menu")) {
       hideMessageContextMenu();
     }
   });

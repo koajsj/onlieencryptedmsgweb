@@ -10,6 +10,11 @@ const elements = {
   refreshMeta: document.querySelector("#refreshMeta"),
   refreshButton: document.querySelector("#refreshButton"),
   logoutButton: document.querySelector("#logoutButton"),
+  overviewGrid: document.querySelector("#overviewGrid"),
+  recentLoginsList: document.querySelector("#recentLoginsList"),
+  recentUsersList: document.querySelector("#recentUsersList"),
+  systemStatusText: document.querySelector("#systemStatusText"),
+  currentIpText: document.querySelector("#currentIpText"),
   statsGrid: document.querySelector("#statsGrid"),
   healthGrid: document.querySelector("#healthGrid"),
   userSearchInput: document.querySelector("#userSearchInput"),
@@ -48,9 +53,12 @@ const elements = {
   dialogConfirmButton: document.querySelector("#dialogConfirmButton")
 };
 
+const ADMIN_TOKEN_STORAGE_KEY = "secure_chat_admin_token";
+
 const state = {
-  token: "cookie",
+  token: "",
   admin: { username: "", role: "admin" },
+  dashboard: null,
   stats: {},
   health: null,
   users: [],
@@ -76,8 +84,54 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function isElementNode(value) {
+  return value instanceof Element;
+}
+
 function hasPermission(permission) {
   return Boolean(state.token && permission);
+}
+
+function resetAdminState(showLogin = false) {
+  state.token = "";
+  state.dashboard = null;
+  state.stats = {};
+  state.health = null;
+  state.users = [];
+  state.usersTotal = 0;
+  state.selectedUsers.clear();
+  state.messages = [];
+  state.hasMoreMessages = false;
+  state.nextBefore = "";
+  state.logs = [];
+  state.admin = { username: "", role: "admin" };
+  state.lastRefreshAt = 0;
+  persistAdminToken("");
+  updateAdminHeader();
+  if (showLogin) {
+    setLoggedIn(false);
+    elements.usernameInput.focus();
+  }
+}
+
+function readStoredAdminToken() {
+  try {
+    return String(window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "");
+  } catch (error) {
+    return "";
+  }
+}
+
+function persistAdminToken(token) {
+  try {
+    if (token) {
+      window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+    }
+  } catch (error) {
+    // Ignore storage failures and continue with the in-memory token.
+  }
 }
 
 function showToast(message) {
@@ -184,6 +238,13 @@ async function promptDialog(options) {
 
 async function api(pathname, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
+  const bearerToken =
+    options.auth === false
+      ? ""
+      : String(options.token !== undefined ? options.token : state.token || "");
+  if (bearerToken && !headers.Authorization) {
+    headers.Authorization = `Bearer ${bearerToken}`;
+  }
   let body = options.body;
   if (body && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -202,6 +263,9 @@ async function api(pathname, options = {}) {
     payload = null;
   }
   if (!response.ok) {
+    if (response.status === 401 && String(pathname || "").split("?")[0] !== "/api/admin/login") {
+      resetAdminState(true);
+    }
     throw new Error(translateAdminError(pathname, response.status, payload));
   }
   return payload;
@@ -263,6 +327,71 @@ function renderStats() {
     card.innerHTML = `<h4>${label}</h4><strong>${value}</strong>`;
     elements.statsGrid.append(card);
   }
+}
+
+function renderDetailList(container, rows, emptyText) {
+  container.textContent = "";
+  if (!rows || rows.length === 0) {
+    const empty = document.createElement("article");
+    empty.className = "empty-state";
+    empty.textContent = emptyText;
+    container.append(empty);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement("article");
+    item.className = "detail-item";
+    item.innerHTML = `
+      <strong>${escapeHtml(row.title)}</strong>
+      <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
+    `;
+    container.append(item);
+  }
+}
+
+function renderDashboardPanel() {
+  const dashboard = state.dashboard;
+  elements.overviewGrid.textContent = "";
+  if (!dashboard) {
+    renderDetailList(elements.recentLoginsList, [], "暂无登录记录");
+    renderDetailList(elements.recentUsersList, [], "暂无注册记录");
+    elements.systemStatusText.textContent = "系统状态 -";
+    elements.currentIpText.textContent = "IP -";
+    return;
+  }
+
+  const overviewCards = [
+    ["用户总数", dashboard.userTotal || 0],
+    ["在线/活跃用户", dashboard.activeUsers || 0],
+    ["当前管理员", dashboard.currentAdmin?.username || "管理员"],
+    ["当前访问 IP", dashboard.currentIp || "-"]
+  ];
+  for (const [label, value] of overviewCards) {
+    const card = document.createElement("article");
+    card.className = "overview-card";
+    card.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong>`;
+    elements.overviewGrid.append(card);
+  }
+
+  elements.systemStatusText.textContent = `系统状态 ${dashboard.systemStatus?.label || "-"}`;
+  elements.currentIpText.textContent = `IP ${dashboard.currentIp || "-"}`;
+
+  renderDetailList(
+    elements.recentLoginsList,
+    (dashboard.recentLogins || []).map((item) => ({
+      title: `${item.username || "管理员"} · ${item.ip || "-"}`,
+      meta: formatDateTime(item.at)
+    })),
+    "暂无登录记录"
+  );
+  renderDetailList(
+    elements.recentUsersList,
+    (dashboard.recentUsers || []).map((item) => ({
+      title: `${item.username || "-"}`,
+      meta: `${formatDateTime(item.createdAt)}${item.banned ? " · 已封禁" : ""}`
+    })),
+    "暂无注册记录"
+  );
 }
 
 function formatBytes(value) {
@@ -417,6 +546,23 @@ async function loadStats() {
   markAdminRefreshed();
 }
 
+async function loadDashboardStats() {
+  if (!hasPermission("admin:read")) {
+    return;
+  }
+  const payload = await api("/api/admin/dashboard/stats");
+  state.dashboard = payload.dashboard || null;
+  if (payload.dashboard?.currentAdmin?.username) {
+    state.admin = {
+      username: payload.dashboard.currentAdmin.username,
+      role: payload.dashboard.currentAdmin.role || "admin"
+    };
+    updateAdminHeader();
+  }
+  renderDashboardPanel();
+  markAdminRefreshed();
+}
+
 async function loadHealth() {
   if (!hasPermission("admin:read")) {
     return;
@@ -515,7 +661,7 @@ async function loadAuditLogs() {
 }
 
 async function refreshAll(resetMessages = true) {
-  await Promise.all([loadStats(), loadHealth(), loadUsers(), loadAuditLogs()]);
+  await Promise.all([loadDashboardStats(), loadStats(), loadHealth(), loadUsers(), loadAuditLogs()]);
   await loadMessages(resetMessages);
   markAdminRefreshed();
 }
@@ -523,9 +669,11 @@ async function refreshAll(resetMessages = true) {
 async function login(username, password) {
   const payload = await api("/api/admin/login", {
     method: "POST",
-    body: { username, password }
+    body: { username, password },
+    auth: false
   });
-  state.token = payload.token ? "cookie" : "";
+  state.token = String(payload.token || "");
+  persistAdminToken(state.token);
   state.admin = {
     username: payload.admin?.username || "管理员",
     role: payload.admin?.role || "admin"
@@ -541,11 +689,7 @@ async function logout() {
   } catch (error) {
     // ignore
   }
-  state.token = "";
-  state.admin = { username: "", role: "admin" };
-  state.lastRefreshAt = 0;
-  updateAdminHeader();
-  setLoggedIn(false);
+  resetAdminState(true);
 }
 
 async function patchUser(username, body) {
@@ -623,6 +767,9 @@ async function exportMessages() {
 }
 
 async function handleUserAction(event) {
+  if (!isElementNode(event.target)) {
+    return;
+  }
   const selectCheckbox = event.target.closest("input[data-select-user]");
   if (selectCheckbox) {
     const username = String(selectCheckbox.dataset.selectUser || "");
@@ -913,6 +1060,7 @@ function syncPermissionUi() {
 
 async function boot() {
   bindEvents();
+  state.token = readStoredAdminToken();
   try {
     const payload = await api("/api/admin/me");
     state.admin = {
@@ -924,10 +1072,7 @@ async function boot() {
     syncPermissionUi();
     await refreshAll(true);
   } catch (error) {
-    state.token = "";
-    state.lastRefreshAt = 0;
-    updateAdminHeader();
-    setLoggedIn(false);
+    resetAdminState(true);
   }
 }
 
