@@ -789,7 +789,7 @@ function isPasswordHashFormat(value) {
 }
 
 function readConfiguredAdminUsername() {
-  const fromEnv = normalizeUsername(process.env.ADMIN_USERNAME || "");
+  const fromEnv = normalizeUsername(process.env.ADMIN_USERNAME || readEnvFileValue("ADMIN_USERNAME"));
   if (fromEnv) {
     return fromEnv.value;
   }
@@ -804,7 +804,7 @@ function readConfiguredAdminConfig() {
 }
 
 function readConfiguredAdminCredential() {
-  const fromEnv = normalizePassword(process.env.ADMIN_PASSWORD || "");
+  const fromEnv = normalizePassword(process.env.ADMIN_PASSWORD || readEnvFileValue("ADMIN_PASSWORD"));
   if (fromEnv.length >= 4 && fromEnv.length <= 72) {
     return {
       type: "plain",
@@ -812,7 +812,7 @@ function readConfiguredAdminCredential() {
     };
   }
 
-  const hash = String(process.env.ADMIN_PASSWORD_HASH || "").trim();
+  const hash = String(process.env.ADMIN_PASSWORD_HASH || readEnvFileValue("ADMIN_PASSWORD_HASH")).trim();
   if (isPasswordHashFormat(hash)) {
     return {
       type: "hash",
@@ -848,6 +848,19 @@ function verifyPlainSecret(password, expected) {
   return crypto.timingSafeEqual(providedDigest, expectedDigest);
 }
 
+function readEnvFileValue(key) {
+  const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
+  if (!envFilePath || !path.isAbsolute(envFilePath) || !fs.existsSync(envFilePath)) {
+    return "";
+  }
+  try {
+    const entries = parseEnvFile(fs.readFileSync(envFilePath, "utf8"));
+    return String(entries.get(key) || "").trim();
+  } catch (error) {
+    return "";
+  }
+}
+
 async function verifyConfiguredAdminPassword(password) {
   const credential = adminConfig.credential;
   if (credential.type === "hash") {
@@ -857,7 +870,7 @@ async function verifyConfiguredAdminPassword(password) {
 }
 
 function verifyAdminUpdatePassphrase(passphrase) {
-  const expected = normalizePassword(process.env.ADMIN_UPDATE_PASSPHRASE || "");
+  const expected = normalizePassword(process.env.ADMIN_UPDATE_PASSPHRASE || readEnvFileValue("ADMIN_UPDATE_PASSPHRASE"));
   if (!expected) {
     return { ok: false, reason: "missing" };
   }
@@ -927,6 +940,45 @@ function persistAdminConfigToEnvironment(nextConfig) {
   } catch (error) {
     // Ignore permission update failures on non-Linux environments.
   }
+}
+
+function persistAdminConfigToEnvironmentSafe(nextConfig) {
+  const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
+  if (!envFilePath || !path.isAbsolute(envFilePath)) {
+    throw new Error("管理员配置文件路径无效");
+  }
+  const existingContent = fs.existsSync(envFilePath) ? fs.readFileSync(envFilePath, "utf8") : "";
+  let lines = String(existingContent || "").split(/\r?\n/).filter((line) => line.length > 0);
+  lines = upsertEnvLines(lines, "ADMIN_USERNAME", nextConfig.username);
+  if (nextConfig.credential.type === "plain") {
+    lines = upsertEnvLines(lines, "ADMIN_PASSWORD", nextConfig.credential.value);
+    lines = removeEnvKey(lines, "ADMIN_PASSWORD_HASH");
+  } else {
+    lines = upsertEnvLines(lines, "ADMIN_PASSWORD_HASH", nextConfig.credential.value);
+    lines = removeEnvKey(lines, "ADMIN_PASSWORD");
+  }
+  if (!parseEnvFile(existingContent).has("AUDIT_HMAC_KEY")) {
+    lines = upsertEnvLines(lines, "AUDIT_HMAC_KEY", adminAuditHmacKeyState.key.toString("hex"));
+  }
+  fs.mkdirSync(path.dirname(envFilePath), { recursive: true });
+  fs.writeFileSync(envFilePath, `${lines.join("\n")}\n`, "utf8");
+  try {
+    fs.chmodSync(envFilePath, 0o600);
+  } catch (error) {
+    // Ignore permission update failures on non-Linux environments.
+  }
+}
+
+function syncRuntimeAdminConfigFromConfiguredSources() {
+  const nextConfig = readConfiguredAdminConfig();
+  if (
+    nextConfig.username === adminConfig.username &&
+    nextConfig.credential.type === adminConfig.credential.type &&
+    nextConfig.credential.value === adminConfig.credential.value
+  ) {
+    return;
+  }
+  updateRuntimeAdminConfig(nextConfig);
 }
 
 function updateRuntimeAdminConfig(nextConfig) {
@@ -1796,6 +1848,7 @@ function handleMeKeyBundle(req, res, url) {
 }
 
 async function handleAdminLogin(req, res) {
+  syncRuntimeAdminConfigFromConfiguredSources();
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
@@ -1849,6 +1902,7 @@ async function handleAdminLogin(req, res) {
 }
 
 async function handleAdminAccountReset(req, res) {
+  syncRuntimeAdminConfigFromConfiguredSources();
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
@@ -1898,7 +1952,7 @@ async function handleAdminAccountReset(req, res) {
   };
 
   try {
-    persistAdminConfigToEnvironment(nextConfig);
+    persistAdminConfigToEnvironmentSafe(nextConfig);
   } catch (error) {
     sendJson(res, 500, { error: "管理员配置写入失败" });
     return;

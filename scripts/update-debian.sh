@@ -32,12 +32,20 @@ ensure_line() {
   fi
 }
 
+remove_line() {
+  local key="$1"
+  if [ -f "${ENV_FILE}" ]; then
+    sed -i "/^${key}=/d" "${ENV_FILE}"
+  fi
+}
+
 normalize_environment_file() {
   if [ ! -f "${ENV_FILE}" ]; then
     return
   fi
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
   ensure_line "ADMIN_PASSWORD" "${ADMIN_PASSWORD}"
+  remove_line "ADMIN_PASSWORD_HASH"
   chmod 0600 "${ENV_FILE}" 2>/dev/null || true
 }
 

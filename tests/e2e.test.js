@@ -945,6 +945,48 @@ test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD
   }
 });
 
+test("admin login and reset can recover from env file changes without restarting the process", async () => {
+  const envFile = path.join(os.tmpdir(), `secure-chat-admin-runtime-${Date.now()}.env`);
+  fs.writeFileSync(envFile, "ADMIN_USERNAME=admin\nADMIN_PASSWORD=qwer@1234\n", "utf8");
+  const server = await startServer({
+    ADMIN_USERNAME: "",
+    ADMIN_PASSWORD: "",
+    ADMIN_PASSWORD_HASH: "",
+    ADMIN_UPDATE_PASSPHRASE: "",
+    ADMIN_CONFIG_ENV_FILE: envFile
+  });
+
+  try {
+    const defaultLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(defaultLogin.status, 200);
+
+    fs.writeFileSync(
+      envFile,
+      "ADMIN_USERNAME=admin\nADMIN_PASSWORD=qwer@1234\nADMIN_UPDATE_PASSPHRASE=test-passphrase\n",
+      "utf8"
+    );
+
+    const reset = await postJson(server.port, "/api/admin/account/reset", {
+      passphrase: "test-passphrase",
+      username: "root_admin",
+      password: "next-pass-456"
+    });
+    assert.equal(reset.status, 200);
+
+    const nextLogin = await postJson(server.port, "/api/admin/login", {
+      username: "root_admin",
+      password: "next-pass-456"
+    });
+    assert.equal(nextLogin.status, 200);
+  } finally {
+    fs.rmSync(envFile, { force: true });
+    await server.stop();
+  }
+});
+
 test("admin user pagination, batch ban and event ticket blocking work", async () => {
   const server = await startServer();
   try {
