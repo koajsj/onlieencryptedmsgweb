@@ -89,6 +89,7 @@ const elements = {
   composerForm: document.querySelector("#composerForm"),
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
+  attachmentInput: document.querySelector("#attachmentInput"),
   emojiPanel: document.querySelector("#emojiPanel"),
   toast: document.querySelector("#toast"),
   messageContextMenu: document.querySelector("#messageContextMenu"),
@@ -675,6 +676,74 @@ function insertEmoji(value) {
   input.setSelectionRange(nextPos, nextPos);
   input.focus();
   handleComposerInput();
+}
+
+function fileKindLabel(file) {
+  if (!file) {
+    return "文件";
+  }
+  if (String(file.type || "").startsWith("image/")) {
+    return "图片";
+  }
+  if (String(file.type || "").startsWith("video/")) {
+    return "视频";
+  }
+  if (String(file.type || "").startsWith("audio/")) {
+    return "音频";
+  }
+  return "文件";
+}
+
+function formatBytes(bytes) {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB"];
+  let value = size;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function buildAttachmentMessageText(file, dataUrl = "") {
+  const name = String(file?.name || "未命名文件").trim().slice(0, 80);
+  const meta = `${fileKindLabel(file)} · ${formatBytes(file?.size || 0)}`;
+  return `[附件] ${name}\n${meta}${dataUrl ? `\n${dataUrl}` : ""}`;
+}
+
+async function readFileAsDataUrl(file) {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function sendAttachmentFiles(fileList) {
+  if (!state.activePeer) {
+    return;
+  }
+  const files = Array.from(fileList || []).filter(Boolean).slice(0, 5);
+  for (const file of files) {
+    if (file.size > 2 * 1024 * 1024) {
+      showToast(`${file.name} 超过 2MB，暂不支持`);
+      continue;
+    }
+    const dataUrl = String(file.type || "").startsWith("image/") ? await readFileAsDataUrl(file) : "";
+    const text = buildAttachmentMessageText(file, dataUrl);
+    const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
+    const tempId = addPendingMessage(state.activePeer, text, replyTo);
+    renderThread({ scrollBehavior: "bottom" });
+    void sendMessageWithRetry(tempId, state.activePeer, text, tempId, false, replyTo?.id || "");
+  }
+  if (elements.attachmentInput) {
+    elements.attachmentInput.value = "";
+  }
 }
 
 function connectionStatusLabel() {
@@ -2689,7 +2758,7 @@ function reconcilePendingMessage(peer, incomingMessage) {
       state.pendingMessages.delete(tempId);
       removePendingMessageFromCache(tempId);
       removePendingOutboxEntry(tempId);
-      continue;
+      return tempId;
     }
     if (!clientId) {
       const sameText = String(pending.text || "") === String(incomingMessage?.text || "");
@@ -2698,10 +2767,11 @@ function reconcilePendingMessage(peer, incomingMessage) {
         state.pendingMessages.delete(tempId);
         removePendingMessageFromCache(tempId);
         removePendingOutboxEntry(tempId);
-        return;
+        return tempId;
       }
     }
   }
+  return "";
 }
 
 function mergePendingMessagesIntoConversation(peer) {
@@ -3094,7 +3164,10 @@ async function ingestEncryptedMessage(message) {
 
   if (decrypted.mine) {
     decrypted.sendStatus = "sent";
-    reconcilePendingMessage(peer, message);
+    const reconciledTempId = reconcilePendingMessage(peer, message);
+    if (reconciledTempId && messageExists(peer, message.id, message.clientId)) {
+      return;
+    }
   }
 
   const current = state.messageCache.get(peer) || [];
@@ -3361,7 +3434,15 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     state.pendingMessages.delete(tempId);
     removePendingMessageFromCache(tempId);
     removePendingOutboxEntry(tempId);
-    await ingestEncryptedMessage(payload.message);
+    const existing = (state.messageCache.get(peer) || []).find(
+      (message) =>
+        message.id === payload.message?.id ||
+        (payload.message?.clientId &&
+          (message.clientId === payload.message.clientId || message.tempId === payload.message.clientId))
+    );
+    if (!existing) {
+      await ingestEncryptedMessage(payload.message);
+    }
     if (state.replyTarget?.id === replyToId) {
       clearReplyTarget();
     }
@@ -3719,6 +3800,10 @@ function handleComposerActionClick(event) {
     return;
   }
   const action = actionButton.dataset.composerAction || "";
+  if (action === "attach") {
+    elements.attachmentInput?.click();
+    return;
+  }
   if (action === "emoji") {
     toggleEmojiPanel();
     return;
@@ -3936,6 +4021,11 @@ function bindEvents() {
   });
   elements.composerForm.addEventListener("click", handleComposerActionClick);
   elements.messageInput.addEventListener("input", handleComposerInput);
+  elements.attachmentInput?.addEventListener("change", (event) => {
+    void sendAttachmentFiles(event.currentTarget?.files).catch((error) => {
+      showToast(error.message || "附件发送失败");
+    });
+  });
   elements.contextCopyButton?.addEventListener("click", () => {
     const target = state.contextMenuMessageId ? elements.messageList.querySelector(`[data-message-id="${state.contextMenuMessageId}"] .message-copy-button`) : null;
     if (target) {

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f6f6f4" />
     <meta name="color-scheme" content="light" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=fc3ef78a67" />
+    <link rel="stylesheet" href="./styles.min.css?v=4996a8c594" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -244,6 +244,10 @@
               </div>
 
               <div class="composer-main">
+                <button class="icon-button composer-tool" type="button" data-composer-action="attach" aria-label="上传图片或文件">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
+                </button>
+
                 <button class="icon-button composer-tool" type="button" data-composer-action="emoji" aria-label="插入表情">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"></path><path d="M9 10h.01"></path><path d="M15 10h.01"></path></svg>
                 </button>
@@ -269,6 +273,8 @@
                 <button class="emoji-chip" type="button" data-emoji-value="&#9989;">&#9989;</button>
                 <button class="emoji-chip" type="button" data-emoji-value="&#10084;&#65039;">&#10084;&#65039;</button>
               </div>
+
+              <input id="attachmentInput" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.mp4,.mp3" multiple hidden />
             </form>
           </section>
         </main>
@@ -404,6 +410,6 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.min.js?v=613af334b9" defer></script>
+    <script src="./app.min.js?v=cbe409b6cf" defer></script>
   </body>
 </html>
