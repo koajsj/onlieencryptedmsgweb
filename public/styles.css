@@ -2047,19 +2047,46 @@ body.is-dialog-open {
     min-height: 100vh;
     grid-template-rows: auto minmax(0, 1fr);
     height: auto;
-    padding: 10px 10px calc(92px + env(safe-area-inset-bottom));
-    gap: 10px;
+    padding: 4px 4px calc(78px + env(safe-area-inset-bottom));
+    gap: 4px;
     overflow: visible;
   }
 
   .topbar {
     position: sticky;
-    top: 10px;
+    top: 4px;
     z-index: 18;
     grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
-    padding: 14px;
-    border-radius: 24px;
+    gap: 4px;
+    padding: 7px;
+    border-radius: 16px;
+  }
+
+  .topbar-brand {
+    gap: 8px;
+  }
+
+  .brand-logo {
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+  }
+
+  .brand-copy {
+    gap: 2px;
+  }
+
+  .brand-copy strong {
+    font-size: 16px;
+  }
+
+  .brand-copy span,
+  .eyebrow {
+    font-size: 11px;
+  }
+
+  .topbar-brand .brand-copy span {
+    display: none;
   }
 
   .topbar-brand,
@@ -2072,9 +2099,9 @@ body.is-dialog-open {
 
   .topbar-actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    align-items: stretch;
+    grid-template-columns: 1fr auto auto;
+    gap: 4px;
+    align-items: center;
   }
 
   .status-pill,
@@ -2085,12 +2112,26 @@ body.is-dialog-open {
 
   .status-pill,
   .icon-button {
-    min-height: 42px;
+    min-height: 34px;
+  }
+
+  .status-pill {
+    justify-content: center;
+    padding: 0 10px;
+    border-radius: 14px;
+    font-size: 12px;
+  }
+
+  .status-pill .online-dot {
+    width: 8px;
+    height: 8px;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.9);
   }
 
   .topbar-logout,
   .topbar-search-shortcut,
-  .status-pill span {
+  .status-pill span,
+  .topbar-brand .brand-copy {
     display: none;
   }
 
@@ -2099,40 +2140,68 @@ body.is-dialog-open {
   }
 
   .user-chip {
-    padding: 8px 12px 8px 8px;
-    border-radius: 20px;
+    min-height: 34px;
+    gap: 6px;
+    padding: 4px 8px 4px 4px;
+    border-radius: 14px;
+  }
+
+  .user-chip .avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 11px;
+  }
+
+  .user-chip-copy {
+    gap: 2px;
+  }
+
+  .user-chip-copy strong {
+    font-size: 12px;
   }
 
   .user-chip-copy span {
     display: none;
   }
 
+  .topbar-search {
+    height: 38px;
+    padding: 0 10px;
+    gap: 7px;
+    border-radius: 14px;
+  }
+
+  .topbar-search input {
+    font-size: 13px;
+  }
+
   .app-shell {
     grid-template-columns: 1fr;
-    gap: 10px;
-    min-height: calc(100vh - 206px);
+    gap: 6px;
+    min-height: calc(100vh - 148px);
   }
 
   .sidebar-nav {
     position: fixed;
-    left: 10px;
-    right: 10px;
-    bottom: calc(10px + env(safe-area-inset-bottom));
+    left: 6px;
+    right: 6px;
+    bottom: calc(6px + env(safe-area-inset-bottom));
     z-index: 35;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
-    padding: 10px;
-    border-radius: 24px;
+    gap: 6px;
+    padding: 7px;
+    border-radius: 18px;
     background: rgba(255, 255, 255, 0.94);
     backdrop-filter: blur(20px);
+    box-shadow: 0 20px 38px rgba(17, 17, 17, 0.12);
   }
 
   .sidebar-nav-main {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: 4px;
     width: 100%;
   }
 
@@ -2141,17 +2210,21 @@ body.is-dialog-open {
     grid-template-columns: 18px auto;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 10px 14px;
-    border-radius: 18px;
+    gap: 5px;
+    padding: 8px 10px;
+    border-radius: 14px;
+  }
+
+  .nav-button span:last-child {
+    font-size: 12px;
   }
 
   .sidebar-profile-button {
-    width: var(--touch-target);
-    min-width: var(--touch-target);
-    height: var(--touch-target);
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
     padding: 0;
-    border-radius: 16px;
+    border-radius: 12px;
     grid-template-columns: 1fr;
     justify-items: center;
   }
@@ -2161,129 +2234,227 @@ body.is-dialog-open {
   }
 
   .sidebar-profile-avatar {
-    width: 36px;
-    height: 36px;
+    width: 28px;
+    height: 28px;
   }
 
   .sidebar,
   .chat-panel,
   .contact-panel {
-    border-radius: 24px;
+    border-radius: 18px;
   }
 
   .sidebar,
   .chat-panel {
-    padding: 14px;
+    padding: 8px;
   }
 
   .field input {
-    height: 48px;
+    height: 44px;
   }
 
   .sidebar-head {
     padding: 2px 2px 0;
   }
 
+  .sidebar-head h2 {
+    font-size: 1rem;
+  }
+
+  #sidebarMeta {
+    font-size: 11px;
+  }
+
   .sidebar-search-row {
-    grid-template-columns: minmax(0, 1fr) 48px;
+    grid-template-columns: minmax(0, 1fr) 36px;
   }
 
   .list-group,
   .sidebar-frame,
   .contact-panel-body,
   .chat-thread {
-    gap: 12px;
+    gap: 8px;
+  }
+
+  .group-title-row {
+    padding: 0 2px;
+  }
+
+  .group-title {
+    font-size: 11px;
   }
 
   .list-item {
-    padding: 12px;
-    border-radius: 18px;
+    grid-template-columns: 42px minmax(0, 1fr);
+    gap: 10px;
+    padding: 9px;
+    border-radius: 14px;
+  }
+
+  .list-item-avatar .avatar {
+    width: 42px;
+    height: 42px;
+    font-size: 13px;
+  }
+
+  .list-row strong {
+    font-size: 15px;
+  }
+
+  .list-row span,
+  .list-preview,
+  .list-flag,
+  .message-state {
+    font-size: 12px;
   }
 
   .thread-header {
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 14px;
-    border-radius: 20px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px;
+    align-items: center;
+    padding: 8px 10px;
+    border-radius: 16px;
   }
 
   .thread-copy strong,
   .contact-profile-card strong,
   .sidebar-head h2,
   .dialog-head h2 {
-    font-size: 1.125rem;
+    font-size: 1rem;
+  }
+
+  .thread-user {
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .thread-user .avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 12px;
   }
 
   .thread-actions {
-    width: 100%;
+    width: auto;
     justify-content: flex-end;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    gap: 6px;
   }
 
   .thread-actions .icon-button {
-    width: 40px;
-    height: 40px;
+    width: 34px;
+    height: 34px;
+  }
+
+  .thread-actions #headerCallButton,
+  .thread-actions #headerVideoButton {
+    display: none;
   }
 
   .thread-tools {
     grid-template-columns: minmax(0, 1fr);
-    gap: 10px;
-    padding: 10px;
-    border-radius: 20px;
+    gap: 6px;
+    padding: 7px;
+    border-radius: 16px;
+  }
+
+  .thread-search {
+    height: 36px;
+    padding: 0 10px;
+    border-radius: 14px;
   }
 
   .thread-tools-actions {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+    gap: 4px;
   }
 
   .thread-tools-actions .ghost-button {
     width: 100%;
-    padding: 0 10px;
+    min-height: 36px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .thread-search-meta,
+  .security-status {
+    font-size: 12px;
+  }
+
+  .thread-search-meta {
+    display: none;
   }
 
   .message-stream-shell {
-    border-radius: 22px;
-  }
-
-  .message-stream {
-    padding: 16px 14px 92px;
-  }
-
-  .message-body {
-    max-width: min(92%, 520px);
-  }
-
-  .typing-indicator {
-    left: 14px;
-    bottom: 14px;
-  }
-
-  .scroll-bottom-button {
-    right: 14px;
-    bottom: 14px;
-  }
-
-  .composer {
-    padding: 12px;
-    border-radius: 22px;
-  }
-
-  .composer-main {
-    grid-template-columns: 40px minmax(0, 1fr) 52px;
-    gap: 10px;
-  }
-
-  .composer-field {
-    min-height: 112px;
-    padding: 12px 14px;
     border-radius: 18px;
   }
 
+  .message-stream {
+    padding: 12px 10px 84px;
+  }
+
+  .message-body {
+    max-width: min(94%, 520px);
+  }
+
+  .message {
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .message-avatar {
+    width: 30px;
+    height: 30px;
+    font-size: 12px;
+  }
+
+  .bubble,
+  .bubble-file,
+  .inline-file-card {
+    padding: 11px 13px;
+    border-radius: 13px;
+  }
+
+  .typing-indicator {
+    left: 12px;
+    bottom: 12px;
+  }
+
+  .scroll-bottom-button {
+    right: 12px;
+    bottom: 12px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .composer {
+    padding: 8px;
+    border-radius: 16px;
+  }
+
+  .composer-main {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    gap: 6px;
+  }
+
+  .composer-field {
+    min-height: 88px;
+    padding: 9px 11px;
+    border-radius: 14px;
+  }
+
+  .composer-field textarea {
+    min-height: 48px;
+    font-size: 14px;
+  }
+
   .send-button {
-    min-width: 88px;
-    padding: 0 14px;
+    min-width: 72px;
+    min-height: 38px;
+    padding: 0 10px;
+    font-size: 13px;
   }
 
   .composer-hint {
@@ -2291,21 +2462,23 @@ body.is-dialog-open {
   }
 
   .emoji-panel {
-    left: 10px;
-    right: 10px;
+    left: 8px;
+    right: 8px;
     width: auto;
-    bottom: calc(100% + 10px);
+    bottom: calc(100% + 8px);
+    gap: 6px;
+    padding: 8px;
   }
 
   .contact-panel {
     position: fixed;
-    top: 84px;
-    left: 10px;
-    right: 10px;
-    bottom: calc(84px + env(safe-area-inset-bottom));
+    top: 62px;
+    left: 6px;
+    right: 6px;
+    bottom: calc(62px + env(safe-area-inset-bottom));
     width: auto;
     z-index: 25;
-    padding: 14px;
+    padding: 8px;
     transform: translateY(calc(100% + 20px));
     opacity: 0;
     pointer-events: none;
@@ -2329,18 +2502,18 @@ body.is-dialog-open {
 
   .detail-action-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: 4px;
   }
 
   .dialog-backdrop {
-    padding: 12px;
+    padding: 8px;
   }
 
   .dialog-card {
     width: 100%;
     max-height: calc(100vh - 24px);
-    padding: 18px;
-    border-radius: 24px;
+    padding: 14px;
+    border-radius: 18px;
   }
 
   .dialog-form textarea,

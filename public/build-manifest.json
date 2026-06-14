@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-06-14T12:49:28.327Z",
+  "generatedAt": "2026-06-14T12:57:31.135Z",
   "files": [
     {
       "source": "public/app.js",
@@ -17,8 +17,8 @@
     {
       "source": "public/styles.css",
       "built": "public/styles.min.css",
-      "sourceHash": "1f09659a538de1f56f098ea07b90b263feafde89cad1b6c0b90f71195b913b5b",
-      "builtHash": "57898c257b911d1b64d68837ae0e4f55d44b596f978a9c3896e3074423e7ccaa"
+      "sourceHash": "264555c8418ac788d426ab86583a612cd1efb8700c21b5777428f8f2be67af1d",
+      "builtHash": "03aec204d14782520edd7adf2d2263e0355aed864de8cb57b0b26760846fceb1"
     },
     {
       "source": "public/admin.css",
