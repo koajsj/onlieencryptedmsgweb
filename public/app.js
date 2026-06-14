@@ -1197,7 +1197,7 @@ function setComposerBusy(busy) {
 }
 
 function isMobile() {
-  return window.innerWidth <= 960;
+  return window.innerWidth <= 767;
 }
 
 function syncLayoutState() {
