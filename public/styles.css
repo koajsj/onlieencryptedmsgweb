@@ -304,9 +304,13 @@ img {
 
 .search-icon svg,
 .nav-icon svg,
-.detail-action-icon svg {
+.detail-action-icon svg,
+.icon-button svg,
+.send-icon svg {
   width: 18px;
   height: 18px;
+  flex: 0 0 auto;
+  stroke: currentColor;
 }
 
 .topbar-actions {
@@ -429,11 +433,22 @@ img {
 
 .ghost-button,
 .ghost-button span,
+.ghost-button svg,
 .status-pill,
 .status-pill span,
+.status-pill svg,
 .floating-menu-item,
 .floating-menu-item span,
-.thread-tools-actions .ghost-button {
+.floating-menu-item svg,
+.thread-tools-actions .ghost-button,
+.thread-tools-actions .ghost-button span,
+.thread-tools-actions .ghost-button svg,
+.detail-action,
+.detail-action span,
+.detail-action svg,
+.nav-button,
+.nav-button span,
+.nav-button svg {
   color: #30302d;
 }
 
@@ -2066,7 +2081,7 @@ body.is-dialog-open {
     position: sticky;
     top: 4px;
     z-index: 18;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr);
     gap: 4px;
     padding: 7px;
     border-radius: 16px;
@@ -2074,52 +2089,24 @@ body.is-dialog-open {
   }
 
   .topbar-brand {
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .brand-logo {
-    width: 34px;
-    height: 34px;
-    border-radius: 12px;
-  }
-
-  .brand-copy {
-    gap: 2px;
-  }
-
-  .brand-copy strong {
-    font-size: 16px;
-  }
-
-  .brand-copy span,
-  .eyebrow {
-    font-size: 11px;
-  }
-
-  .topbar-brand .brand-copy span {
     display: none;
   }
 
   .topbar-actions {
-    display: contents;
+    display: grid;
+    grid-template-columns: auto 34px minmax(0, 1fr);
+    gap: 4px;
+    align-items: center;
+    width: 100%;
   }
 
   .topbar-search {
-    grid-column: 1 / -1;
     width: 100%;
-  }
-
-  .account-menu-wrap,
-  .user-chip,
-  .user-chip-button {
-    width: 100%;
-    min-width: 0;
   }
 
   .status-pill {
     width: auto;
-    min-width: 62px;
+    min-width: 68px;
   }
 
   #settingsButton {
@@ -2128,11 +2115,14 @@ body.is-dialog-open {
   }
 
   .account-menu-wrap {
+    width: 100%;
     min-width: 0;
   }
 
-  .user-chip {
+  .user-chip,
+  .user-chip-button {
     width: 100%;
+    min-width: 0;
   }
 
   .status-pill,
@@ -2145,11 +2135,6 @@ body.is-dialog-open {
   .icon-button,
   .topbar-logout {
     width: 100%;
-  }
-
-  .topbar-actions {
-    gap: 4px;
-    align-items: center;
   }
 
   .status-pill,
@@ -2172,9 +2157,14 @@ body.is-dialog-open {
 
   .topbar-logout,
   .topbar-search-shortcut,
-  .status-pill span,
   .topbar-brand .brand-copy {
     display: none;
+  }
+
+  .status-pill span {
+    display: inline;
+    font-size: 11px;
+    line-height: 1;
   }
 
   .user-chip {
@@ -2411,13 +2401,15 @@ body.is-dialog-open {
 
   .thread-tools-actions .ghost-button {
     width: 100%;
-    min-height: 36px;
-    padding: 0 8px;
-    font-size: 12px;
+    min-height: 40px;
+    padding: 6px 6px;
+    font-size: 11px;
+    line-height: 1.15;
     color: #30302d;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    text-align: center;
   }
 
   .thread-search-meta,
@@ -2497,6 +2489,11 @@ body.is-dialog-open {
     min-height: 38px;
     padding: 0 10px;
     font-size: 13px;
+  }
+
+  .send-button .send-icon svg {
+    width: 16px;
+    height: 16px;
   }
 
   .composer-hint {
