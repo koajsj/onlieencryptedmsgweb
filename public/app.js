@@ -185,6 +185,10 @@ const state = {
   previewMode: false
 };
 
+if (elements.accountMenu && elements.accountMenu.parentElement !== document.body) {
+  document.body.append(elements.accountMenu);
+}
+
 function readJsonStorage(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
