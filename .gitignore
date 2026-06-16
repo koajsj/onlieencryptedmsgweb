@@ -1,6 +1,7 @@
 node_modules/
 npm-debug.log*
 *.log
+.codex-admin-server*.log
 .env
 .DS_Store
 Thumbs.db

@@ -43,6 +43,7 @@ const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const DEFAULT_ADMIN_USERNAME_VALUE = "admin";
 const DEFAULT_ADMIN_PASSWORD_VALUE = "qwer@1234";
+const ALLOW_INSECURE_DEFAULT_ADMIN = process.env.ALLOW_INSECURE_DEFAULT_ADMIN === "1";
 const ADMIN_CONFIG_ENV_FILE = process.env.ADMIN_CONFIG_ENV_FILE || "/etc/default/secure-chat";
 const AUDIT_TEXT_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.AUDIT_TEXT_RETENTION_DAYS || "30", 10) || 30);
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
@@ -85,6 +86,18 @@ const ADMIN_LOGIN_MAX_FAILURES = Math.max(
   1,
   Number.parseInt(process.env.ADMIN_LOGIN_MAX_FAILURES || "5", 10) || 5
 );
+const USER_LOGIN_FAILURE_WINDOW_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.USER_LOGIN_FAILURE_WINDOW_MS || `${15 * 60 * 1000}`, 10) || 15 * 60 * 1000
+);
+const USER_LOGIN_LOCKOUT_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.USER_LOGIN_LOCKOUT_MS || `${10 * 60 * 1000}`, 10) || 10 * 60 * 1000
+);
+const USER_LOGIN_MAX_FAILURES = Math.max(
+  1,
+  Number.parseInt(process.env.USER_LOGIN_MAX_FAILURES || "8", 10) || 8
+);
 const MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER = Math.max(
   1,
   Number.parseInt(process.env.MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER || "5", 10) || 5
@@ -104,14 +117,17 @@ const rateBuckets = new Map();
 const conversationRateBuckets = new Map();
 const eventTickets = new Map();
 const messageBuckets = new Map();
+const messageIdIndex = new Map();
 const messageClientIndex = new Map();
 const usersByKey = new Map();
 const adminLoginFailures = new Map();
+const userLoginFailures = new Map();
 const scryptAsync = promisify(crypto.scrypt);
 
 let users = [];
 let messages = [];
 let adminAuditLastHash = "GENESIS";
+const adminAuditEntries = [];
 let pendingMessagesPersistTimer = null;
 let messagesDirty = false;
 let messagesRequireFullPersist = false;
@@ -159,6 +175,7 @@ const ADMIN_AUDIT_HMAC_ALGO = "hmac-sha256";
 const ADMIN_AUDIT_SHA_ALGO = "sha256";
 const ADMIN_AUDIT_HMAC_DOMAIN = "secure-chat/admin-audit-hmac-v1";
 let adminConfig = readConfiguredAdminConfig();
+validateConfiguredAdminConfig(adminConfig);
 const adminAuditHmacKeyState = readAuditHmacKeyState(adminConfig.credential);
 const accessLogStore = createAccessLogStore({
   dataDir: DATA_DIR,
@@ -194,22 +211,20 @@ function entryBaseFromEntry(entry) {
 
 function loadAdminAuditState() {
   ensureDataFiles();
-  const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
-  if (lines.length === 0) {
+  const entries = readJsonLinesFile(ADMIN_AUDIT_FILE);
+  adminAuditEntries.length = 0;
+  adminAuditEntries.push(...entries);
+  if (adminAuditEntries.length === 0) {
     adminAuditLastHash = "GENESIS";
     return;
   }
-  try {
-    const last = JSON.parse(lines[lines.length - 1]);
-    adminAuditLastHash = String(last.hash || "GENESIS");
-  } catch (error) {
-    throw new Error(`failed to parse admin audit log ${ADMIN_AUDIT_FILE}: ${error.message}`);
-  }
+  adminAuditLastHash = String(adminAuditEntries[adminAuditEntries.length - 1].hash || "GENESIS");
 }
 
 function appendAdminAuditEntry(entry) {
   const payload = JSON.stringify(entry);
   fs.appendFileSync(ADMIN_AUDIT_FILE, `${payload}\n`, "utf8");
+  adminAuditEntries.push(entry);
 }
 
 function recordAdminAction(action, session, req, details = {}) {
@@ -327,6 +342,8 @@ function loadData() {
   }
   users = loadedUsers.map((user) => ({
     ...user,
+    id: String(user?.id || crypto.randomUUID()),
+    usernameKey: String(user?.usernameKey || normalizeUsername(user?.username)?.key || ""),
     banned: Boolean(user?.banned),
     bannedReason: String(user?.bannedReason || ""),
     bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0
@@ -407,12 +424,16 @@ function conversationBucketKey(leftUser, rightUser) {
 
 function rebuildMessageBuckets() {
   messageBuckets.clear();
+  messageIdIndex.clear();
   messageClientIndex.clear();
   for (const message of messages) {
     const key = conversationBucketKey(message.from, message.to);
     const bucket = messageBuckets.get(key) || [];
     bucket.push(message);
     messageBuckets.set(key, bucket);
+    if (message.id) {
+      messageIdIndex.set(message.id, message);
+    }
     if (message.clientId) {
       messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
     }
@@ -436,6 +457,9 @@ function appendMessageBucket(message) {
   const bucket = messageBuckets.get(key) || [];
   bucket.push(message);
   messageBuckets.set(key, bucket);
+  if (message.id) {
+    messageIdIndex.set(message.id, message);
+  }
   if (message.clientId) {
     messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
   }
@@ -447,6 +471,8 @@ function securityHeaders(extra = {}) {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
+    "X-DNS-Prefetch-Control": "off",
+    "X-Permitted-Cross-Domain-Policies": "none",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
@@ -509,14 +535,22 @@ function parseRequestUrl(req) {
 
 function isSameOriginRequest(req) {
   const origin = String(req.headers.origin || "");
-  if (!origin) {
-    return true;
-  }
-  if (TRUSTED_ORIGINS.has(origin)) {
+  const referer = String(req.headers.referer || "");
+  if (!origin && !referer) {
     return true;
   }
   try {
-    return new URL(origin).host === normalizedRequestHost(req);
+    if (origin) {
+      if (TRUSTED_ORIGINS.has(origin)) {
+        return true;
+      }
+      return new URL(origin).host === normalizedRequestHost(req);
+    }
+    const refererUrl = new URL(referer);
+    if (TRUSTED_ORIGINS.has(refererUrl.origin)) {
+      return true;
+    }
+    return refererUrl.host === normalizedRequestHost(req);
   } catch (error) {
     return false;
   }
@@ -577,56 +611,108 @@ function rejectIfForbiddenOrLimited(req, res, key, limit, limitMessage) {
   return false;
 }
 
-function adminLoginLockState(username) {
-  if (!username) {
+function loginFailureState(failureMap, key) {
+  if (!key) {
     return null;
   }
-  return adminLoginFailures.get(username.toLowerCase()) || null;
+  return failureMap.get(String(key).toLowerCase()) || null;
 }
 
-function adminLoginLockActive(state) {
+function loginFailureActive(state) {
   if (!state || !state.lockedUntil) {
     return false;
   }
   return state.lockedUntil > Date.now();
 }
 
-function recordAdminLoginFailure(username) {
-  const key = String(username || "").toLowerCase();
-  if (!key) {
+function recordLoginFailure(failureMap, key, maxFailures, failureWindowMs, lockoutMs) {
+  const normalizedKey = String(key || "").toLowerCase();
+  if (!normalizedKey) {
     return null;
   }
   const now = Date.now();
-  const previous = adminLoginFailures.get(key);
-  const recentFailures = previous && now - (previous.lastFailedAt || 0) <= ADMIN_LOGIN_FAILURE_WINDOW_MS
+  const previous = failureMap.get(normalizedKey);
+  const recentFailures = previous && now - (previous.lastFailedAt || 0) <= failureWindowMs
     ? previous.count
     : 0;
   const count = recentFailures + 1;
-  const lockedUntil = count > ADMIN_LOGIN_MAX_FAILURES ? now + ADMIN_LOGIN_LOCKOUT_MS : 0;
+  const lockedUntil = count > maxFailures ? now + lockoutMs : 0;
   const next = { count, lockedUntil, lastFailedAt: now };
-  adminLoginFailures.set(key, next);
+  failureMap.set(normalizedKey, next);
   return next;
 }
 
-function clearAdminLoginFailures(username) {
-  if (!username) {
+function clearLoginFailures(failureMap, key) {
+  if (!key) {
     return;
   }
-  adminLoginFailures.delete(String(username).toLowerCase());
+  failureMap.delete(String(key).toLowerCase());
 }
 
-function cleanAdminLoginFailures() {
+function cleanLoginFailuresMap(failureMap, failureWindowMs) {
   const now = Date.now();
-  for (const [key, state] of adminLoginFailures) {
+  for (const [key, state] of failureMap) {
     if (!state) {
-      adminLoginFailures.delete(key);
+      failureMap.delete(key);
       continue;
     }
     const lastFailedAt = Number(state.lastFailedAt || 0);
-    if (now - lastFailedAt > ADMIN_LOGIN_FAILURE_WINDOW_MS && now > Number(state.lockedUntil || 0)) {
-      adminLoginFailures.delete(key);
+    if (now - lastFailedAt > failureWindowMs && now > Number(state.lockedUntil || 0)) {
+      failureMap.delete(key);
     }
   }
+}
+
+function adminLoginLockState(username) {
+  return loginFailureState(adminLoginFailures, username);
+}
+
+function adminLoginLockActive(state) {
+  return loginFailureActive(state);
+}
+
+function recordAdminLoginFailure(username) {
+  return recordLoginFailure(
+    adminLoginFailures,
+    username,
+    ADMIN_LOGIN_MAX_FAILURES,
+    ADMIN_LOGIN_FAILURE_WINDOW_MS,
+    ADMIN_LOGIN_LOCKOUT_MS
+  );
+}
+
+function clearAdminLoginFailures(username) {
+  clearLoginFailures(adminLoginFailures, username);
+}
+
+function cleanAdminLoginFailures() {
+  cleanLoginFailuresMap(adminLoginFailures, ADMIN_LOGIN_FAILURE_WINDOW_MS);
+}
+
+function userLoginLockState(username) {
+  return loginFailureState(userLoginFailures, username);
+}
+
+function userLoginLockActive(state) {
+  return loginFailureActive(state);
+}
+
+function recordUserLoginFailure(username) {
+  return recordLoginFailure(
+    userLoginFailures,
+    username,
+    USER_LOGIN_MAX_FAILURES,
+    USER_LOGIN_FAILURE_WINDOW_MS,
+    USER_LOGIN_LOCKOUT_MS
+  );
+}
+
+function clearUserLoginFailures(username) {
+  clearLoginFailures(userLoginFailures, username);
+}
+
+function cleanUserLoginFailures() {
+  cleanLoginFailuresMap(userLoginFailures, USER_LOGIN_FAILURE_WINDOW_MS);
 }
 
 function cacheControlForStaticFile(filePath) {
@@ -667,6 +753,30 @@ function normalizePassword(value) {
     return "";
   }
   return value.trim();
+}
+
+function normalizeBoundedText(value, maxLength) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().slice(0, maxLength);
+}
+
+function normalizeAuditReason(value, fallback) {
+  const normalized = normalizeBoundedText(value, 120).replace(/\s+/g, " ");
+  return normalized || fallback;
+}
+
+function readOptionalUsernameFilter(value) {
+  const raw = normalizeBoundedText(value, 24);
+  if (!raw) {
+    return { ok: true, value: "" };
+  }
+  const normalized = normalizeUsername(raw);
+  if (!normalized) {
+    return { ok: false, value: "" };
+  }
+  return { ok: true, value: normalized.value };
 }
 
 function readSubmittedUsername(body) {
@@ -756,6 +866,16 @@ function keyBundleForUser(user) {
   };
 }
 
+function summarizeEncodedBlob(value) {
+  const raw = String(value || "");
+  const bytes = decodeBase64Blob(raw);
+  return {
+    present: raw.length > 0,
+    bytes: bytes ? bytes.length : 0,
+    preview: raw.length > 36 ? `${raw.slice(0, 16)}...${raw.slice(-12)}` : raw
+  };
+}
+
 function makeAvatarSeed(username) {
   return crypto.createHash("sha1").update(username).digest("hex").slice(0, 8);
 }
@@ -819,10 +939,31 @@ function readConfiguredAdminCredential() {
     };
   }
 
+  if (ALLOW_INSECURE_DEFAULT_ADMIN) {
+    return {
+      type: "plain",
+      value: DEFAULT_ADMIN_PASSWORD_VALUE
+    };
+  }
+
   return {
-    type: "plain",
-    value: DEFAULT_ADMIN_PASSWORD_VALUE
+    type: "missing",
+    value: ""
   };
+}
+
+function validateConfiguredAdminConfig(config = adminConfig) {
+  const credential = config?.credential;
+  if (!credential || credential.type === "missing" || !credential.value) {
+    throw new Error("admin credentials are not configured; set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
+  }
+  if (
+    credential.type === "plain" &&
+    credential.value === DEFAULT_ADMIN_PASSWORD_VALUE &&
+    !ALLOW_INSECURE_DEFAULT_ADMIN
+  ) {
+    throw new Error("insecure default admin password is disabled; set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
+  }
 }
 
 function readAuditHmacKeyState(credential) {
@@ -970,6 +1111,7 @@ function persistAdminConfigToEnvironmentSafe(nextConfig) {
 
 function syncRuntimeAdminConfigFromConfiguredSources() {
   const nextConfig = readConfiguredAdminConfig();
+  validateConfiguredAdminConfig(nextConfig);
   if (
     nextConfig.username === adminConfig.username &&
     nextConfig.credential.type === adminConfig.credential.type &&
@@ -1246,17 +1388,201 @@ function adminHealthSnapshot() {
 }
 
 function readRecentAdminAuditEntries(limit = 80) {
-  const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
-  return lines
-    .slice(Math.max(0, lines.length - limit))
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        return null;
+  return adminAuditEntries.slice(Math.max(0, adminAuditEntries.length - limit));
+}
+
+function listUserSessions(username) {
+  return [...sessions.values()]
+    .filter((sessionRecord) => sessionRecord.role === "user" && sessionRecord.username === username)
+    .sort((left, right) => Number(right.lastSeenAt) - Number(left.lastSeenAt))
+    .map((sessionRecord) => ({
+      createdAt: Number(sessionRecord.createdAt || 0),
+      lastSeenAt: Number(sessionRecord.lastSeenAt || 0),
+      expiresAt: Number(sessionRecord.expiresAt || 0)
+    }));
+}
+
+function buildUserMessageStats(username) {
+  let sent = 0;
+  let received = 0;
+  let encrypted = 0;
+  let legacyPlaintext = 0;
+  let lastMessageAt = 0;
+  let firstMessageAt = 0;
+  const peers = new Set();
+  for (const message of messages) {
+    if (message.from !== username && message.to !== username) {
+      continue;
+    }
+    if (message.from === username) {
+      sent += 1;
+      peers.add(message.to);
+    }
+    if (message.to === username) {
+      received += 1;
+      peers.add(message.from);
+    }
+    if (message.ciphertext) {
+      encrypted += 1;
+    } else if (typeof message.text === "string" && message.text) {
+      legacyPlaintext += 1;
+    }
+    const createdAt = Number(message.createdAt || 0);
+    if (!firstMessageAt || createdAt < firstMessageAt) {
+      firstMessageAt = createdAt;
+    }
+    if (createdAt > lastMessageAt) {
+      lastMessageAt = createdAt;
+    }
+  }
+  return {
+    sent,
+    received,
+    total: sent + received,
+    encrypted,
+    legacyPlaintext,
+    peers: peers.size,
+    firstMessageAt,
+    lastMessageAt
+  };
+}
+
+function adminUserMessageView(message, username) {
+  const peer = message.from === username ? message.to : message.from;
+  return {
+    id: message.id,
+    peer,
+    direction: message.from === username ? "sent" : "received",
+    from: message.from,
+    to: message.to,
+    text: typeof message.text === "string" && !message.ciphertext ? message.text : null,
+    nonce: String(message.nonce || ""),
+    ciphertext: String(message.ciphertext || ""),
+    replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
+    createdAt: Number(message.createdAt || 0)
+  };
+}
+
+function listRecentMessagesForUser(username, limit = 40) {
+  const rows = [];
+  for (let index = messages.length - 1; index >= 0 && rows.length < limit; index -= 1) {
+    const message = messages[index];
+    if (message.from !== username && message.to !== username) {
+      continue;
+    }
+    rows.push(adminUserMessageView(message, username));
+  }
+  return rows;
+}
+
+function listUserConversationDetails(username, limit = 12) {
+  const rows = [];
+  for (const [key, bucket] of messageBuckets.entries()) {
+    const [leftUser, rightUser] = key.split("\u0000");
+    if (leftUser !== username && rightUser !== username) {
+      continue;
+    }
+    const peer = leftUser === username ? rightUser : leftUser;
+    const latest = bucket.at(-1) || null;
+    let sent = 0;
+    let received = 0;
+    for (const message of bucket) {
+      if (message.from === username) {
+        sent += 1;
+      } else if (message.to === username) {
+        received += 1;
       }
+    }
+    rows.push({
+      username: peer,
+      online: isUserOnline(peer),
+      totalMessages: bucket.length,
+      sentMessages: sent,
+      receivedMessages: received,
+      lastAt: Number(latest?.createdAt || 0),
+      latestMessage: latest ? adminUserMessageView(latest, username) : null
+    });
+  }
+  return rows
+    .sort((left, right) => {
+      if (right.lastAt !== left.lastAt) {
+        return right.lastAt - left.lastAt;
+      }
+      return left.username.localeCompare(right.username);
     })
-    .filter(Boolean);
+    .slice(0, limit);
+}
+
+function adminAuditTouchesUsername(entry, username) {
+  const details = entry?.details;
+  if (!details || typeof details !== "object") {
+    return false;
+  }
+  if (String(details.target || "") === username) {
+    return true;
+  }
+  if (String(details?.before?.username || "") === username || String(details?.after?.username || "") === username) {
+    return true;
+  }
+  if (Array.isArray(details.usernames) && details.usernames.some((item) => String(item || "") === username)) {
+    return true;
+  }
+  if (String(details.previousUsername || "") === username || String(details.nextUsername || "") === username) {
+    return true;
+  }
+  return false;
+}
+
+function listRecentAdminAuditEntriesForUser(username, limit = 20) {
+  const rows = [];
+  for (let index = adminAuditEntries.length - 1; index >= 0 && rows.length < limit; index -= 1) {
+    const entry = adminAuditEntries[index];
+    if (adminAuditTouchesUsername(entry, username)) {
+      rows.push(entry);
+    }
+  }
+  return rows;
+}
+
+async function buildAdminUserDetail(user) {
+  const sessionsList = listUserSessions(user.username);
+  const accessProfile = await accessLogStore.getVisitorProfile({ userId: user.username });
+  const accessLogs = await accessLogStore.getAccessLogs(
+    {
+      userId: user.username,
+      page: 1,
+      limit: 12
+    },
+    {
+      exactIdentityMatch: true
+    }
+  );
+  return {
+    user: {
+      ...adminPublicUser(user),
+      online: isUserOnline(user.username),
+      avatarSeed: makeAvatarSeed(user.username)
+    },
+    crypto: {
+      publicKey: summarizeEncodedBlob(user.publicKey),
+      privateKeySalt: summarizeEncodedBlob(user.privateKeySalt),
+      privateKeyIv: summarizeEncodedBlob(user.privateKeyIv),
+      encryptedPrivateKey: summarizeEncodedBlob(user.encryptedPrivateKey)
+    },
+    sessions: sessionsList,
+    realtime: {
+      eventConnections: Number(onlineConnections.get(user.username)?.size || 0)
+    },
+    messageStats: buildUserMessageStats(user.username),
+    conversations: listUserConversationDetails(user.username),
+    recentMessages: listRecentMessagesForUser(user.username),
+    access: {
+      profile: accessProfile,
+      recentLogs: accessLogs.rows || [],
+      totalLogs: Number(accessLogs.total || 0)
+    },
+    audit: listRecentAdminAuditEntriesForUser(user.username)
+  };
 }
 
 function adminDashboardSnapshot(session, req) {
@@ -1331,8 +1657,17 @@ function resolveReplyTarget(leftUser, rightUser, replyToId) {
   if (!id) {
     return null;
   }
-  const message = messagesForPair(leftUser, rightUser).find((item) => item.id === id);
-  return normalizeReplyTargetView(message || null);
+  const message = messageIdIndex.get(id);
+  if (
+    !message ||
+    !(
+      (message.from === leftUser && message.to === rightUser) ||
+      (message.from === rightUser && message.to === leftUser)
+    )
+  ) {
+    return null;
+  }
+  return normalizeReplyTargetView(message);
 }
 
 function listAdminMessagesPage(limit, beforeCursor) {
@@ -1471,24 +1806,40 @@ function parsePositiveInteger(rawValue, fallback, min, max) {
   return Math.min(max, Math.max(min, parsed));
 }
 
-function pagedMessagesBetween(leftUser, rightUser, limit, beforeCursor) {
-  const allMessages = messagesBetween(leftUser, rightUser);
-  let cutoffIndex = allMessages.length;
+function collectPagedMessages(sourceMessages, limit, beforeCursor, predicate = null) {
+  let beforeIndex = sourceMessages.length;
   if (beforeCursor?.id) {
-    const foundIndex = allMessages.findIndex((item) => item.id === beforeCursor.id);
-    if (foundIndex >= 0) {
-      cutoffIndex = foundIndex;
+    const matchedIndex = sourceMessages.findIndex((message) => {
+      if (predicate && !predicate(message)) {
+        return false;
+      }
+      return message.id === beforeCursor.id;
+    });
+    if (matchedIndex >= 0) {
+      beforeIndex = matchedIndex;
     }
   }
-  const filtered = allMessages.slice(0, cutoffIndex);
-  const hasMore = filtered.length > limit;
-  const items = hasMore ? filtered.slice(filtered.length - limit) : filtered;
-  const nextBefore = hasMore && items.length > 0 ? encodeMessageCursor(items[0]) : "";
+
+  const items = [];
+  for (let index = beforeIndex - 1; index >= 0 && items.length <= limit; index -= 1) {
+    const message = sourceMessages[index];
+    if (predicate && !predicate(message)) {
+      continue;
+    }
+    items.push(message);
+  }
+
+  const hasMore = items.length > limit;
+  const pageItems = (hasMore ? items.slice(0, limit) : items).reverse();
   return {
-    items,
+    items: pageItems,
     hasMore,
-    nextBefore
+    nextBefore: hasMore && pageItems.length > 0 ? encodeMessageCursor(pageItems[0]) : ""
   };
+}
+
+function pagedMessagesBetween(leftUser, rightUser, limit, beforeCursor) {
+  return collectPagedMessages(messagesBetween(leftUser, rightUser), limit, beforeCursor);
 }
 
 function writeSse(res, event, payload) {
@@ -1615,8 +1966,18 @@ function readJsonBody(req) {
         return;
       }
       try {
+        const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+        if (contentType && contentType !== "application/json") {
+          reject(new Error("unsupported media type"));
+          return;
+        }
         const raw = Buffer.concat(chunks).toString("utf8");
-        resolve(raw ? JSON.parse(raw) : {});
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+          reject(new Error("invalid json"));
+          return;
+        }
+        resolve(parsed);
       } catch (error) {
         reject(error);
       }
@@ -1624,6 +1985,18 @@ function readJsonBody(req) {
 
     req.on("error", reject);
   });
+}
+
+function sendJsonBodyError(res, error) {
+  if (error?.message === "body too large") {
+    sendJson(res, 413, { error: "body too large" });
+    return;
+  }
+  if (error?.message === "unsupported media type") {
+    sendJson(res, 415, { error: "content type must be application/json" });
+    return;
+  }
+  sendJson(res, 400, { error: "invalid json" });
 }
 
 async function handleRegister(req, res) {
@@ -1644,9 +2017,7 @@ async function handleRegister(req, res) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
 
@@ -1743,9 +2114,7 @@ async function handleLogin(req, res) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
 
@@ -1756,12 +2125,23 @@ async function handleLogin(req, res) {
     return;
   }
 
+  const lockState = userLoginLockState(normalizedUsername.value);
+  if (userLoginLockActive(lockState)) {
+    sendJson(res, 429, { error: "too many failed attempts, try again later" });
+    return;
+  }
+
   const user = findUserByKey(normalizedUsername.key);
   const passwordOk = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
   if (!user || !passwordOk) {
-    sendJson(res, 401, { error: "invalid username or password" });
+    const next = recordUserLoginFailure(normalizedUsername.value);
+    const message = next && next.lockedUntil > Date.now()
+      ? "too many failed attempts, try again later"
+      : "invalid username or password";
+    sendJson(res, next && next.lockedUntil > Date.now() ? 429 : 401, { error: message });
     return;
   }
+  clearUserLoginFailures(user.username);
   if (user.banned) {
     sendJson(res, 403, { error: "account banned" });
     return;
@@ -1853,7 +2233,12 @@ function handleMeKeyBundle(req, res, url) {
 }
 
 async function handleAdminLogin(req, res) {
-  syncRuntimeAdminConfigFromConfiguredSources();
+  try {
+    syncRuntimeAdminConfigFromConfiguredSources();
+  } catch (error) {
+    sendJson(res, 503, { error: "admin credentials are not configured" });
+    return;
+  }
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
@@ -1870,9 +2255,7 @@ async function handleAdminLogin(req, res) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
   const username = readSubmittedUsername(body);
@@ -1918,16 +2301,21 @@ function normalizeClientMetaPayload(body) {
 
 function readAccessLogFilters(url) {
   return {
-    ip: String(url.searchParams.get("ip") || "").trim(),
-    userId: String(url.searchParams.get("userId") || url.searchParams.get("user_id") || "").trim(),
-    sessionId: String(url.searchParams.get("sessionId") || url.searchParams.get("session_id") || "").trim(),
+    ip: normalizeBoundedText(url.searchParams.get("ip") || "", 64),
+    userId: normalizeBoundedText(url.searchParams.get("userId") || url.searchParams.get("user_id") || "", 64),
+    sessionId: normalizeBoundedText(url.searchParams.get("sessionId") || url.searchParams.get("session_id") || "", 64),
     since: Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0,
     until: Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0
   };
 }
 
 async function handleAdminAccountReset(req, res) {
-  syncRuntimeAdminConfigFromConfiguredSources();
+  try {
+    syncRuntimeAdminConfigFromConfiguredSources();
+  } catch (error) {
+    sendJson(res, 503, { error: "admin credentials are not configured" });
+    return;
+  }
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
@@ -1944,9 +2332,7 @@ async function handleAdminAccountReset(req, res) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
   const passphraseResult = verifyAdminUpdatePassphrase(String(body.verificationPassphrase || body.passphrase || ""));
@@ -2113,9 +2499,10 @@ function handleAdminUsers(req, res, url) {
   ) {
     return;
   }
-  const query = String(url.searchParams.get("q") || "").trim().toLowerCase();
+  const query = normalizeBoundedText(url.searchParams.get("q") || "", 64).toLowerCase();
   const status = String(url.searchParams.get("status") || "all").trim().toLowerCase();
-  const sortBy = String(url.searchParams.get("sort") || "username").trim();
+  const requestedSort = String(url.searchParams.get("sort") || "username").trim();
+  const sortBy = requestedSort === "createdAt" ? "createdAt" : "username";
   const order = String(url.searchParams.get("order") || "asc").trim().toLowerCase() === "desc" ? "desc" : "asc";
   const page = parsePositiveInteger(url.searchParams.get("page"), 1, 1, 99999);
   const limit = parsePositiveInteger(url.searchParams.get("limit"), 50, 1, 200);
@@ -2152,6 +2539,38 @@ function handleAdminUsers(req, res, url) {
   });
 }
 
+async function handleAdminUserDetail(req, res, url, pathname) {
+  const session = requireAdminPermission(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:admin:user-detail:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const targetUsername = parseAdminUserPath(pathname);
+  if (!targetUsername) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  const user = findUserByUsername(targetUsername);
+  if (!user) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  sendJson(res, 200, {
+    detail: await buildAdminUserDetail(user)
+  });
+}
+
 async function handleAdminUserPatch(req, res, url, pathname) {
   const session = requireAdminPermission(req, res, url);
   if (!session) {
@@ -2183,13 +2602,11 @@ async function handleAdminUserPatch(req, res, url, pathname) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
 
-  const requestedName = String(body.username || "").trim();
+  const requestedName = normalizeBoundedText(body.username || "", 24);
   const oldState = adminPublicUser(user);
   if (requestedName) {
     const normalizedUsername = normalizeUsername(requestedName);
@@ -2241,7 +2658,7 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     }
     const banned = body.banned;
     user.banned = banned;
-    user.bannedReason = banned ? String(body.bannedReason || "admin action").slice(0, 120) : "";
+    user.bannedReason = banned ? normalizeAuditReason(body.bannedReason, "admin action") : "";
     user.bannedAt = banned ? Date.now() : 0;
     if (banned) {
       for (const [token, sessionRecord] of sessions) {
@@ -2296,19 +2713,28 @@ async function handleAdminUsersBatch(req, res, url) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
-  const usernames = Array.isArray(body.usernames) ? body.usernames.map((item) => String(item || "").trim()) : [];
+  const usernames = Array.isArray(body.usernames)
+    ? [...new Set(body.usernames.map((item) => normalizeBoundedText(item, 24)).filter(Boolean))].slice(0, 200)
+    : [];
   if (typeof body.banned !== "boolean") {
     sendJson(res, 400, { error: "banned must be a boolean" });
     return;
   }
+  if (usernames.length === 0) {
+    sendJson(res, 400, { error: "at least one username is required" });
+    return;
+  }
+  if (usernames.some((username) => !normalizeUsername(username))) {
+    sendJson(res, 400, { error: "invalid username in batch request" });
+    return;
+  }
   const banned = body.banned;
-  const reason = String(body.bannedReason || "admin batch action").slice(0, 120);
-  const targetUsers = users.filter((user) => usernames.includes(user.username)).slice(0, 200);
+  const reason = normalizeAuditReason(body.bannedReason, "admin batch action");
+  const requestedUsernames = new Set(usernames);
+  const targetUsers = users.filter((user) => requestedUsernames.has(user.username)).slice(0, 200);
   for (const user of targetUsers) {
     user.banned = banned;
     user.bannedReason = banned ? reason : "";
@@ -2325,7 +2751,7 @@ async function handleAdminUsersBatch(req, res, url) {
   }
   persistUsers();
   recordAdminAction("admin_users_batch", session, req, {
-    targets: targetUsers.map((user) => user.username),
+    usernames: targetUsers.map((user) => user.username),
     banned
   });
   sendJson(res, 200, {
@@ -2351,19 +2777,8 @@ function handleAdminAuditLogs(req, res, url) {
     return;
   }
   const limit = parsePositiveInteger(url.searchParams.get("limit"), 100, 1, 300);
-  const lines = fs.readFileSync(ADMIN_AUDIT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
-  const items = lines
-    .slice(Math.max(0, lines.length - limit))
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        return null;
-      }
-    })
-    .filter(Boolean);
   sendJson(res, 200, {
-    logs: items
+    logs: readRecentAdminAuditEntries(limit)
   });
 }
 
@@ -2384,20 +2799,28 @@ function handleAdminExportMessages(req, res, url) {
   ) {
     return;
   }
-  const reason = String(url.searchParams.get("reason") || "").trim();
+  const reason = normalizeBoundedText(url.searchParams.get("reason") || "", 120);
   if (!reason) {
     sendJson(res, 400, { error: "export reason is required" });
     return;
   }
-  const fromFilter = String(url.searchParams.get("from") || "").trim();
-  const toFilter = String(url.searchParams.get("to") || "").trim();
+  const fromFilterResult = readOptionalUsernameFilter(url.searchParams.get("from"));
+  const toFilterResult = readOptionalUsernameFilter(url.searchParams.get("to"));
+  if (!fromFilterResult.ok || !toFilterResult.ok) {
+    sendJson(res, 400, { error: "invalid message filters" });
+    return;
+  }
+  const fromFilter = fromFilterResult.value;
+  const toFilter = toFilterResult.value;
   const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
   const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
   const watermark = `EXPORT WATERMARK | admin=${session.username} | role=${session.role} | ip=${address} | at=${new Date().toISOString()} | reason=${reason}`;
-  const rows = messages
-    .filter((message) => (!fromFilter || message.from === fromFilter) && (!toFilter || message.to === toFilter))
-    .filter((message) => (!since || Number(message.createdAt) >= since) && (!until || Number(message.createdAt) <= until))
-    .slice(-5000);
+  const matchesFilters = (message) =>
+    (!fromFilter || message.from === fromFilter) &&
+    (!toFilter || message.to === toFilter) &&
+    (!since || Number(message.createdAt) >= since) &&
+    (!until || Number(message.createdAt) <= until);
+  const rows = collectPagedMessages(messages, 5000, null, matchesFilters).items;
   const contentRows = rows.map((message) =>
     [
       `[${new Date(message.createdAt).toISOString()}]`,
@@ -2437,29 +2860,26 @@ function handleAdminMessages(req, res, url) {
   }
   const limit = parsePositiveInteger(url.searchParams.get("limit"), 100, 1, 300);
   const beforeCursor = parseMessageCursor(url.searchParams.get("before"));
-  const fromFilter = String(url.searchParams.get("from") || "").trim();
-  const toFilter = String(url.searchParams.get("to") || "").trim();
+  const fromFilterResult = readOptionalUsernameFilter(url.searchParams.get("from"));
+  const toFilterResult = readOptionalUsernameFilter(url.searchParams.get("to"));
+  if (!fromFilterResult.ok || !toFilterResult.ok) {
+    sendJson(res, 400, { error: "invalid message filters" });
+    return;
+  }
+  const fromFilter = fromFilterResult.value;
+  const toFilter = toFilterResult.value;
   const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
   const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
-  const allMessages = [...messages]
-    .filter((message) => (!fromFilter || message.from === fromFilter) && (!toFilter || message.to === toFilter))
-    .filter((message) => (!since || Number(message.createdAt) >= since) && (!until || Number(message.createdAt) <= until))
-    .sort((left, right) => left.createdAt - right.createdAt);
-  let cutoffIndex = allMessages.length;
-  if (beforeCursor?.id) {
-    const foundIndex = allMessages.findIndex((item) => item.id === beforeCursor.id);
-    if (foundIndex >= 0) {
-      cutoffIndex = foundIndex;
-    }
-  }
-  const filtered = allMessages.slice(0, cutoffIndex);
-  const hasMore = filtered.length > limit;
-  const items = hasMore ? filtered.slice(filtered.length - limit) : filtered;
-  const nextBefore = hasMore && items.length > 0 ? encodeMessageCursor(items[0]) : "";
+  const matchesFilters = (message) =>
+    (!fromFilter || message.from === fromFilter) &&
+    (!toFilter || message.to === toFilter) &&
+    (!since || Number(message.createdAt) >= since) &&
+    (!until || Number(message.createdAt) <= until);
+  const page = collectPagedMessages(messages, limit, beforeCursor, matchesFilters);
   sendJson(res, 200, {
-    messages: items.map((message) => adminMessageView(message)),
-    hasMore,
-    nextBefore
+    messages: page.items.map((message) => adminMessageView(message)),
+    hasMore: page.hasMore,
+    nextBefore: page.nextBefore
   });
 }
 
@@ -2480,9 +2900,7 @@ async function handleClientMeta(req, res, url) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
   const meta = normalizeClientMetaPayload(body);
@@ -2579,7 +2997,7 @@ function handleUsers(req, res, url) {
   if (rejectIfForbiddenOrLimited(req, res, `api:users:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
     return;
   }
-  const query = String(url.searchParams.get("q") || "");
+  const query = normalizeBoundedText(url.searchParams.get("q") || "", 64);
   sendJson(res, 200, {
     users: listUsersForSearch(session.username, query)
   });
@@ -2669,9 +3087,7 @@ async function handleSendMessage(req, res, url) {
   try {
     body = await readJsonBody(req);
   } catch (error) {
-    sendJson(res, error?.message === "body too large" ? 413 : 400, {
-      error: error?.message === "body too large" ? "body too large" : "invalid json"
-    });
+    sendJsonBodyError(res, error);
     return;
   }
 
@@ -2905,9 +3321,14 @@ setInterval(cleanRateBuckets, RATE_WINDOW_MS).unref();
 setInterval(cleanSessions, Math.min(5 * 60 * 1000, SESSION_TTL_MS)).unref();
 setInterval(cleanEventTickets, EVENT_TICKET_TTL_MS).unref();
 setInterval(cleanAdminLoginFailures, ADMIN_LOGIN_FAILURE_WINDOW_MS).unref();
+setInterval(cleanUserLoginFailures, USER_LOGIN_FAILURE_WINDOW_MS).unref();
 setInterval(purgeStoredMessagePlaintext, 60 * 60 * 1000).unref();
 
 const server = http.createServer((req, res) => {
+  if (String(req.url || "").length > 4096) {
+    sendJson(res, 414, { error: "request url too long" });
+    return;
+  }
   const url = parseRequestUrl(req);
   if (!url) {
     sendJson(res, 400, { error: "invalid request url" });
@@ -2968,6 +3389,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && pathname === "/api/admin/users") {
     handleAdminUsers(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && parseAdminUserPath(pathname)) {
+    void handleAdminUserDetail(req, res, url, pathname);
     return;
   }
   if (req.method === "POST" && pathname === "/api/admin/users/batch") {

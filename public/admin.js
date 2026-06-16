@@ -376,6 +376,10 @@ function parseSortValue() {
   };
 }
 
+function userDetailHref(username) {
+  return `./admin-user.html?username=${encodeURIComponent(String(username || ""))}`;
+}
+
 function dateInputToStartMs(value) {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -712,15 +716,16 @@ function renderUsers() {
     const status = user.banned ? `封禁 (${user.bannedReason || "无原因"})` : "正常";
     const safeUsername = escapeHtml(user.username);
     const safeStatus = escapeHtml(status);
+    const safeUsernameKey = escapeHtml(user.usernameKey || "");
+    const detailHref = escapeHtml(userDetailHref(user.username));
     tr.innerHTML = `
       <td><input type="checkbox" data-select-user="${safeUsername}" ${checked} /></td>
-      <td>${safeUsername}</td>
+      <td><div class="user-cell"><a class="user-link" href="${detailHref}">${safeUsername}</a><span class="user-subtle">${safeUsernameKey || "-"}</span></div></td>
       <td>${safeStatus}</td>
       <td>${formatDateTime(user.createdAt)}</td>
       <td class="actions">
+        <button class="tiny" data-action="detail" data-username="${safeUsername}">详情</button>
         <button class="tiny ${user.banned ? "ok" : "danger"}" data-action="ban" data-username="${safeUsername}" ${hasPermission("admin:user:update") ? "" : "disabled"}>${user.banned ? "解封" : "封禁"}</button>
-        <button class="tiny" data-action="rename" data-username="${safeUsername}" ${hasPermission("admin:user:update") ? "" : "disabled"}>改名</button>
-        <button class="tiny" data-action="password" data-username="${safeUsername}" ${hasPermission("admin:user:update") ? "" : "disabled"}>改密</button>
       </td>
     `;
     elements.usersTbody.append(tr);
@@ -1136,6 +1141,10 @@ async function handleUserAction(event) {
     return;
   }
   try {
+    if (action === "detail") {
+      window.location.href = userDetailHref(username);
+      return;
+    }
     if (action === "ban") {
       if (user.banned) {
         const confirmed = await confirmDialog({
@@ -1165,42 +1174,6 @@ async function handleUserAction(event) {
         await patchUser(username, { banned: true, bannedReason: reason || "admin action" });
       }
       return;
-    }
-    if (action === "rename") {
-      const nextName = await promptDialog({
-        title: "修改用户名",
-        message: `当前用户名：${user.username}`,
-        field: {
-          label: "新用户名",
-          value: user.username,
-          placeholder: "3-24 字母数字下划线",
-          required: true
-        },
-        confirmLabel: "确认修改"
-      });
-      const normalizedName = String(nextName || "").trim();
-      if (nextName === null || !normalizedName || normalizedName === user.username) {
-        return;
-      }
-      await patchUser(username, { username: normalizedName });
-      return;
-    }
-    if (action === "password") {
-      const nextPassword = await promptDialog({
-        title: "修改密码",
-        message: `为 ${username} 设置新密码。`,
-        field: {
-          label: "新密码",
-          type: "password",
-          placeholder: "4-72位",
-          required: true
-        },
-        confirmLabel: "确认修改"
-      });
-      if (!String(nextPassword || "").trim()) {
-        return;
-      }
-      await patchUser(username, { password: String(nextPassword || "") });
     }
   } catch (error) {
     showToast(error.message);

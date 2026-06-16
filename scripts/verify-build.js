@@ -9,8 +9,10 @@ const MANIFEST_PATH = path.join(ROOT_DIR, "public/build-manifest.json");
 const CHECKS = [
   { source: "public/app.js", built: "public/app.min.js" },
   { source: "public/admin.js", built: "public/admin.min.js" },
+  { source: "public/admin-user.js", built: "public/admin-user.min.js" },
   { source: "public/styles.css", built: "public/styles.min.css" },
-  { source: "public/admin.css", built: "public/admin.min.css" }
+  { source: "public/admin.css", built: "public/admin.min.css" },
+  { source: "public/admin-user.css", built: "public/admin-user.min.css" }
 ];
 
 function sha256Hex(buffer) {

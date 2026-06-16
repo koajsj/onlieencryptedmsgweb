@@ -24,15 +24,28 @@ CADDYFILE="/etc/caddy/Caddyfile"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
+GENERATED_ADMIN_PASSWORD=""
 SAFE_RESET_PATHS=(
   "public/app.min.js"
   "public/admin.min.js"
+  "public/admin-user.min.js"
   "public/styles.min.css"
   "public/admin.min.css"
+  "public/admin-user.min.css"
   "public/build-manifest.json"
 )
+
+hash_password() {
+  local password="$1"
+  node -e "const crypto=require('node:crypto');const password=process.argv[1];const salt=crypto.randomBytes(16).toString('hex');const hash=crypto.scryptSync(password,salt,64).toString('hex');process.stdout.write('scrypt:'+salt+':'+hash);" "$password"
+}
+
+generate_password() {
+  node -e "const crypto=require('node:crypto');process.stdout.write(crypto.randomBytes(18).toString('base64url'));"
+}
 
 install_base_packages() {
   apt-get update
@@ -150,16 +163,10 @@ ensure_admin_credentials() {
 
   if [ -n "${existing_username}" ] && [ -n "${existing_password}" ]; then
     ADMIN_USERNAME="${existing_username}"
-    ADMIN_PASSWORD="${existing_password}"
-    return
-  fi
-
-  if [ -n "${existing_username}" ] && [ -n "${existing_hash}" ]; then
+    ADMIN_PASSWORD_HASH="$(hash_password "${existing_password}")"
+  elif [ -n "${existing_username}" ] && [ -n "${existing_hash}" ]; then
     ADMIN_USERNAME="${existing_username}"
-    if [ -n "${existing_update_passphrase}" ] && [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
-      ADMIN_UPDATE_PASSPHRASE="${existing_update_passphrase}"
-    fi
-    return
+    ADMIN_PASSWORD_HASH="${existing_hash}"
   fi
 
   if ! [[ "${ADMIN_USERNAME}" =~ ^[A-Za-z0-9_]{3,24}$ ]]; then
@@ -167,9 +174,17 @@ ensure_admin_credentials() {
     exit 1
   fi
 
-  if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
-    echo "ADMIN_PASSWORD must be 4-72 characters" >&2
-    exit 1
+  if [ -z "${ADMIN_PASSWORD_HASH}" ]; then
+    if [ -n "${ADMIN_PASSWORD}" ]; then
+      if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
+        echo "ADMIN_PASSWORD must be 4-72 characters" >&2
+        exit 1
+      fi
+      ADMIN_PASSWORD_HASH="$(hash_password "${ADMIN_PASSWORD}")"
+    else
+      GENERATED_ADMIN_PASSWORD="$(generate_password)"
+      ADMIN_PASSWORD_HASH="$(hash_password "${GENERATED_ADMIN_PASSWORD}")"
+    fi
   fi
 
   if [ -n "${existing_update_passphrase}" ] && [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
@@ -185,8 +200,10 @@ write_environment_file() {
     printf 'NODE_ENV=production\n'
     printf 'COOKIE_SECURE=1\n'
     printf 'TRUST_PROXY=1\n'
+    printf 'HSTS_MAX_AGE_SECONDS=31536000\n'
+    printf 'TRUSTED_ORIGINS=%s,%s\n' "https://${DOMAIN}" "https://${WWW_DOMAIN}"
     printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME}"
-    printf 'ADMIN_PASSWORD=%s\n' "${ADMIN_PASSWORD}"
+    printf 'ADMIN_PASSWORD_HASH=%s\n' "${ADMIN_PASSWORD_HASH}"
     if [ -n "${ADMIN_UPDATE_PASSPHRASE}" ]; then
       printf 'ADMIN_UPDATE_PASSPHRASE=%s\n' "${ADMIN_UPDATE_PASSPHRASE}"
     fi
@@ -252,7 +269,12 @@ print_summary() {
   echo "Public URL: https://${DOMAIN}"
   echo "Public URL: https://${WWW_DOMAIN}"
   echo "Admin username: ${ADMIN_USERNAME}"
-  echo "Admin password: configured (override with ADMIN_PASSWORD env var before running this script)"
+  if [ -n "${GENERATED_ADMIN_PASSWORD}" ]; then
+    echo "Generated admin password: ${GENERATED_ADMIN_PASSWORD}"
+    echo "Store this password now. Only the hash is written to ${ENV_FILE}."
+  else
+    echo "Admin password: configured and stored as a hash in ${ENV_FILE}"
+  fi
 }
 
 main() {

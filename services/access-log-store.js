@@ -457,20 +457,21 @@ class AccessLogStore {
     };
   }
 
-  buildAccessLogWhere(filters = {}) {
+  buildAccessLogWhere(filters = {}, options = {}) {
+    const exactIdentityMatch = Boolean(options.exactIdentityMatch);
     const clauses = [];
     const params = [];
     if (filters.ip) {
-      clauses.push("ip LIKE ?");
-      params.push(`%${String(filters.ip).trim()}%`);
+      clauses.push(exactIdentityMatch ? "ip = ?" : "ip LIKE ?");
+      params.push(exactIdentityMatch ? String(filters.ip).trim() : `%${String(filters.ip).trim()}%`);
     }
     if (filters.userId) {
-      clauses.push("user_id LIKE ?");
-      params.push(`%${String(filters.userId).trim()}%`);
+      clauses.push(exactIdentityMatch ? "user_id = ?" : "user_id LIKE ?");
+      params.push(exactIdentityMatch ? String(filters.userId).trim() : `%${String(filters.userId).trim()}%`);
     }
     if (filters.sessionId) {
-      clauses.push("session_id LIKE ?");
-      params.push(`%${String(filters.sessionId).trim()}%`);
+      clauses.push(exactIdentityMatch ? "session_id = ?" : "session_id LIKE ?");
+      params.push(exactIdentityMatch ? String(filters.sessionId).trim() : `%${String(filters.sessionId).trim()}%`);
     }
     if (filters.since) {
       clauses.push("created_at >= ?");
@@ -486,7 +487,7 @@ class AccessLogStore {
     };
   }
 
-  async getAccessLogs(filters = {}) {
+  async getAccessLogs(filters = {}, options = {}) {
     if (!this.enabled) {
       return { rows: [], total: 0, page: 1, limit: 50 };
     }
@@ -494,7 +495,7 @@ class AccessLogStore {
     const page = Math.max(1, Number(filters.page) || 1);
     const limit = Math.max(1, Math.min(200, Number(filters.limit) || 50));
     const offset = (page - 1) * limit;
-    const { whereSql, params } = this.buildAccessLogWhere(filters);
+    const { whereSql, params } = this.buildAccessLogWhere(filters, options);
     const totalRow = await this.get(`SELECT COUNT(*) AS total FROM access_logs ${whereSql}`, params);
     const rows = await this.all(
       `SELECT
@@ -540,7 +541,11 @@ class AccessLogStore {
       return null;
     }
     await this.ready;
-    const { whereSql, params } = this.buildAccessLogWhere(filters);
+    const hasIdentityFilter = Boolean(filters.ip || filters.userId || filters.sessionId);
+    if (!hasIdentityFilter) {
+      return null;
+    }
+    const { whereSql, params } = this.buildAccessLogWhere(filters, { exactIdentityMatch: true });
     if (!whereSql) {
       return null;
     }

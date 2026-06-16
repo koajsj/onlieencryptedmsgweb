@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#e6ece6" />
+    <meta name="color-scheme" content="light" />
+    <title>用户详情</title>
+    <link rel="stylesheet" href="./admin.min.css?v=d4550dd5c1" />
+    <link rel="stylesheet" href="./admin-user.min.css?v=eb4eb94a6f" />
+  </head>
+  <body>
+    <main class="admin-root user-detail-root">
+      <section class="dashboard user-detail-shell">
+        <aside class="sidebar user-detail-sidebar">
+          <div class="sidebar-brand">
+            <img class="brand-logo" src="./echo-logo.png" alt="Echo" />
+            <div class="brand-copy">
+              <strong>Echo</strong>
+              <p>用户档案页</p>
+            </div>
+          </div>
+          <nav class="sidebar-nav" aria-label="详情导航">
+            <a href="./admin.html#usersPanel">返回用户管理</a>
+            <a href="#identityPanel">身份信息</a>
+            <a href="#activityPanel">活跃状态</a>
+            <a href="#accessPanel">访问画像</a>
+            <a href="#conversationPanel">会话关系</a>
+            <a href="#messagePanel">最近消息</a>
+            <a href="#auditPanel">相关审计</a>
+          </nav>
+          <div class="sidebar-footer">
+            <button id="detailLogoutButton" type="button" class="button secondary">退出登录</button>
+          </div>
+        </aside>
+
+        <div class="main-stage">
+          <header class="topbar user-hero">
+            <div class="topbar-copy">
+              <div class="user-hero-kicker">Focused Profile</div>
+              <h1 id="detailTitle">用户详情</h1>
+              <p id="detailSubtitle">读取用户档案中...</p>
+            </div>
+            <div class="toolbar">
+              <a id="backToUsersLink" href="./admin.html#usersPanel" class="button secondary">返回列表</a>
+              <span class="status-pill" id="detailRefreshMeta">尚未刷新</span>
+              <button id="detailRefreshButton" type="button" class="button">刷新详情</button>
+            </div>
+          </header>
+
+          <section class="panel user-hero-panel">
+            <div class="user-hero-grid">
+              <article class="user-badge-card">
+                <div class="user-badge-avatar" id="detailAvatar">?</div>
+                <div class="user-badge-copy">
+                  <div class="user-badge-label">当前查看用户</div>
+                  <strong id="detailUsername">-</strong>
+                  <span id="detailUsernameKey">-</span>
+                </div>
+              </article>
+              <div class="overview-grid user-overview-grid" id="detailOverviewGrid"></div>
+            </div>
+          </section>
+
+          <div class="content-stack">
+            <div class="detail-columns">
+              <section class="panel" id="identityPanel">
+                <div class="panel-head">
+                  <h3><span class="sec-icon" aria-hidden="true">◎</span>身份信息</h3>
+                  <span class="detail-badge">账号与密钥摘要</span>
+                </div>
+                <div class="detail-list" id="identityList"></div>
+                <div class="detail-list key-material-list" id="cryptoList"></div>
+              </section>
+
+              <section class="panel action-panel" id="activityPanel">
+                <div class="panel-head">
+                  <h3><span class="sec-icon" aria-hidden="true">◍</span>账号操作</h3>
+                  <span class="detail-badge" id="actionStatusBadge">待加载</span>
+                </div>
+                <form id="renameForm" class="detail-form">
+                  <label><span>修改用户名</span><input id="renameInput" placeholder="3-24 字母数字下划线" /></label>
+                  <button type="submit" class="button secondary">保存用户名</button>
+                </form>
+                <form id="passwordForm" class="detail-form">
+                  <label><span>新密码</span><input id="passwordInput" type="password" placeholder="4-72 位" /></label>
+                  <label><span>确认新密码</span><input id="passwordConfirmInput" type="password" placeholder="再次输入密码" /></label>
+                  <button type="submit" class="button secondary">重置密码</button>
+                </form>
+                <form id="banForm" class="detail-form">
+                  <label><span>封禁原因</span><input id="banReasonInput" placeholder="封禁时填写原因，解封时可留空" /></label>
+                  <button id="banToggleButton" type="submit" class="button danger">更新封禁状态</button>
+                </form>
+                <div class="detail-list" id="sessionList"></div>
+              </section>
+            </div>
+
+            <div class="detail-columns">
+              <section class="panel" id="accessPanel">
+                <div class="panel-head">
+                  <h3><span class="sec-icon" aria-hidden="true">▤</span>访问画像</h3>
+                  <span class="detail-badge" id="accessBadge">最近 12 条日志</span>
+                </div>
+                <div class="detail-list" id="accessProfileList"></div>
+                <div class="detail-list" id="accessLogsList"></div>
+              </section>
+
+              <section class="panel" id="conversationPanel">
+                <div class="panel-head">
+                  <h3><span class="sec-icon" aria-hidden="true">◈</span>会话关系</h3>
+                  <span class="detail-badge">最近活跃对话</span>
+                </div>
+                <div class="detail-list" id="conversationList"></div>
+              </section>
+            </div>
+
+            <div class="detail-columns">
+              <section class="panel" id="messagePanel">
+                <div class="panel-head">
+                  <h3><span class="sec-icon" aria-hidden="true">◇</span>最近消息</h3>
+                  <span class="detail-badge">按时间倒序</span>
+                </div>
+                <div class="messages-list" id="messageList"></div>
+              </section>
+
+              <section class="panel" id="auditPanel">
+                <div class="panel-head">
+                  <h3><span class="sec-icon" aria-hidden="true">◌</span>相关审计</h3>
+                  <span class="detail-badge">关联该用户的管理员操作</span>
+                </div>
+                <div class="messages-list" id="auditList"></div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="detailToast"></div>
+    <script src="./admin-user.min.js?v=35ea7366e9" defer></script>
+  </body>
+</html>

@@ -12,6 +12,7 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const SERVER_PATH = path.join(ROOT_DIR, "server.js");
 const TEST_ADMIN_USERNAME = "admin";
 const TEST_ADMIN_PASSWORD = "test-admin-pass";
+const TEST_ADMIN_PLAIN_PASSWORD = "plain-admin-pass";
 const TEST_ADMIN_PASSWORD_HASH = "scrypt:0123456789abcdeffedcba9876543210:1b8da2d25cf5bf40cecd23f19fbd6f225b891a051f41153d3cfb4b3ca8e8950fc8a851e67509171cd20a3484e9d9fecc8577c03810b52327fbfe3bb1b18bc7ff";
 
 const SAMPLE_BUNDLES = {
@@ -779,6 +780,14 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.equal(users.response.status, 200);
     assert.ok(users.json.users.some((item) => item.username === "AdminA"));
 
+    const userDetail = await getJson(server.port, "/api/admin/users/AdminA", adminToken);
+    assert.equal(userDetail.response.status, 200);
+    assert.equal(userDetail.json.detail.user.username, "AdminA");
+    assert.equal(userDetail.json.detail.access.profile.userId, "AdminA");
+    assert.ok(userDetail.json.detail.messageStats.total >= 1);
+    assert.ok(userDetail.json.detail.sessions.length >= 1);
+    assert.ok(userDetail.json.detail.recentMessages.some((item) => item.ciphertext === messageBody.message.ciphertext));
+
     const invalidBan = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/AdminA`, {
       method: "PATCH",
       headers: {
@@ -804,6 +813,11 @@ test("admin can login, view stats/messages and ban users", async () => {
       body: JSON.stringify({ banned: true, bannedReason: "test-ban" })
     });
     assert.equal(banResponse.status, 200);
+
+    const bannedDetail = await getJson(server.port, "/api/admin/users/AdminA", adminToken);
+    assert.equal(bannedDetail.response.status, 200);
+    assert.equal(bannedDetail.json.detail.user.banned, true);
+    assert.ok(bannedDetail.json.detail.audit.some((item) => item.action === "admin_user_patch"));
 
     const blockedLogin = await postJson(server.port, "/api/login", {
       username: "AdminA",
@@ -856,13 +870,13 @@ test("session auth prefers a valid cookie and falls back to a valid bearer token
 test("admin login accepts account alias and plain password configuration", async () => {
   const server = await startServer({
     ADMIN_PASSWORD_HASH: "",
-    ADMIN_PASSWORD: "qwer@1234"
+    ADMIN_PASSWORD: TEST_ADMIN_PLAIN_PASSWORD
   });
 
   try {
     const login = await postJson(server.port, "/api/admin/login", {
       account: "admin",
-      password: "qwer@1234"
+      password: TEST_ADMIN_PLAIN_PASSWORD
     });
     assert.equal(login.status, 200);
     const payload = await login.json();
@@ -975,13 +989,16 @@ test("admin credentials must come from environment configuration", async () => {
   }
 });
 
-test("admin login works out of the box with the built-in default credentials", async () => {
-  const server = await startServer({
+test("server fails fast when admin credentials are missing", async () => {
+  const result = await startServerAndWaitForExit({
     ADMIN_USERNAME: "",
     ADMIN_PASSWORD_HASH: "",
     ADMIN_PASSWORD: ""
   });
 
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /admin credentials are not configured/i);
+  /*
   try {
     const defaultLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",
@@ -1002,10 +1019,22 @@ test("admin login works out of the box with the built-in default credentials", a
   }
 });
 
+*/
+});
+
+test("server rejects the built-in default admin password", async () => {
+  const result = await startServerAndWaitForExit({
+    ADMIN_PASSWORD_HASH: "",
+    ADMIN_PASSWORD: "qwer@1234"
+  });
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /insecure default admin password is disabled/i);
+});
+
 test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD over stale hash", async () => {
   const server = await startServer({
     ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
-    ADMIN_PASSWORD: "qwer@1234",
+    ADMIN_PASSWORD: TEST_ADMIN_PLAIN_PASSWORD,
     ADMIN_UPDATE_PASSPHRASE: "test-passphrase",
     ADMIN_CONFIG_ENV_FILE: path.join(os.tmpdir(), `secure-chat-admin-${Date.now()}.env`)
   });
@@ -1013,7 +1042,7 @@ test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD
   try {
     const defaultLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",
-      password: "qwer@1234"
+      password: TEST_ADMIN_PLAIN_PASSWORD
     });
     assert.equal(defaultLogin.status, 200);
 
@@ -1027,7 +1056,7 @@ test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD
 
     const oldLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",
-      password: "qwer@1234"
+      password: TEST_ADMIN_PLAIN_PASSWORD
     });
     assert.equal(oldLogin.status, 401);
 
@@ -1043,7 +1072,7 @@ test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD
 
 test("admin login and reset can recover from env file changes without restarting the process", async () => {
   const envFile = path.join(os.tmpdir(), `secure-chat-admin-runtime-${Date.now()}.env`);
-  fs.writeFileSync(envFile, "ADMIN_USERNAME=admin\nADMIN_PASSWORD=qwer@1234\n", "utf8");
+  fs.writeFileSync(envFile, `ADMIN_USERNAME=admin\nADMIN_PASSWORD=${TEST_ADMIN_PLAIN_PASSWORD}\n`, "utf8");
   const server = await startServer({
     ADMIN_USERNAME: "",
     ADMIN_PASSWORD: "",
@@ -1055,13 +1084,13 @@ test("admin login and reset can recover from env file changes without restarting
   try {
     const defaultLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",
-      password: "qwer@1234"
+      password: TEST_ADMIN_PLAIN_PASSWORD
     });
     assert.equal(defaultLogin.status, 200);
 
     fs.writeFileSync(
       envFile,
-      "ADMIN_USERNAME=admin\nADMIN_PASSWORD=qwer@1234\nADMIN_UPDATE_PASSPHRASE=test-passphrase\n",
+      `ADMIN_USERNAME=admin\nADMIN_PASSWORD=${TEST_ADMIN_PLAIN_PASSWORD}\nADMIN_UPDATE_PASSPHRASE=test-passphrase\n`,
       "utf8"
     );
 
@@ -1221,6 +1250,27 @@ test("access log collection stores client metadata and exposes admin analytics",
     });
     assert.equal(conversations.response.status, 200);
 
+    const landing2 = await fetch(`http://127.0.0.1:${server.port}/`);
+    assert.equal(landing2.status, 200);
+    const accessCookie2 = String(landing2.headers.get("set-cookie") || "")
+      .split(",")
+      .find((item) => item.includes("secure_chat_visit="))?.split(";")[0] || "";
+    assert.match(accessCookie2, /secure_chat_visit=/);
+
+    const register2 = await postJsonWithOptions(
+      server.port,
+      "/api/register",
+      {
+        username: "VisitorA2",
+        password: "pass1234",
+        ...SAMPLE_BUNDLES.Bob
+      },
+      {
+        cookie: accessCookie2
+      }
+    );
+    assert.equal(register2.status, 201);
+
     const adminLogin = await postJson(server.port, "/api/admin/login", {
       username: TEST_ADMIN_USERNAME,
       password: TEST_ADMIN_PASSWORD
@@ -1236,6 +1286,10 @@ test("access log collection stores client metadata and exposes admin analytics",
     assert.ok(summary.json.summary.totals.pageViews >= 1);
     assert.ok(summary.json.summary.topPages.some((row) => row.path === "/"));
 
+    const dashboard = await getJson(server.port, "/api/admin/dashboard/stats", adminToken);
+    assert.equal(dashboard.response.status, 200);
+    assert.equal(dashboard.json.dashboard.systemStatus.label, "正常");
+
     const logs = await getJson(server.port, "/api/admin/access/logs?sessionId=" + encodeURIComponent(accessCookie.split("=")[1]), adminToken);
     assert.equal(logs.response.status, 200);
     assert.ok(logs.json.rows.length >= 1);
@@ -1247,6 +1301,8 @@ test("access log collection stores client metadata and exposes admin analytics",
     assert.equal(profile.json.profile.userId, "VisitorA");
     assert.ok(profile.json.profile.visits >= 1);
     assert.equal(profile.json.profile.clientMeta.language, "zh-CN");
+    assert.equal(profile.json.profile.sessionId, accessCookie.split("=")[1]);
+    assert.notEqual(profile.json.profile.sessionId, accessCookie2.split("=")[1]);
   } finally {
     await server.stop();
   }

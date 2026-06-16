@@ -9,14 +9,17 @@ const MANIFEST_PATH = path.join(ROOT_DIR, "public/build-manifest.json");
 const CHECKS = [
   { source: "public/app.js", built: "public/app.min.js" },
   { source: "public/admin.js", built: "public/admin.min.js" },
+  { source: "public/admin-user.js", built: "public/admin-user.min.js" },
   { source: "public/styles.css", built: "public/styles.min.css" },
-  { source: "public/admin.css", built: "public/admin.min.css" }
+  { source: "public/admin.css", built: "public/admin.min.css" },
+  { source: "public/admin-user.css", built: "public/admin-user.min.css" }
 ];
 
 // HTML files that reference built assets and need cache-busting query params
 const HTML_FILES = [
   path.join(ROOT_DIR, "public/index.html"),
-  path.join(ROOT_DIR, "public/admin.html")
+  path.join(ROOT_DIR, "public/admin.html"),
+  path.join(ROOT_DIR, "public/admin-user.html")
 ];
 
 function sha256Hex(buffer) {

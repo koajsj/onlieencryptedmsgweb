@@ -763,6 +763,26 @@ label span {
   font-size: 12px;
 }
 
+.user-cell {
+  display: grid;
+  gap: 4px;
+}
+
+.user-link {
+  color: var(--color-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.user-link:hover {
+  text-decoration: underline;
+}
+
+.user-subtle {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
 .filters,
 .batch-bar,
 .pager-actions,

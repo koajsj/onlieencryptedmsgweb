@@ -13,14 +13,29 @@ APP_DIR="${APP_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 APP_BRANCH="${APP_BRANCH:-main}"
 ENV_FILE="${ENV_FILE:-/etc/default/${APP_NAME}}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SAFE_RESET_PATHS=(
   "public/app.min.js"
   "public/admin.min.js"
+  "public/admin-user.min.js"
   "public/styles.min.css"
   "public/admin.min.css"
+  "public/admin-user.min.css"
   "public/build-manifest.json"
 )
+
+hash_password() {
+  local password="$1"
+  node -e "const crypto=require('node:crypto');const password=process.argv[1];const salt=crypto.randomBytes(16).toString('hex');const hash=crypto.scryptSync(password,salt,64).toString('hex');process.stdout.write('scrypt:'+salt+':'+hash);" "$password"
+}
+
+read_env_value() {
+  local key="$1"
+  if [ ! -f "${ENV_FILE}" ]; then
+    return 1
+  fi
+  grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 | cut -d '=' -f 2-
+}
 
 ensure_line() {
   local key="$1"
@@ -43,9 +58,28 @@ normalize_environment_file() {
   if [ ! -f "${ENV_FILE}" ]; then
     return
   fi
+  local existing_username=""
+  local existing_password=""
+  local existing_hash=""
+  existing_username="$(read_env_value "ADMIN_USERNAME" || true)"
+  existing_password="$(read_env_value "ADMIN_PASSWORD" || true)"
+  existing_hash="$(read_env_value "ADMIN_PASSWORD_HASH" || true)"
+
+  if [ -n "${existing_username}" ]; then
+    ADMIN_USERNAME="${existing_username}"
+  fi
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
-  ensure_line "ADMIN_PASSWORD" "${ADMIN_PASSWORD}"
-  remove_line "ADMIN_PASSWORD_HASH"
+
+  if [ -n "${existing_hash}" ]; then
+    ensure_line "ADMIN_PASSWORD_HASH" "${existing_hash}"
+    remove_line "ADMIN_PASSWORD"
+  elif [ -n "${existing_password}" ]; then
+    ensure_line "ADMIN_PASSWORD_HASH" "$(hash_password "${existing_password}")"
+    remove_line "ADMIN_PASSWORD"
+  elif [ -n "${ADMIN_PASSWORD}" ]; then
+    ensure_line "ADMIN_PASSWORD_HASH" "$(hash_password "${ADMIN_PASSWORD}")"
+    remove_line "ADMIN_PASSWORD"
+  fi
   chmod 0600 "${ENV_FILE}" 2>/dev/null || true
 }
 
