@@ -1563,10 +1563,6 @@ img {
   background: rgba(17, 17, 17, 0.06);
 }
 
-.composer-main {
-  grid-template-columns: 44px minmax(0, 1fr) 116px;
-}
-
 .emoji-panel {
   position: absolute;
   left: 20px;
