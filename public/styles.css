@@ -2250,6 +2250,8 @@ body.is-dialog-open {
     gap: 5px;
     padding: 8px 10px;
     border-radius: 14px;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.72);
   }
 
   .nav-button span:last-child {
@@ -2257,14 +2259,15 @@ body.is-dialog-open {
   }
 
   .nav-button.is-active {
-    background: rgba(17, 17, 17, 0.1);
-    color: #111111;
-    box-shadow: inset 0 0 0 1px rgba(17, 17, 17, 0.08);
+    background: linear-gradient(180deg, #202020, #101010);
+    color: #ffffff;
+    border-color: rgba(17, 17, 17, 0.16);
+    box-shadow: 0 12px 22px rgba(17, 17, 17, 0.16);
   }
 
   .nav-button.is-active span,
   .nav-button.is-active svg {
-    color: #111111;
+    color: #ffffff;
   }
 
   .sidebar-profile-button {
@@ -2421,9 +2424,9 @@ body.is-dialog-open {
 
   .thread-tools-actions .ghost-button {
     width: 100%;
-    min-height: 40px;
+    min-height: 42px;
     padding: 6px 6px;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.15;
     color: #30302d;
     white-space: normal;
@@ -3121,4 +3124,126 @@ body.is-dialog-open {
 /* --- Item 7: detail-action-grid with 2 columns --- */
 .detail-action-grid-2col {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* --- Item 20: Unified light theme and tighter small-screen layout --- */
+html,
+body {
+  background: linear-gradient(180deg, #fbfbfa 0%, #f1f1ee 100%);
+}
+
+.avatar,
+.avatar-tone-0,
+.avatar-tone-1,
+.avatar-tone-2,
+.avatar-tone-3,
+.avatar-tone-4,
+.avatar-tone-5,
+.sidebar-profile-avatar,
+.avatar-pick {
+  border: 1px solid rgba(17, 17, 17, 0.08);
+  background: linear-gradient(180deg, #fafaf8, #e8e8e4) !important;
+  color: #131313 !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.auth-tab.is-active,
+.dialog-tab.is-active,
+.nav-button.is-active,
+.primary-button,
+.scroll-bottom-button,
+.unread-badge,
+.message.mine .bubble,
+.message.mine .bubble-file,
+.message.is-own .bubble,
+.message.is-own .bubble-file {
+  border: 1px solid rgba(17, 17, 17, 0.12);
+  background: linear-gradient(180deg, rgba(244, 244, 240, 0.98), rgba(231, 231, 227, 0.96)) !important;
+  color: #131313 !important;
+  box-shadow: 0 12px 24px rgba(17, 17, 17, 0.08);
+}
+
+.auth-tab.is-active span,
+.auth-tab.is-active svg,
+.dialog-tab.is-active span,
+.dialog-tab.is-active svg,
+.nav-button.is-active span,
+.nav-button.is-active svg,
+.primary-button span,
+.primary-button svg,
+.scroll-bottom-button .arrow,
+.message.mine .bubble *,
+.message.mine .bubble-file *,
+.message.is-own .bubble *,
+.message.is-own .bubble-file * {
+  color: #131313 !important;
+}
+
+.send-button .send-icon,
+.send-button .send-label {
+  color: #131313 !important;
+}
+
+.count {
+  border: 1px solid rgba(17, 17, 17, 0.1);
+  background: #f6f6f3;
+  color: #131313;
+}
+
+.switch input:checked + .switch-slider {
+  background: #d6d6d1;
+}
+
+.nav-button.is-active:active,
+.nav-button.is-active:focus-visible,
+.primary-button:active,
+.primary-button:focus-visible {
+  background: linear-gradient(180deg, rgba(237, 237, 233, 0.98), rgba(224, 224, 219, 0.96)) !important;
+  color: #131313 !important;
+}
+
+.nav-button.is-active:active span,
+.nav-button.is-active:active svg,
+.nav-button.is-active:focus-visible span,
+.nav-button.is-active:focus-visible svg,
+.primary-button:active span,
+.primary-button:active svg,
+.primary-button:focus-visible span,
+.primary-button:focus-visible svg {
+  color: #131313 !important;
+}
+
+@media (max-width: 560px) {
+  .auth-screen {
+    padding: 16px;
+  }
+
+  .auth-card {
+    padding: 24px 18px;
+    border-radius: 24px;
+  }
+
+  .thread-tools-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .thread-tools-actions .ghost-button:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .contact-panel-header,
+  .contact-panel-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .contact-panel-header-actions > * {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+
+  .detail-action-grid {
+    grid-template-columns: 1fr;
+  }
 }
