@@ -176,6 +176,7 @@ const ADMIN_AUDIT_SHA_ALGO = "sha256";
 const ADMIN_AUDIT_HMAC_DOMAIN = "secure-chat/admin-audit-hmac-v1";
 let adminConfig = readConfiguredAdminConfig();
 validateConfiguredAdminConfig(adminConfig);
+warnIfWeakAdminCredential(adminConfig);
 const adminAuditHmacKeyState = readAuditHmacKeyState(adminConfig.credential);
 const accessLogStore = createAccessLogStore({
   dataDir: DATA_DIR,
@@ -927,7 +928,8 @@ function readConfiguredAdminCredential() {
   if (fromEnv.length >= 4 && fromEnv.length <= 72) {
     return {
       type: "plain",
-      value: fromEnv
+      value: fromEnv,
+      source: "configured"
     };
   }
 
@@ -935,20 +937,23 @@ function readConfiguredAdminCredential() {
   if (isPasswordHashFormat(hash)) {
     return {
       type: "hash",
-      value: hash
+      value: hash,
+      source: "configured"
     };
   }
 
   if (ALLOW_INSECURE_DEFAULT_ADMIN) {
     return {
       type: "plain",
-      value: DEFAULT_ADMIN_PASSWORD_VALUE
+      value: DEFAULT_ADMIN_PASSWORD_VALUE,
+      source: "fallback"
     };
   }
 
   return {
     type: "missing",
-    value: ""
+    value: "",
+    source: "missing"
   };
 }
 
@@ -960,9 +965,22 @@ function validateConfiguredAdminConfig(config = adminConfig) {
   if (
     credential.type === "plain" &&
     credential.value === DEFAULT_ADMIN_PASSWORD_VALUE &&
+    credential.source !== "configured" &&
     !ALLOW_INSECURE_DEFAULT_ADMIN
   ) {
     throw new Error("insecure default admin password is disabled; set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
+  }
+}
+
+function warnIfWeakAdminCredential(config = adminConfig) {
+  const credential = config?.credential;
+  if (
+    credential &&
+    credential.type === "plain" &&
+    credential.value === DEFAULT_ADMIN_PASSWORD_VALUE &&
+    credential.source === "configured"
+  ) {
+    console.warn("[security] legacy admin password is still set to the historical default; rotate ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
   }
 }
 
@@ -1112,6 +1130,7 @@ function persistAdminConfigToEnvironmentSafe(nextConfig) {
 function syncRuntimeAdminConfigFromConfiguredSources() {
   const nextConfig = readConfiguredAdminConfig();
   validateConfiguredAdminConfig(nextConfig);
+  warnIfWeakAdminCredential(nextConfig);
   if (
     nextConfig.username === adminConfig.username &&
     nextConfig.credential.type === adminConfig.credential.type &&

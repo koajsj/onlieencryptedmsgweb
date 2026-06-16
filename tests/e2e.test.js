@@ -1022,13 +1022,17 @@ test("server fails fast when admin credentials are missing", async () => {
 */
 });
 
-test("server rejects the built-in default admin password", async () => {
-  const result = await startServerAndWaitForExit({
+test("server accepts the explicitly configured legacy admin password", async () => {
+  const server = await startServer({
     ADMIN_PASSWORD_HASH: "",
     ADMIN_PASSWORD: "qwer@1234"
   });
-  assert.notEqual(result.exitCode, 0);
-  assert.match(result.stderr, /insecure default admin password is disabled/i);
+  try {
+    const health = await getJson(server.port, "/health", "");
+    assert.equal(health.response.status, 200);
+  } finally {
+    await server.stop();
+  }
 });
 
 test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD over stale hash", async () => {
