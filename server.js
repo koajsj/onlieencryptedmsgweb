@@ -21,7 +21,7 @@ const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 const MESSAGES_LOG_FILE = path.join(DATA_DIR, "messages.jsonl");
 const ADMIN_AUDIT_FILE = path.join(DATA_DIR, "admin_audit.jsonl");
 
-const MAX_BODY_BYTES = 128 * 1024;
+const MAX_BODY_BYTES = 12 * 1024 * 1024;
 const RATE_WINDOW_MS = 60 * 1000;
 const MAX_AUTH_REQUESTS_PER_WINDOW = 40;
 const MAX_API_REQUESTS_PER_WINDOW = 240;
@@ -61,7 +61,7 @@ const ENCRYPTED_PRIVATE_KEY_BYTES = { min: 96, max: 4096 };
 const MESSAGE_NONCE_BYTES = { min: 12, max: 24 };
 // AES-GCM ciphertext includes a 16-byte auth tag, so short plaintext messages
 // can legitimately produce ciphertext as small as 16 bytes.
-const MESSAGE_CIPHERTEXT_BYTES = { min: 16, max: 12288 };
+const MESSAGE_CIPHERTEXT_BYTES = { min: 16, max: 11 * 1024 * 1024 };
 
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
@@ -3142,6 +3142,42 @@ async function handleSendMessage(req, res, url) {
   });
 }
 
+async function handleRecallMessage(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const body = await readBody(req, res);
+  if (body === null) {
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    sendJson(res, 400, { error: "invalid json" });
+    return;
+  }
+  const messageId = String(parsed.messageId || "").trim();
+  if (!messageId) {
+    sendJson(res, 400, { error: "messageId required" });
+    return;
+  }
+  const target = messages.find((m) => m.id === messageId && m.from === session.username);
+  if (!target) {
+    sendJson(res, 404, { error: "message not found or not yours" });
+    return;
+  }
+  target.recalled = true;
+  target.ciphertext = "";
+  target.nonce = "";
+  schedulePersistMessages(target);
+  const peer = target.to === session.username ? target.from : target.to;
+  pushEventToUser(session.username, "message-recalled", { messageId, by: session.username, peer });
+  pushEventToUser(peer, "message-recalled", { messageId, by: session.username, peer: session.username });
+  sendJson(res, 200, { ok: true });
+}
+
 function handleCreateEventTicket(req, res, url) {
   const session = requireSession(req, res, url);
   if (!session) {
@@ -3443,6 +3479,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && pathname === "/api/messages") {
     void handleSendMessage(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/messages/recall") {
+    void handleRecallMessage(req, res, url);
     return;
   }
   if (req.method === "POST" && pathname === "/api/events/token") {

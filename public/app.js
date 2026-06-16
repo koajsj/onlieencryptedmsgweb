@@ -292,7 +292,8 @@ function normalizeAccountProfile(profile) {
   return {
     displayName: String(profile?.displayName || "").trim().slice(0, 32),
     statusText: String(profile?.statusText || "").trim().slice(0, 48),
-    about: String(profile?.about || "").trim().slice(0, 240)
+    about: String(profile?.about || "").trim().slice(0, 240),
+    avatarTone: Number.isFinite(Number(profile?.avatarTone)) ? Math.max(0, Math.min(5, Number(profile.avatarTone))) : 0
   };
 }
 
@@ -478,6 +479,53 @@ function showToast(message, kind = "info") {
   }, 2400);
 }
 
+function addNotification(from, text, timestamp) {
+  const list = document.querySelector("#notificationList");
+  if (!list) return;
+  const emptyEl = list.querySelector(".notification-empty");
+  if (emptyEl) emptyEl.remove();
+  const item = document.createElement("div");
+  item.className = "notification-item";
+  item.dataset.peer = from;
+  const tone = avatarTone(from);
+  const initial = escapeHtml(avatarInitial(from));
+  const displayName = escapeHtml(contactDisplayName(from));
+  const preview = escapeHtml(String(text || "").slice(0, 60));
+  const time = escapeHtml(formatTime(timestamp || Date.now()));
+  item.innerHTML = `<div class="avatar avatar-tone-${tone}">${initial}</div><div class="notification-item-copy"><strong>${displayName}</strong><span>${preview}</span><small>${time}</small></div>`;
+  item.addEventListener("click", () => {
+    const panel = document.querySelector("#notificationPanel");
+    if (panel) panel.hidden = true;
+    void openConversation(from);
+  });
+  list.prepend(item);
+  while (list.children.length > 50) {
+    list.lastElementChild?.remove();
+  }
+}
+
+function updateNotificationBadge() {
+  const badge = document.querySelector("#notificationBadge");
+  if (!badge) return;
+  let total = 0;
+  for (const conv of state.conversations) {
+    total += conv.unread || 0;
+  }
+  if (total > 0) {
+    badge.textContent = total > 99 ? "99+" : String(total);
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
+function clearNotificationBadge() {
+  const badge = document.querySelector("#notificationBadge");
+  if (badge) {
+    badge.hidden = true;
+  }
+}
+
 function setAccountMenuExpanded(expanded) {
   const value = expanded ? "true" : "false";
   elements.accountMenuButton?.setAttribute("aria-expanded", value);
@@ -553,15 +601,17 @@ function toggleAccountMenu(force, anchor = elements.accountMenuButton || element
 }
 
 function setSettingsDialogSection(section) {
-  const nextSection = section === "contact" ? "contact" : "account";
+  const nextSection = section === "security" ? "security" : "account";
   state.settingsDialogSection = nextSection;
   elements.accountSettingsTab?.classList.toggle("is-active", nextSection === "account");
-  elements.contactSettingsTab?.classList.toggle("is-active", nextSection === "contact");
+  const securityTab = document.querySelector("#securitySettingsTab");
+  securityTab?.classList.toggle("is-active", nextSection === "security");
   if (elements.accountSettingsForm) {
     elements.accountSettingsForm.hidden = nextSection !== "account";
   }
-  if (elements.contactSettingsForm) {
-    elements.contactSettingsForm.hidden = nextSection !== "contact";
+  const securityForm = document.querySelector("#securitySettingsForm");
+  if (securityForm) {
+    securityForm.hidden = nextSection !== "security";
   }
 }
 
@@ -579,39 +629,26 @@ function populateSettingsDialog() {
   if (elements.accountAboutInput) {
     elements.accountAboutInput.value = accountProfile.about;
   }
-
-  const peer = activePeerMeta();
-  const profile = peer ? activeContactProfile(peer.username) : normalizeContactProfile({});
-  if (elements.contactSettingsHeading) {
-    elements.contactSettingsHeading.textContent = peer ? `联系人详情 · ${contactDisplayName(peer.username)}` : "联系人详情";
+  const avatarPicker = document.querySelector("#avatarPicker");
+  if (avatarPicker) {
+    const currentTone = state.accountProfile?.avatarTone ?? 0;
+    for (const btn of avatarPicker.querySelectorAll(".avatar-pick")) {
+      const tone = Number(btn.dataset.avatarTone || 0);
+      btn.classList.toggle("is-selected", tone === currentTone);
+      const initial = avatarInitial(state.me?.username || "我");
+      btn.textContent = initial;
+    }
   }
-  if (elements.contactUsernameInput) {
-    elements.contactUsernameInput.value = peer?.username || "";
-  }
-  if (elements.contactDisplayNameInput) {
-    elements.contactDisplayNameInput.value = profile.displayName;
-  }
-  if (elements.contactRoleInput) {
-    elements.contactRoleInput.value = profile.role;
-  }
-  if (elements.contactAboutInput) {
-    elements.contactAboutInput.value = profile.about;
-  }
-  if (elements.contactMediaInput) {
-    elements.contactMediaInput.value = profile.media.join("\n");
-  }
-  if (elements.contactFilesInput) {
-    elements.contactFilesInput.value = profile.files
-      .map((file) => [file.name, file.meta].filter(Boolean).join(" | "))
-      .join("\n");
-  }
-  if (elements.contactSettingsTab) {
-    elements.contactSettingsTab.disabled = !peer;
-  }
+  const currentPw = document.querySelector("#currentPasswordInput");
+  const newPw = document.querySelector("#newPasswordInput");
+  const confirmPw = document.querySelector("#confirmPasswordInput");
+  if (currentPw) currentPw.value = "";
+  if (newPw) newPw.value = "";
+  if (confirmPw) confirmPw.value = "";
 }
 
 function openSettingsDialog(section = "account") {
-  const nextSection = section === "contact" && state.activePeer ? "contact" : "account";
+  const nextSection = section === "security" ? "security" : "account";
   state.settingsDialogOpen = true;
   if (elements.settingsDialog) {
     elements.settingsDialog.hidden = false;
@@ -730,8 +767,8 @@ async function sendAttachmentFiles(fileList) {
   }
   const files = Array.from(fileList || []).filter(Boolean).slice(0, 5);
   for (const file of files) {
-    if (file.size > 2 * 1024 * 1024) {
-      showToast(`${file.name} 超过 2MB，暂不支持`);
+    if (file.size > 10 * 1024 * 1024) {
+      showToast(`${file.name} 超过 10MB，暂不支持`);
       continue;
     }
     const dataUrl = String(file.type || "").startsWith("image/") ? await readFileAsDataUrl(file) : "";
@@ -1779,6 +1816,22 @@ function renderDetailFileRow(file) {
   return wrapper;
 }
 
+function extractFilesFromHistory(peerUsername) {
+  const messages = state.messageCache.get(peerUsername) || [];
+  const files = [];
+  for (const msg of messages) {
+    if (msg.recalled) continue;
+    const text = messagePlaintext(msg);
+    if (!text.startsWith("[附件]")) continue;
+    const lines = text.split("\n");
+    const nameLine = (lines[0] || "").replace("[附件] ", "").trim();
+    const metaLine = (lines[1] || "").trim();
+    const ext = nameLine.includes(".") ? nameLine.split(".").pop().toLowerCase() : "doc";
+    files.push({ name: nameLine, meta: metaLine, kind: ext.slice(0, 4) });
+  }
+  return files;
+}
+
 function renderContactDetails(peer) {
   if (!elements.contactDetailsEmpty || !elements.contactDetailsContent) {
     return;
@@ -1804,7 +1857,6 @@ function renderContactDetails(peer) {
   setAvatar(elements.detailsAvatar, peer.username);
   elements.detailsName.textContent = contactDisplayName(peer.username);
   elements.detailsStatus.textContent = peer.online ? "在线" : "离线";
-  elements.detailsStatusDot?.classList.toggle("is-online", Boolean(peer.online));
   elements.detailsRole.textContent = contactRoleLabel(peer.username);
   elements.detailsAbout.textContent = contactAboutText(peer.username);
   elements.notificationsToggle.checked = !prefs.muted;
@@ -1830,12 +1882,16 @@ function renderContactDetails(peer) {
   }
 
   elements.detailsFilesList.textContent = "";
-  if (fileEntries.length === 0) {
+  const historyFiles = extractFilesFromHistory(peer.username);
+  if (historyFiles.length === 0 && fileEntries.length === 0) {
     const empty = document.createElement("div");
     empty.className = "detail-file-row detail-file-empty";
-    empty.innerHTML = "<span>暂无文件说明，可在编辑面板中添加。</span>";
+    empty.innerHTML = "<span>暂无共享文件。发送文件后将在此处显示。</span>";
     elements.detailsFilesList.append(empty);
   } else {
+    for (const file of historyFiles) {
+      elements.detailsFilesList.append(renderDetailFileRow(file));
+    }
     for (const file of fileEntries) {
       elements.detailsFilesList.append(renderDetailFileRow(file));
     }
@@ -3210,6 +3266,10 @@ async function ingestEncryptedMessage(message) {
   } else {
     renderSidebar();
   }
+  if (!decrypted.mine) {
+    addNotification(peer, decrypted.text, decrypted.createdAt);
+  }
+  updateNotificationBadge();
 }
 
 async function createEventTicket() {
@@ -3271,6 +3331,11 @@ async function openEventStream() {
   source.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
     void ingestEncryptedMessage(payload);
+  });
+
+  source.addEventListener("message-recalled", (event) => {
+    const payload = JSON.parse(event.data);
+    handleRemoteRecall(payload);
   });
 
   source.addEventListener("error", () => {
@@ -3562,7 +3627,30 @@ function recallMessageById(peer, messageId) {
   renderSidebar();
   renderThread({ scrollBehavior: "preserve" });
   showToast("\u6d88\u606f\u5df2\u64a4\u56de");
+  const serverId = target.id || messageId;
+  if (serverId && !target.tempId) {
+    api("/api/messages/recall", { method: "POST", body: JSON.stringify({ messageId: serverId }) }).catch(() => {});
+  }
   }, messageNode ? 180 : 0);
+}
+
+function handleRemoteRecall(payload) {
+  const peer = payload.peer;
+  const messageId = payload.messageId;
+  if (!peer || !messageId) return;
+  const messages = state.messageCache.get(peer) || [];
+  const target = messages.find((item) => item.id === messageId);
+  if (!target || target.recalled) return;
+  target.recalled = true;
+  target.text = "";
+  const conversation = getConversation(peer);
+  if (conversation && conversation.latestMessage && conversation.latestMessage.id === target.id) {
+    conversation.previewText = "\u5bf9\u65b9\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f";
+  }
+  renderSidebar();
+  if (state.activePeer === peer) {
+    renderThread({ scrollBehavior: "preserve" });
+  }
 }
 
 function handleListClick(event) {
@@ -3696,54 +3784,37 @@ function setPeerMutedState(peer, muted) {
 }
 
 function saveSettingsDialog() {
-  if (state.settingsDialogSection === "contact") {
-    const peer = state.activePeer;
-    if (!peer) {
-      showToast("请先选择联系人", "error");
-      return;
-    }
-    const nextProfile = normalizeContactProfile({
-      displayName: elements.contactDisplayNameInput?.value || "",
-      role: elements.contactRoleInput?.value || "",
-      about: elements.contactAboutInput?.value || "",
-      media: parseMediaInput(elements.contactMediaInput?.value || ""),
-      files: parseFileInput(elements.contactFilesInput?.value || "")
-    });
-    if (!nextProfile.displayName && !nextProfile.role && !nextProfile.about && nextProfile.media.length === 0 && nextProfile.files.length === 0) {
-      delete state.contactProfiles[peer];
-    } else {
-      state.contactProfiles[peer] = nextProfile;
-    }
-    saveContactProfiles();
-    render();
-    populateSettingsDialog();
-    showToast("联系人资料已保存");
+  if (state.settingsDialogSection === "security") {
+    showToast("安全设置无需保存，请使用对应按钮操作");
     return;
   }
+
+  const selectedTone = document.querySelector("#avatarPicker .avatar-pick.is-selected");
+  const avatarTone = selectedTone ? Number(selectedTone.dataset.avatarTone || 0) : (state.accountProfile?.avatarTone ?? 0);
 
   state.accountProfile = normalizeAccountProfile({
     displayName: elements.accountDisplayNameInput?.value || "",
     statusText: elements.accountStatusInput?.value || "",
-    about: elements.accountAboutInput?.value || ""
+    about: elements.accountAboutInput?.value || "",
+    avatarTone
   });
   saveAccountProfile();
   updateWorkspaceStatus();
   renderThread({ scrollBehavior: "preserve" });
+  renderSidebar();
   populateSettingsDialog();
   showToast("账号信息已保存");
 }
 
 function resetSettingsDialogSection() {
-  if (state.settingsDialogSection === "contact") {
-    if (!state.activePeer) {
-      showToast("请先选择联系人", "error");
-      return;
-    }
-    delete state.contactProfiles[state.activePeer];
-    saveContactProfiles();
-    render();
-    populateSettingsDialog();
-    showToast("联系人资料已重置");
+  if (state.settingsDialogSection === "security") {
+    const currentPw = document.querySelector("#currentPasswordInput");
+    const newPw = document.querySelector("#newPasswordInput");
+    const confirmPw = document.querySelector("#confirmPasswordInput");
+    if (currentPw) currentPw.value = "";
+    if (newPw) newPw.value = "";
+    if (confirmPw) confirmPw.value = "";
+    showToast("安全设置已重置");
     return;
   }
 
@@ -3909,21 +3980,15 @@ function bindEvents() {
   elements.settingsButton?.addEventListener("click", () => {
     openSettingsDialog("account");
   });
-  elements.accountMenuButton?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    toggleAccountMenu(undefined, event.currentTarget);
+  elements.accountMenuButton?.addEventListener("click", () => {
+    openSettingsDialog("account");
   });
   elements.editAccountButton?.addEventListener("click", () => {
     closeAccountMenu();
     openSettingsDialog("account");
   });
-  elements.logoutMenuButton?.addEventListener("click", () => {
-    closeAccountMenu();
-    void logout();
-  });
-  elements.sidebarProfileButton?.addEventListener("click", (event) => {
-    event.stopPropagation();
-    toggleAccountMenu(undefined, event.currentTarget);
+  elements.sidebarProfileButton?.addEventListener("click", () => {
+    toggleAccountMenu(undefined, elements.sidebarProfileButton);
   });
   elements.navMessagesButton?.addEventListener("click", () => setActiveNavSection("messages"));
   elements.navContactsButton?.addEventListener("click", () => setActiveNavSection("contacts"));
@@ -3966,8 +4031,6 @@ function bindEvents() {
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
   elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
   elements.headerSearchButton?.addEventListener("click", focusThreadSearch);
-  elements.headerCallButton?.addEventListener("click", () => handlePresenceAction("call"));
-  elements.headerVideoButton?.addEventListener("click", () => handlePresenceAction("video"));
   elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
   elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
   elements.editContactButton?.addEventListener("click", () => {
@@ -4088,6 +4151,69 @@ function bindEvents() {
     if (state.connectionState !== "online" && !state.reconnectTimer) {
       startEventStream(true);
     }
+  });
+
+  const notificationBellButton = document.querySelector("#notificationBellButton");
+  const notificationPanel = document.querySelector("#notificationPanel");
+  notificationBellButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (notificationPanel) {
+      const isOpen = !notificationPanel.hidden;
+      notificationPanel.hidden = isOpen;
+      if (!isOpen) {
+        const rect = notificationBellButton.getBoundingClientRect();
+        notificationPanel.style.top = `${rect.bottom + 8}px`;
+        notificationPanel.style.right = `${window.innerWidth - rect.right}px`;
+        notificationPanel.style.left = "auto";
+        clearNotificationBadge();
+      }
+    }
+  });
+  document.addEventListener("click", (origEvent) => {
+    if (notificationPanel && !notificationPanel.hidden && !origEvent.target.closest("#notificationPanel") && !origEvent.target.closest("#notificationBellButton")) {
+      notificationPanel.hidden = true;
+    }
+  });
+
+  const avatarPicker = document.querySelector("#avatarPicker");
+  avatarPicker?.addEventListener("click", (event) => {
+    const pick = event.target.closest(".avatar-pick");
+    if (!pick) return;
+    for (const btn of avatarPicker.querySelectorAll(".avatar-pick")) {
+      btn.classList.remove("is-selected");
+    }
+    pick.classList.add("is-selected");
+  });
+
+  const changePasswordButton = document.querySelector("#changePasswordButton");
+  changePasswordButton?.addEventListener("click", () => {
+    const currentPw = document.querySelector("#currentPasswordInput")?.value || "";
+    const newPw = document.querySelector("#newPasswordInput")?.value || "";
+    const confirmPw = document.querySelector("#confirmPasswordInput")?.value || "";
+    if (!currentPw || !newPw || !confirmPw) {
+      showToast("请填写所有密码字段", "error");
+      return;
+    }
+    if (newPw !== confirmPw) {
+      showToast("两次输入的新密码不一致", "error");
+      return;
+    }
+    if (newPw.length < 4) {
+      showToast("新密码至少需要 4 个字符", "error");
+      return;
+    }
+    showToast("密码修改功能需要后端支持，请联系管理员");
+  });
+
+  const settingsLogoutButton = document.querySelector("#settingsLogoutButton");
+  settingsLogoutButton?.addEventListener("click", () => {
+    closeSettingsDialog();
+    void logout();
+  });
+  const settingsLogoutAllButton = document.querySelector("#settingsLogoutAllButton");
+  settingsLogoutAllButton?.addEventListener("click", () => {
+    closeSettingsDialog();
+    void logoutAllDevices();
   });
 }
 
