@@ -412,7 +412,7 @@ function renderStats() {
   for (const [label, value] of items) {
     const card = document.createElement("article");
     card.className = "stat-card";
-    card.innerHTML = `<h4>${label}</h4><strong>${value}</strong>`;
+    card.innerHTML = `<h4>${escapeHtml(label)}</h4><strong>${escapeHtml(value)}</strong>`;
     elements.statsGrid.append(card);
   }
 }
@@ -754,8 +754,8 @@ function renderMessages() {
     article.className = "msg-item";
     article.innerHTML = `
       <div class="msg-meta">
-        <span>${message.from} -> ${message.to}</span>
-        <span>${formatDateTime(message.createdAt)}</span>
+        <span>${escapeHtml(`${message.from} -> ${message.to}`)}</span>
+        <span>${escapeHtml(formatDateTime(message.createdAt))}</span>
       </div>
       <div class="msg-text"></div>
     `;

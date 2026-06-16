@@ -119,6 +119,7 @@ const eventTickets = new Map();
 const messageBuckets = new Map();
 const messageIdIndex = new Map();
 const messageClientIndex = new Map();
+const userPeersIndex = new Map();
 const usersByKey = new Map();
 const adminLoginFailures = new Map();
 const userLoginFailures = new Map();
@@ -423,11 +424,23 @@ function conversationBucketKey(leftUser, rightUser) {
     : `${rightUser}\u0000${leftUser}`;
 }
 
+function recordUserPeer(username, peer) {
+  if (!username || !peer || username === peer) {
+    return;
+  }
+  const peers = userPeersIndex.get(username) || new Set();
+  peers.add(peer);
+  userPeersIndex.set(username, peers);
+}
+
 function rebuildMessageBuckets() {
   messageBuckets.clear();
   messageIdIndex.clear();
   messageClientIndex.clear();
+  userPeersIndex.clear();
   for (const message of messages) {
+    recordUserPeer(message.from, message.to);
+    recordUserPeer(message.to, message.from);
     const key = conversationBucketKey(message.from, message.to);
     const bucket = messageBuckets.get(key) || [];
     bucket.push(message);
@@ -454,6 +467,8 @@ function rebuildUserIndex() {
 }
 
 function appendMessageBucket(message) {
+  recordUserPeer(message.from, message.to);
+  recordUserPeer(message.to, message.from);
   const key = conversationBucketKey(message.from, message.to);
   const bucket = messageBuckets.get(key) || [];
   bucket.push(message);
@@ -1073,33 +1088,6 @@ function removeEnvKey(lines, key) {
   return lines.filter((line) => !new RegExp(`^\\s*${key}=`).test(line));
 }
 
-function persistAdminConfigToEnvironment(nextConfig) {
-  const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
-  if (!envFilePath || !path.isAbsolute(envFilePath)) {
-    throw new Error("管理员配置文件路径无效");
-  }
-  const existingContent = fs.existsSync(envFilePath) ? fs.readFileSync(envFilePath, "utf8") : "";
-  let lines = String(existingContent || "").split(/\r?\n/).filter((line) => line.length > 0);
-  lines = upsertEnvLines(lines, "ADMIN_USERNAME", nextConfig.username);
-  if (nextConfig.credential.type === "plain") {
-    lines = upsertEnvLines(lines, "ADMIN_PASSWORD", nextConfig.credential.value);
-    lines = removeEnvKey(lines, "ADMIN_PASSWORD_HASH");
-  } else {
-    lines = upsertEnvLines(lines, "ADMIN_PASSWORD_HASH", nextConfig.credential.value);
-    lines = removeEnvKey(lines, "ADMIN_PASSWORD");
-  }
-  if (!parseEnvFile(existingContent).has("AUDIT_HMAC_KEY")) {
-    lines = upsertEnvLines(lines, "AUDIT_HMAC_KEY", adminAuditHmacKeyState.key.toString("hex"));
-  }
-  fs.mkdirSync(path.dirname(envFilePath), { recursive: true });
-  fs.writeFileSync(envFilePath, `${lines.join("\n")}\n`, "utf8");
-  try {
-    fs.chmodSync(envFilePath, 0o600);
-  } catch (error) {
-    // Ignore permission update failures on non-Linux environments.
-  }
-}
-
 function persistAdminConfigToEnvironmentSafe(nextConfig) {
   const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
   if (!envFilePath || !path.isAbsolute(envFilePath)) {
@@ -1286,14 +1274,6 @@ function requireAdminSession(req, res, url) {
   }
   if (session.role !== "admin") {
     sendJson(res, 403, { error: "admin required" });
-    return null;
-  }
-  return session;
-}
-
-function requireAdminPermission(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
     return null;
   }
   return session;
@@ -1666,11 +1646,6 @@ function normalizeReplyTargetView(replyTo) {
   };
 }
 
-function messagesForPair(leftUser, rightUser) {
-  const key = conversationBucketKey(leftUser, rightUser);
-  return messageBuckets.get(key) || [];
-}
-
 function resolveReplyTarget(leftUser, rightUser, replyToId) {
   const id = String(replyToId || "").trim();
   if (!id) {
@@ -1687,26 +1662,6 @@ function resolveReplyTarget(leftUser, rightUser, replyToId) {
     return null;
   }
   return normalizeReplyTargetView(message);
-}
-
-function listAdminMessagesPage(limit, beforeCursor) {
-  const all = [...messages].sort((left, right) => left.createdAt - right.createdAt);
-  let cutoffIndex = all.length;
-  if (beforeCursor?.id) {
-    const foundIndex = all.findIndex((item) => item.id === beforeCursor.id);
-    if (foundIndex >= 0) {
-      cutoffIndex = foundIndex;
-    }
-  }
-  const filtered = all.slice(0, cutoffIndex);
-  const hasMore = filtered.length > limit;
-  const items = hasMore ? filtered.slice(filtered.length - limit) : filtered;
-  const nextBefore = hasMore && items.length > 0 ? encodeMessageCursor(items[0]) : "";
-  return {
-    items,
-    hasMore,
-    nextBefore
-  };
 }
 
 function createMessageView(message, viewer) {
@@ -1759,14 +1714,9 @@ function buildConversationSummary(viewer, peer) {
 }
 
 function listConversationsFor(username) {
-  const peers = new Set();
-  for (const key of messageBuckets.keys()) {
-    const [leftUser, rightUser] = key.split("\u0000");
-    if (leftUser === username) {
-      peers.add(rightUser);
-    } else if (rightUser === username) {
-      peers.add(leftUser);
-    }
+  const peers = userPeersIndex.get(username);
+  if (!peers || peers.size === 0) {
+    return [];
   }
   return [...peers]
     .map((peer) => buildConversationSummary(username, peer))
@@ -1862,8 +1812,16 @@ function pagedMessagesBetween(leftUser, rightUser, limit, beforeCursor) {
 }
 
 function writeSse(res, event, payload) {
-  res.write(`event: ${event}\n`);
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  if (!res || res.writableEnded || res.destroyed) {
+    return false;
+  }
+  try {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function pushEventToUser(username, event, payload) {
@@ -1878,7 +1836,7 @@ function pushEventToUser(username, event, payload) {
 
 function pushPresence(username, online) {
   const payload = { username, online };
-  for (const [, connections] of onlineConnections) {
+  for (const connections of onlineConnections.values()) {
     if (connections.size === 0) {
       continue;
     }
@@ -1894,7 +1852,7 @@ function broadcastUserRename(previousUsername, nextUsername) {
     username: nextUsername,
     at: Date.now()
   };
-  for (const [, connections] of onlineConnections) {
+  for (const connections of onlineConnections.values()) {
     if (connections.size === 0) {
       continue;
     }
@@ -2436,7 +2394,7 @@ function handleAdminMe(req, res, url) {
 }
 
 function handleAdminStats(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2458,7 +2416,7 @@ function handleAdminStats(req, res, url) {
 }
 
 function handleAdminHealth(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2480,7 +2438,7 @@ function handleAdminHealth(req, res, url) {
 }
 
 function handleAdminDashboardStats(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2502,7 +2460,7 @@ function handleAdminDashboardStats(req, res, url) {
 }
 
 function handleAdminUsers(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2559,7 +2517,7 @@ function handleAdminUsers(req, res, url) {
 }
 
 async function handleAdminUserDetail(req, res, url, pathname) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2591,7 +2549,7 @@ async function handleAdminUserDetail(req, res, url, pathname) {
 }
 
 async function handleAdminUserPatch(req, res, url, pathname) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2712,7 +2670,7 @@ async function handleAdminUserPatch(req, res, url, pathname) {
 }
 
 async function handleAdminUsersBatch(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2779,7 +2737,7 @@ async function handleAdminUsersBatch(req, res, url) {
 }
 
 function handleAdminAuditLogs(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2802,7 +2760,7 @@ function handleAdminAuditLogs(req, res, url) {
 }
 
 function handleAdminExportMessages(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2861,7 +2819,7 @@ function handleAdminExportMessages(req, res, url) {
 }
 
 function handleAdminMessages(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2935,7 +2893,7 @@ async function handleClientMeta(req, res, url) {
 }
 
 async function handleAdminAccessSummary(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2957,7 +2915,7 @@ async function handleAdminAccessSummary(req, res, url) {
 }
 
 async function handleAdminAccessLogs(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -2985,7 +2943,7 @@ async function handleAdminAccessLogs(req, res, url) {
 }
 
 async function handleAdminAccessProfile(req, res, url) {
-  const session = requireAdminPermission(req, res, url);
+  const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
   }
@@ -3503,8 +3461,8 @@ const server = http.createServer((req, res) => {
   sendJson(res, 405, { error: "method not allowed" });
 });
 
-server.requestTimeout = 15000;
-server.headersTimeout = 16000;
+server.requestTimeout = 30000;
+server.headersTimeout = 31000;
 server.keepAliveTimeout = 65000;
 
 process.on("beforeExit", flushPendingMessagePersist);

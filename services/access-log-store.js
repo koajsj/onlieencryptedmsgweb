@@ -7,6 +7,7 @@ const { UAParser } = require("ua-parser-js");
 
 const ACCESS_DB_FILE = "access_logs.sqlite";
 const DEFAULT_BATCH_SIZE = 80;
+const CLIENT_META_CACHE_LIMIT = 2000;
 
 function normalizeText(value, maxLength = 255) {
   return String(value || "").trim().slice(0, maxLength);
@@ -52,23 +53,24 @@ function ipAttribute(ip) {
   if (value === "::1" || value === "127.0.0.1" || value === "localhost") {
     return "本机";
   }
-  if (
-    value.startsWith("10.") ||
-    value.startsWith("192.168.") ||
-    value.startsWith("172.16.") ||
-    value.startsWith("172.17.") ||
-    value.startsWith("172.18.") ||
-    value.startsWith("172.19.") ||
-    value.startsWith("172.2") ||
-    value.startsWith("172.30.") ||
-    value.startsWith("172.31.") ||
-    value.startsWith("fc") ||
-    value.startsWith("fd")
-  ) {
-    return "内网";
-  }
   if (value.includes(":")) {
+    if (/^f[cd][0-9a-f]{0,2}:/.test(value)) {
+      return "内网";
+    }
     return "IPv6";
+  }
+  const ipv4Match = value.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (ipv4Match) {
+    const first = Number(ipv4Match[1]);
+    const second = Number(ipv4Match[2]);
+    if (
+      first === 10 ||
+      (first === 192 && second === 168) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      first === 127
+    ) {
+      return "内网";
+    }
   }
   return "IPv4";
 }
@@ -257,10 +259,21 @@ class AccessLogStore {
       return;
     }
     const normalizedMeta = this.normalizeClientMeta(meta);
-    this.clientMetaBySession.set(String(sessionId), normalizedMeta);
+    const key = String(sessionId);
+    // Cap the in-memory client-meta cache so it doesn't grow unbounded
+    // as new visitor sessions arrive. LRU-ish: drop the oldest entry on overflow.
+    if (this.clientMetaBySession.has(key)) {
+      this.clientMetaBySession.delete(key);
+    } else if (this.clientMetaBySession.size >= CLIENT_META_CACHE_LIMIT) {
+      const oldestKey = this.clientMetaBySession.keys().next().value;
+      if (oldestKey !== undefined) {
+        this.clientMetaBySession.delete(oldestKey);
+      }
+    }
+    this.clientMetaBySession.set(key, normalizedMeta);
     this.queue.push({
       type: "client-meta",
-      sessionId: String(sessionId),
+      sessionId: key,
       meta: normalizedMeta
     });
     this.scheduleQueue();
@@ -335,42 +348,68 @@ class AccessLogStore {
   }
 
   async insertLogBatch(rows) {
-    if (!rows.length) {
+    if (!rows.length || !this.db) {
       return;
     }
-    await this.run("BEGIN TRANSACTION");
+    await this.ready;
+    const db = this.db;
+    await this.runImmediate("BEGIN TRANSACTION");
     try {
-      for (const row of rows) {
-        await this.run(
+      const stmt = await new Promise((resolve, reject) => {
+        const prepared = db.prepare(
           `INSERT INTO access_logs (
             user_id, session_id, ip, user_agent, browser, os, device_type, method, path, referer,
             request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform, created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            row.userId || null,
-            row.sessionId,
-            row.ip,
-            row.userAgent,
-            row.browser || null,
-            row.os || null,
-            row.deviceType || null,
-            row.method,
-            row.path,
-            row.referer || null,
-            row.requestTimeMs,
-            row.statusCode,
-            row.requestKind,
-            row.language || null,
-            row.screenResolution || null,
-            row.timezone || null,
-            row.platform || null,
-            row.createdAt
-          ]
+          (error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve(prepared);
+          }
         );
+      });
+      try {
+        for (const row of rows) {
+          await new Promise((resolve, reject) => {
+            stmt.run(
+              [
+                row.userId || null,
+                row.sessionId,
+                row.ip,
+                row.userAgent,
+                row.browser || null,
+                row.os || null,
+                row.deviceType || null,
+                row.method,
+                row.path,
+                row.referer || null,
+                row.requestTimeMs,
+                row.statusCode,
+                row.requestKind,
+                row.language || null,
+                row.screenResolution || null,
+                row.timezone || null,
+                row.platform || null,
+                row.createdAt
+              ],
+              (error) => {
+                if (error) {
+                  reject(error);
+                  return;
+                }
+                resolve();
+              }
+            );
+          });
+        }
+      } finally {
+        await new Promise((resolve) => stmt.finalize(() => resolve()));
       }
-      await this.run("COMMIT");
+      await this.runImmediate("COMMIT");
     } catch (error) {
-      await this.run("ROLLBACK").catch(() => {});
+      await this.runImmediate("ROLLBACK").catch(() => {});
       throw error;
     }
   }
