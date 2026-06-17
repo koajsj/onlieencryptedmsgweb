@@ -653,19 +653,19 @@ function toggleAccountMenu(force, anchor = elements.accountMenuButton || element
 }
 
 function setSettingsDialogSection(section) {
-  const nextSection = section === "security" ? "security" : "account";
+  const nextSection = section === "security" ? "security" : section === "other" ? "other" : "account";
   state.settingsDialogSection = nextSection;
   elements.accountSettingsTab?.classList.toggle("is-active", nextSection === "account");
-  const securityTab = document.querySelector("#securitySettingsTab");
-  securityTab?.classList.toggle("is-active", nextSection === "security");
+  document.querySelector("#securitySettingsTab")?.classList.toggle("is-active", nextSection === "security");
+  document.querySelector("#otherSettingsTab")?.classList.toggle("is-active", nextSection === "other");
   if (elements.accountSettingsForm) {
     elements.accountSettingsForm.hidden = nextSection !== "account";
   }
   const securityForm = document.querySelector("#securitySettingsForm");
-  if (securityForm) {
-    securityForm.hidden = nextSection !== "security";
-  }
-  if (nextSection === "security" && state.token) {
+  if (securityForm) securityForm.hidden = nextSection !== "security";
+  const otherForm = document.querySelector("#otherSettingsForm");
+  if (otherForm) otherForm.hidden = nextSection !== "other";
+  if ((nextSection === "security" || nextSection === "other") && state.token) {
     void refreshSecuritySettingsPanel().catch(() => {});
   }
 }
@@ -2053,7 +2053,7 @@ async function setBlockedContact(username, blocked) {
   state.securitySettings.blockedUsers = Array.isArray(payload?.blockedUsers) ? payload.blockedUsers : [];
   renderSidebar();
   renderThread({ scrollBehavior: "preserve" });
-  if (state.settingsDialogOpen && state.settingsDialogSection === "security") {
+  if (state.settingsDialogOpen && (state.settingsDialogSection === "security" || state.settingsDialogSection === "other")) {
     renderSecurityLists();
   }
 }
@@ -4248,8 +4248,8 @@ function setPeerMutedState(peer, muted) {
 }
 
 function saveSettingsDialog() {
-  if (state.settingsDialogSection === "security") {
-    showToast("安全设置无需保存，请使用对应按钮操作");
+  if (state.settingsDialogSection === "security" || state.settingsDialogSection === "other") {
+    showToast("此页面无需保存，请使用对应按钮操作");
     return;
   }
 
@@ -4271,6 +4271,10 @@ function saveSettingsDialog() {
 }
 
 function resetSettingsDialogSection() {
+  if (state.settingsDialogSection === "other") {
+    showToast("此页面无可重置内容");
+    return;
+  }
   if (state.settingsDialogSection === "security") {
     const currentPw = document.querySelector("#currentPasswordInput");
     const newPw = document.querySelector("#newPasswordInput");
@@ -4451,6 +4455,10 @@ function bindEvents() {
   elements.editAccountButton?.addEventListener("click", () => {
     closeAccountMenu();
     openSettingsDialog("account");
+  });
+  elements.logoutMenuButton?.addEventListener("click", () => {
+    closeAccountMenu();
+    void logout();
   });
   elements.sidebarProfileButton?.addEventListener("click", () => {
     toggleAccountMenu(undefined, elements.sidebarProfileButton);

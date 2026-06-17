@@ -92,6 +92,7 @@
             </button>
             <div class="floating-menu" id="accountMenu" hidden>
               <button class="floating-menu-item" id="editAccountButton" type="button">编辑账号信息</button>
+              <button class="floating-menu-item is-danger" id="logoutMenuButton" type="button">退出登录</button>
             </div>
           </div>
 
@@ -341,6 +342,7 @@
         <div class="dialog-tabs" id="settingsDialogTabs" role="tablist" aria-label="设置分类">
           <button class="dialog-tab is-active" id="accountSettingsTab" type="button" data-settings-tab="account">账号信息</button>
           <button class="dialog-tab" id="securitySettingsTab" type="button" data-settings-tab="security">安全设置</button>
+          <button class="dialog-tab" id="otherSettingsTab" type="button" data-settings-tab="other">其他</button>
         </div>
 
         <div class="dialog-body">
@@ -409,7 +411,9 @@
               <span class="switch-copy"><strong>允许通过账号 ID 搜索我</strong><small>关闭后你不会出现在账号搜索结果中。</small></span>
               <span class="switch"><input id="allowSearchToggle" type="checkbox" /><span class="switch-slider"></span></span>
             </label>
-            <div class="settings-divider"></div>
+          </form>
+
+          <form class="dialog-form" id="otherSettingsForm" hidden>
             <div class="dialog-note">
               <strong>登录设备</strong>
               <span>仅展示设备类型、浏览器、系统和最近登录时间。</span>
@@ -451,6 +455,6 @@
       </div>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.min.js?v=bef1057c6f" defer></script>
+    <script src="./app.min.js?v=88750e5e2c" defer></script>
   </body>
 </html>
