@@ -2407,6 +2407,38 @@ function isMessageConsecutive(prev, current) {
   return true;
 }
 
+const RECEIPT_ICON_CLOCK = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.4"></circle><path d="M8 5V8l2 1.3"></path></svg>`;
+const RECEIPT_ICON_SINGLE = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.6l3.2 3.2L13 4"></path></svg>`;
+const RECEIPT_ICON_DOUBLE = `<svg viewBox="0 0 20 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8.6l3.2 3.2L12 4"></path><path d="M7.6 11.4l.4.4L18.5 4"></path></svg>`;
+const RECEIPT_ICONS = {
+  pending: RECEIPT_ICON_CLOCK,
+  sent: RECEIPT_ICON_SINGLE,
+  delivered: RECEIPT_ICON_DOUBLE,
+  read: RECEIPT_ICON_DOUBLE
+};
+
+function messageReceiptMarkup(message) {
+  if (!message.mine || message.recalled || message.failed) {
+    return "";
+  }
+  let stateKey;
+  let label;
+  if (message.pending) {
+    stateKey = "pending";
+    label = message.sendStatus === "queued" ? "待发送" : "发送中";
+  } else if (message.readAt) {
+    stateKey = "read";
+    label = "已读";
+  } else if (message.deliveredAt) {
+    stateKey = "delivered";
+    label = "已送达";
+  } else {
+    stateKey = "sent";
+    label = "已发送";
+  }
+  return `<span class="message-receipt is-${stateKey}" title="${label}" aria-label="${label}">${RECEIPT_ICONS[stateKey]}</span>`;
+}
+
 function renderMessage(message, options = {}) {
   const article = document.createElement("article");
   const isConsecutive = options.consecutive ? " is-consecutive" : "";
@@ -2421,13 +2453,8 @@ function renderMessage(message, options = {}) {
   let statusAction = "";
   if (message.failed) {
     statusAction = `<span class="message-state is-error"><i class="dot"></i>\u53d1\u9001\u5931\u8d25</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">\u91cd\u8bd5</button>`;
-  } else if (message.pending) {
-    const stateClass = message.sendStatus === "queued" ? "is-queued" : "is-sending";
-    const stateLabel = message.sendStatus === "queued" ? "\u5f85\u53d1\u9001" : "\u53d1\u9001\u4e2d";
-    statusAction = `<span class="message-state ${stateClass}"><i class="dot"></i>${stateLabel}</span>`;
-  } else if (message.mine && message.sendStatus === "sent") {
-    statusAction = `<span class="message-state is-sent"><i class="dot"></i>\u5df2\u53d1\u9001</span>`;
   }
+  const receiptMarkup = messageReceiptMarkup(message);
   const copyAction = `<button class="message-copy-button" type="button" data-copy-id="${escapeHtml(message.id || message.tempId || "")}">\u590d\u5236</button>`;
   const replyMarkup = message.replyTo
     ? `
@@ -2464,7 +2491,7 @@ function renderMessage(message, options = {}) {
       ${replyMarkup}
       ${bubbleMarkup}
       <div class="message-meta">
-        <div class="message-meta-main">${metaParts.join('<span class="message-meta-sep">·</span>')}</div>
+        <div class="message-meta-main">${metaParts.join('<span class="message-meta-sep">·</span>')}${receiptMarkup}</div>
         ${actionParts.length > 0 ? `<div class="message-actions">${actionParts.join("")}</div>` : ""}
       </div>
     </div>
@@ -2913,7 +2940,9 @@ async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "
     recalled,
     replyTo: message.replyTo || null,
     text,
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    deliveredAt: Number(message.deliveredAt) || 0,
+    readAt: Number(message.readAt) || 0
   };
 }
 
@@ -3350,6 +3379,7 @@ async function openConversation(username) {
     rebuildConversationSearchIndex(username);
     renderSidebar();
     renderThread({ scrollBehavior: "bottom" });
+    void markConversationRead(username);
   } catch (error) {
     showToast(error.message);
   }
@@ -3633,6 +3663,9 @@ async function ingestEncryptedMessage(message) {
       state.scrollBottomNewCount += 1;
     }
     updateScrollBottomButton();
+    if (!decrypted.mine && document.visibilityState !== "hidden") {
+      void markConversationRead(peer);
+    }
   } else {
     renderSidebar();
   }
@@ -3640,6 +3673,46 @@ async function ingestEncryptedMessage(message) {
     addNotification(peer, decrypted.text, decrypted.createdAt);
   }
   updateNotificationBadge();
+}
+
+function applyReceiptUpdate(peer, messageIds, kind, timestamp) {
+  const cache = state.messageCache.get(peer);
+  if (!cache) {
+    return;
+  }
+  const idSet = new Set(Array.isArray(messageIds) ? messageIds : []);
+  const stamp = Number(timestamp) || Date.now();
+  let changed = false;
+  for (const message of cache) {
+    if (!message.mine) {
+      continue;
+    }
+    if (idSet.size > 0 && !idSet.has(message.id)) {
+      continue;
+    }
+    if (kind === "read" && !message.readAt) {
+      message.readAt = stamp;
+      changed = true;
+    }
+    if (!message.deliveredAt) {
+      message.deliveredAt = stamp;
+      changed = true;
+    }
+  }
+  if (changed && state.activePeer === peer) {
+    renderThread({ scrollBehavior: "preserve" });
+  }
+}
+
+async function markConversationRead(peer) {
+  if (!peer || !state.token) {
+    return;
+  }
+  try {
+    await api("/api/messages/read", { method: "POST", body: { peer } });
+  } catch (error) {
+    // Ignore read-receipt failures; they are best-effort.
+  }
 }
 
 async function createEventTicket() {
@@ -3711,6 +3784,16 @@ async function openEventStream() {
   source.addEventListener("message-deleted", (event) => {
     const payload = JSON.parse(event.data);
     handleRemoteDelete(payload);
+  });
+
+  source.addEventListener("message-delivered", (event) => {
+    const payload = JSON.parse(event.data);
+    applyReceiptUpdate(payload.peer, payload.messageIds, "delivered", payload.deliveredAt);
+  });
+
+  source.addEventListener("message-read", (event) => {
+    const payload = JSON.parse(event.data);
+    applyReceiptUpdate(payload.peer, payload.messageIds, "read", payload.readAt);
   });
 
   source.addEventListener("error", () => {
@@ -4790,6 +4873,9 @@ function bindEvents() {
     void flushPendingOutbox();
     if (state.connectionState !== "online" && !state.reconnectTimer) {
       startEventStream(true);
+    }
+    if (state.activePeer) {
+      void markConversationRead(state.activePeer);
     }
   });
 

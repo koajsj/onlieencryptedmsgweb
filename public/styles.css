@@ -3512,6 +3512,28 @@ textarea::-webkit-scrollbar-thumb {
   justify-content: flex-end;
 }
 
+.message-receipt {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
+.message-receipt svg {
+  height: 13px;
+  width: auto;
+  display: block;
+}
+
+.message-receipt.is-pending {
+  opacity: 0.6;
+}
+
+.message-receipt.is-read {
+  color: #34b7f1;
+  opacity: 1;
+}
+
 .message-actions {
   display: inline-flex;
   align-items: center;

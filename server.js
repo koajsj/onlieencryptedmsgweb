@@ -1971,7 +1971,9 @@ function createMessageView(message, viewer) {
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     nonce: message.nonce,
     ciphertext: message.ciphertext,
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    deliveredAt: Number.parseInt(String(message.deliveredAt || "0"), 10) || 0,
+    readAt: Number.parseInt(String(message.readAt || "0"), 10) || 0
   };
 }
 
@@ -2132,6 +2134,35 @@ function pushEventToUser(username, event, payload) {
   }
   for (const connection of connections) {
     writeSse(connection.res, event, payload);
+  }
+}
+
+function isUserOnline(username) {
+  const connections = onlineConnections.get(username);
+  return Boolean(connections && connections.size > 0);
+}
+
+function markPendingDeliveries(recipient) {
+  const now = Date.now();
+  const bySender = new Map();
+  for (const message of messages) {
+    if (message.to !== recipient || message.deliveredAt || message.recalled) {
+      continue;
+    }
+    if (isMessageDeletedFor(message, recipient)) {
+      continue;
+    }
+    message.deliveredAt = now;
+    const ids = bySender.get(message.from) || [];
+    ids.push(message.id);
+    bySender.set(message.from, ids);
+  }
+  if (bySender.size === 0) {
+    return;
+  }
+  schedulePersistMessages();
+  for (const [sender, messageIds] of bySender) {
+    pushEventToUser(sender, "message-delivered", { peer: recipient, messageIds, deliveredAt: now });
   }
 }
 
@@ -3786,12 +3817,23 @@ async function handleSendMessage(req, res, url) {
   }
   messages.push(message);
   appendMessageBucket(message);
+  const recipientOnline = isUserOnline(peer.username);
+  if (recipientOnline) {
+    message.deliveredAt = Date.now();
+  }
   schedulePersistMessages(message);
 
   const senderView = createMessageView(message, session.username);
   const recipientView = createMessageView(message, peer.username);
   pushEventToUser(session.username, "message", senderView);
   pushEventToUser(peer.username, "message", recipientView);
+  if (recipientOnline) {
+    pushEventToUser(session.username, "message-delivered", {
+      peer: peer.username,
+      messageIds: [message.id],
+      deliveredAt: message.deliveredAt
+    });
+  }
 
   sendJson(res, 201, {
     message: senderView,
@@ -3893,6 +3935,62 @@ async function handleDeleteMessage(req, res, url) {
   sendJson(res, 200, { ok: true });
 }
 
+async function handleMarkRead(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:messages:read:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+
+  const peer = findUserByUsername(body.peer);
+  if (!peer || peer.username === session.username) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+
+  const now = Date.now();
+  const messageIds = [];
+  for (const message of messagesBetween(session.username, peer.username)) {
+    if (message.from !== peer.username || message.recalled || message.readAt) {
+      continue;
+    }
+    if (isMessageDeletedFor(message, session.username)) {
+      continue;
+    }
+    if (!message.deliveredAt) {
+      message.deliveredAt = now;
+    }
+    message.readAt = now;
+    messageIds.push(message.id);
+  }
+
+  if (messageIds.length > 0) {
+    schedulePersistMessages();
+    pushEventToUser(peer.username, "message-read", { peer: session.username, messageIds, readAt: now });
+  }
+
+  sendJson(res, 200, { ok: true, count: messageIds.length });
+}
+
 function handleCreateEventTicket(req, res, url) {
   const session = requireSession(req, res, url);
   if (!session) {
@@ -3966,6 +4064,7 @@ function handleEvents(req, res, url) {
     me: ticketRecord.username,
     onlineUsers: listOnlineUsers().filter((username) => isPresenceVisibleTo(ticketRecord.username, username))
   });
+  markPendingDeliveries(ticketRecord.username);
 
   req.on("close", () => {
     detachConnection(ticketRecord.username, connection);
@@ -4235,6 +4334,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && pathname === "/api/messages/delete") {
     void handleDeleteMessage(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/messages/read") {
+    void handleMarkRead(req, res, url);
     return;
   }
   if (req.method === "POST" && pathname === "/api/events/token") {
