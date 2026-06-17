@@ -3121,9 +3121,30 @@ body.is-dialog-open {
   background: rgba(124, 47, 47, 0.06);
 }
 
-/* --- Item 7: detail-action-grid with 2 columns --- */
+/* --- Item 7: detail-action-grid variants --- */
 .detail-action-grid-2col {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.detail-action-grid-4col {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.detail-action-grid-4col .detail-action {
+  padding: 8px 4px;
+  gap: 4px;
+  font-size: 11px;
+  border-radius: 14px;
+}
+
+.detail-action-grid-4col .detail-action-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+body.is-details-collapsed .contact-panel {
+  display: none;
 }
 
 /* --- Item 20: Unified light theme and tighter small-screen layout --- */
@@ -3493,20 +3514,6 @@ textarea::-webkit-scrollbar-thumb {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 4px;
-  max-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  pointer-events: none;
-  transform: translateY(2px);
-  transition: max-width 140ms ease, opacity 140ms ease, transform 140ms ease;
-}
-
-.message:hover .message-actions,
-.message:focus-within .message-actions {
-  max-width: 320px;
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
 }
 
 .message-meta button {
@@ -3551,14 +3558,6 @@ textarea::-webkit-scrollbar-thumb {
   gap: 8px;
 }
 
-@media (hover: none) {
-  .message-actions {
-    max-width: 320px;
-    opacity: 1;
-    pointer-events: auto;
-    transform: none;
-  }
-}
 
 @media (max-width: 767px) {
   .message-stream {

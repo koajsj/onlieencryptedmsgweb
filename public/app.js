@@ -2113,7 +2113,7 @@ function renderContactDetails(peer) {
   elements.detailsAbout.textContent = contactAboutText(peer.username);
   elements.notificationsToggle.checked = !prefs.muted;
   if (elements.blockContactButtonLabel) {
-    elements.blockContactButtonLabel.textContent = contact?.blocked ? "取消拉黑" : "拉黑联系人";
+    elements.blockContactButtonLabel.textContent = contact?.blocked ? "取消拉黑" : "拉黑";
   }
   if (elements.detailsCollapseButton) {
     elements.detailsCollapseButton.textContent = state.detailsPanelCollapsed ? "展开" : "收起";

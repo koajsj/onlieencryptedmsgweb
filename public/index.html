@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f6f6f4" />
     <meta name="color-scheme" content="light" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=0f7c62550a" />
+    <link rel="stylesheet" href="./styles.min.css?v=b5eb65ce60" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -295,11 +295,11 @@
                 <p id="detailsRole">暂无联系人资料</p>
               </section>
 
-              <div class="detail-action-grid detail-action-grid-2col">
+              <div class="detail-action-grid detail-action-grid-4col">
                 <button class="detail-action is-active" type="button" data-detail-action="message"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg></span><span>消息</span></button>
-                <button class="detail-action" id="copyContactIdButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></span><span>复制 ID</span></button>
-                <button class="detail-action" id="deleteContactButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></span><span>删除联系人</span></button>
-                <button class="detail-action" id="blockContactButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="6.7" y1="6.7" x2="17.3" y2="17.3"></line></svg></span><span id="blockContactButtonLabel">拉黑联系人</span></button>
+                <button class="detail-action" id="copyContactIdButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></span><span>复制ID</span></button>
+                <button class="detail-action" id="deleteContactButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></span><span>删除</span></button>
+                <button class="detail-action" id="blockContactButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="6.7" y1="6.7" x2="17.3" y2="17.3"></line></svg></span><span id="blockContactButtonLabel">拉黑</span></button>
               </div>
 
               <section class="detail-block">
@@ -451,6 +451,6 @@
       </div>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.min.js?v=692f407de1" defer></script>
+    <script src="./app.min.js?v=bef1057c6f" defer></script>
   </body>
 </html>
