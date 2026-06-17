@@ -20,6 +20,7 @@
     "terser": "^5.47.1"
   },
   "dependencies": {
+    "sqlite3": "^6.0.1",
     "ua-parser-js": "^2.0.10"
   }
 }

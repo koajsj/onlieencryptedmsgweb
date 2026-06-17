@@ -2,14 +2,12 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const sqlite3 = require("sqlite3");
 const { UAParser } = require("ua-parser-js");
 
-const ACCESS_LOG_FILE = "access_logs.jsonl";
+const ACCESS_DB_FILE = "access_logs.sqlite";
 const DEFAULT_BATCH_SIZE = 80;
 const CLIENT_META_CACHE_LIMIT = 2000;
-// Bound in-memory rows and the on-disk JSONL so a long-running instance does
-// not grow without limit. Oldest rows are dropped first.
-const MAX_ROWS = 50000;
 
 function normalizeText(value, maxLength = 255) {
   return String(value || "").trim().slice(0, maxLength);
@@ -84,25 +82,6 @@ function dayStartTimestamp(daysAgo = 0) {
   return date.getTime();
 }
 
-function localDateLabel(timestamp) {
-  const date = new Date(Number(timestamp) || 0);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function maxString(values) {
-  let result = "";
-  for (const value of values) {
-    const text = String(value || "");
-    if (text > result) {
-      result = text;
-    }
-  }
-  return result;
-}
-
 function createEmptySummary() {
   return {
     enabled: false,
@@ -123,40 +102,141 @@ class AccessLogStore {
   constructor(options = {}) {
     this.enabled = parseBooleanFlag(options.enabled, true);
     this.dataDir = options.dataDir || process.cwd();
-    this.logFile = path.join(this.dataDir, ACCESS_LOG_FILE);
+    this.dbFile = path.join(this.dataDir, ACCESS_DB_FILE);
     this.logger = typeof options.logger === "function" ? options.logger : () => {};
-    this.rows = [];
-    this.nextId = 1;
+    this.db = null;
+    this.ready = this.enabled ? this.initialize() : Promise.resolve();
     this.queue = [];
     this.processing = false;
     this.clientMetaBySession = new Map();
-    this.pendingAppends = [];
-    this.needsRewrite = false;
-    this.ready = this.enabled ? this.initialize() : Promise.resolve();
   }
 
   async initialize() {
-    fs.mkdirSync(this.dataDir, { recursive: true });
-    if (!fs.existsSync(this.logFile)) {
+    if (!this.enabled) {
       return;
     }
-    const content = fs.readFileSync(this.logFile, "utf8");
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        continue;
-      }
-      try {
-        this.rows.push(JSON.parse(trimmed));
-      } catch (error) {
-        // Skip corrupt lines rather than failing startup.
-      }
+    fs.mkdirSync(this.dataDir, { recursive: true });
+    this.db = await new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(this.dbFile, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(db);
+      });
+    });
+    await this.execImmediate("PRAGMA journal_mode = WAL;");
+    await this.execImmediate("PRAGMA synchronous = NORMAL;");
+    await this.execImmediate(`
+      CREATE TABLE IF NOT EXISTS access_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        session_id TEXT NOT NULL,
+        ip TEXT NOT NULL,
+        user_agent TEXT NOT NULL,
+        browser TEXT,
+        os TEXT,
+        device_type TEXT,
+        method TEXT NOT NULL,
+        path TEXT NOT NULL,
+        referer TEXT,
+        request_time_ms INTEGER NOT NULL DEFAULT 0,
+        status_code INTEGER NOT NULL DEFAULT 0,
+        request_kind TEXT NOT NULL DEFAULT 'other',
+        language TEXT,
+        screen_resolution TEXT,
+        timezone TEXT,
+        platform TEXT,
+        created_at INTEGER NOT NULL
+      );
+    `);
+    await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_user_id ON access_logs(user_id);");
+    await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_ip ON access_logs(ip);");
+    await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_created_at ON access_logs(created_at);");
+    await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_session_id ON access_logs(session_id);");
+  }
+
+  async exec(sql) {
+    await this.ready;
+    return this.execImmediate(sql);
+  }
+
+  async execImmediate(sql) {
+    if (!this.db) {
+      return;
     }
-    if (this.rows.length > MAX_ROWS) {
-      this.rows = this.rows.slice(this.rows.length - MAX_ROWS);
-      this.needsRewrite = true;
+    await new Promise((resolve, reject) => {
+      this.db.exec(sql, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+
+  async run(sql, params = []) {
+    await this.ready;
+    return this.runImmediate(sql, params);
+  }
+
+  async runImmediate(sql, params = []) {
+    if (!this.db) {
+      return { changes: 0, lastID: 0 };
     }
-    this.nextId = this.rows.reduce((max, row) => Math.max(max, Number(row.id) || 0), 0) + 1;
+    return await new Promise((resolve, reject) => {
+      this.db.run(sql, params, function onRun(error) {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve({
+          changes: Number(this.changes || 0),
+          lastID: Number(this.lastID || 0)
+        });
+      });
+    });
+  }
+
+  async get(sql, params = []) {
+    await this.ready;
+    return this.getImmediate(sql, params);
+  }
+
+  async getImmediate(sql, params = []) {
+    if (!this.db) {
+      return null;
+    }
+    return await new Promise((resolve, reject) => {
+      this.db.get(sql, params, (error, row) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(row || null);
+      });
+    });
+  }
+
+  async all(sql, params = []) {
+    await this.ready;
+    return this.allImmediate(sql, params);
+  }
+
+  async allImmediate(sql, params = []) {
+    if (!this.db) {
+      return [];
+    }
+    return await new Promise((resolve, reject) => {
+      this.db.all(sql, params, (error, rows) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(Array.isArray(rows) ? rows : []);
+      });
+    });
   }
 
   enqueueAccessLog(record) {
@@ -180,8 +260,8 @@ class AccessLogStore {
     }
     const normalizedMeta = this.normalizeClientMeta(meta);
     const key = String(sessionId);
-    // Cap the in-memory client-meta cache so it doesn't grow unbounded as new
-    // visitor sessions arrive. LRU-ish: drop the oldest entry on overflow.
+    // Cap the in-memory client-meta cache so it doesn't grow unbounded
+    // as new visitor sessions arrive. LRU-ish: drop the oldest entry on overflow.
     if (this.clientMetaBySession.has(key)) {
       this.clientMetaBySession.delete(key);
     } else if (this.clientMetaBySession.size >= CLIENT_META_CACHE_LIMIT) {
@@ -214,17 +294,14 @@ class AccessLogStore {
       await this.ready;
       while (this.queue.length > 0) {
         const batch = this.queue.splice(0, DEFAULT_BATCH_SIZE);
-        for (const item of batch) {
-          if (item.type === "log") {
-            const row = { id: this.nextId++, ...item.row };
-            this.rows.push(row);
-            this.pendingAppends.push(row);
-          } else if (item.type === "client-meta") {
-            this.applyClientMeta(item.sessionId, item.meta);
-          }
+        const logs = batch.filter((item) => item.type === "log").map((item) => item.row);
+        const metas = batch.filter((item) => item.type === "client-meta");
+        if (logs.length > 0) {
+          await this.insertLogBatch(logs);
         }
-        this.enforceRowCap();
-        this.persist();
+        for (const item of metas) {
+          await this.applyClientMeta(item.sessionId, item.meta);
+        }
       }
     } catch (error) {
       this.logger(error);
@@ -233,30 +310,6 @@ class AccessLogStore {
       if (this.queue.length > 0) {
         this.scheduleQueue();
       }
-    }
-  }
-
-  enforceRowCap() {
-    if (this.rows.length > MAX_ROWS) {
-      this.rows.splice(0, this.rows.length - MAX_ROWS);
-      this.needsRewrite = true;
-    }
-  }
-
-  persist() {
-    try {
-      if (this.needsRewrite) {
-        const data = this.rows.map((row) => JSON.stringify(row)).join("\n");
-        fs.writeFileSync(this.logFile, data ? `${data}\n` : "");
-        this.pendingAppends = [];
-        this.needsRewrite = false;
-      } else if (this.pendingAppends.length > 0) {
-        const data = `${this.pendingAppends.map((row) => JSON.stringify(row)).join("\n")}\n`;
-        fs.appendFileSync(this.logFile, data);
-        this.pendingAppends = [];
-      }
-    } catch (error) {
-      this.logger(error);
     }
   }
 
@@ -294,32 +347,83 @@ class AccessLogStore {
     };
   }
 
-  applyClientMeta(sessionId, meta) {
-    let changed = false;
-    for (const row of this.rows) {
-      if (row.sessionId !== sessionId) {
-        continue;
-      }
-      if (!row.language && meta.language) {
-        row.language = meta.language;
-        changed = true;
-      }
-      if (!row.screenResolution && meta.screenResolution) {
-        row.screenResolution = meta.screenResolution;
-        changed = true;
-      }
-      if (!row.timezone && meta.timezone) {
-        row.timezone = meta.timezone;
-        changed = true;
-      }
-      if (!row.platform && meta.platform) {
-        row.platform = meta.platform;
-        changed = true;
-      }
+  async insertLogBatch(rows) {
+    if (!rows.length || !this.db) {
+      return;
     }
-    if (changed) {
-      this.needsRewrite = true;
+    await this.ready;
+    const db = this.db;
+    await this.runImmediate("BEGIN TRANSACTION");
+    try {
+      const stmt = await new Promise((resolve, reject) => {
+        const prepared = db.prepare(
+          `INSERT INTO access_logs (
+            user_id, session_id, ip, user_agent, browser, os, device_type, method, path, referer,
+            request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve(prepared);
+          }
+        );
+      });
+      try {
+        for (const row of rows) {
+          await new Promise((resolve, reject) => {
+            stmt.run(
+              [
+                row.userId || null,
+                row.sessionId,
+                row.ip,
+                row.userAgent,
+                row.browser || null,
+                row.os || null,
+                row.deviceType || null,
+                row.method,
+                row.path,
+                row.referer || null,
+                row.requestTimeMs,
+                row.statusCode,
+                row.requestKind,
+                row.language || null,
+                row.screenResolution || null,
+                row.timezone || null,
+                row.platform || null,
+                row.createdAt
+              ],
+              (error) => {
+                if (error) {
+                  reject(error);
+                  return;
+                }
+                resolve();
+              }
+            );
+          });
+        }
+      } finally {
+        await new Promise((resolve) => stmt.finalize(() => resolve()));
+      }
+      await this.runImmediate("COMMIT");
+    } catch (error) {
+      await this.runImmediate("ROLLBACK").catch(() => {});
+      throw error;
     }
+  }
+
+  async applyClientMeta(sessionId, meta) {
+    await this.run(
+      `UPDATE access_logs
+        SET language = COALESCE(NULLIF(language, ''), ?),
+            screen_resolution = COALESCE(NULLIF(screen_resolution, ''), ?),
+            timezone = COALESCE(NULLIF(timezone, ''), ?),
+            platform = COALESCE(NULLIF(platform, ''), ?)
+      WHERE session_id = ?`,
+      [meta.language || null, meta.screenResolution || null, meta.timezone || null, meta.platform || null, sessionId]
+    );
   }
 
   async renameUserId(previousUserId, nextUserId) {
@@ -328,52 +432,13 @@ class AccessLogStore {
     if (!this.enabled || !previous || !next || previous === next) {
       return 0;
     }
-    await this.ready;
     for (const item of this.queue) {
       if (item?.type === "log" && item.row && item.row.userId === previous) {
         item.row.userId = next;
       }
     }
-    let changes = 0;
-    for (const row of this.rows) {
-      if (row.userId === previous) {
-        row.userId = next;
-        changes += 1;
-      }
-    }
-    if (changes > 0) {
-      this.needsRewrite = true;
-      this.persist();
-    }
-    return changes;
-  }
-
-  matchRow(row, filters, exact) {
-    if (filters.ip) {
-      const target = String(filters.ip).trim();
-      if (exact ? row.ip !== target : !String(row.ip).includes(target)) {
-        return false;
-      }
-    }
-    if (filters.userId) {
-      const target = String(filters.userId).trim();
-      if (exact ? row.userId !== target : !String(row.userId).includes(target)) {
-        return false;
-      }
-    }
-    if (filters.sessionId) {
-      const target = String(filters.sessionId).trim();
-      if (exact ? row.sessionId !== target : !String(row.sessionId).includes(target)) {
-        return false;
-      }
-    }
-    if (filters.since && row.createdAt < Number(filters.since)) {
-      return false;
-    }
-    if (filters.until && row.createdAt > Number(filters.until)) {
-      return false;
-    }
-    return true;
+    const result = await this.run("UPDATE access_logs SET user_id = ? WHERE user_id = ?", [next, previous]);
+    return Number(result?.changes || 0);
   }
 
   async getDashboardSummary() {
@@ -381,73 +446,98 @@ class AccessLogStore {
       return createEmptySummary();
     }
     await this.ready;
-    const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
-    const trendCutoff = dayStartTimestamp(6);
-
-    const pageSessions = new Set();
-    const pageSessions24h = new Set();
-    let pageViews = 0;
-    let pageViews24h = 0;
-
-    const trendMap = new Map();
-    const pagePathHits = new Map();
-    const ipHits = new Map();
-
-    for (const row of this.rows) {
-      const isPage = row.requestKind === "page";
-      if (isPage) {
-        pageViews += 1;
-        pageSessions.add(row.sessionId);
-        if (row.createdAt >= cutoff24h) {
-          pageViews24h += 1;
-          pageSessions24h.add(row.sessionId);
-        }
-        if (row.createdAt >= trendCutoff) {
-          const label = localDateLabel(row.createdAt);
-          const bucket = trendMap.get(label) || { pv: 0, sessions: new Set() };
-          bucket.pv += 1;
-          bucket.sessions.add(row.sessionId);
-          trendMap.set(label, bucket);
-        }
-        pagePathHits.set(row.path, (pagePathHits.get(row.path) || 0) + 1);
-      }
-      const ipBucket = ipHits.get(row.ip) || { hits: 0, sessions: new Set() };
-      ipBucket.hits += 1;
-      ipBucket.sessions.add(row.sessionId);
-      ipHits.set(row.ip, ipBucket);
-    }
-
-    const trend = [...trendMap.entries()]
-      .sort((left, right) => left[0].localeCompare(right[0]))
-      .map(([label, bucket]) => ({ label, pv: bucket.pv, uv: bucket.sessions.size }));
-
-    const topPages = [...pagePathHits.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .slice(0, 8)
-      .map(([pagePath, pv]) => ({ path: pagePath, pv }));
-
-    const topIps = [...ipHits.entries()]
-      .sort((left, right) => right[1].hits - left[1].hits || left[0].localeCompare(right[0]))
-      .slice(0, 8)
-      .map(([ip, bucket]) => ({
-        ip: ip || "unknown",
-        hits: bucket.hits,
-        uv: bucket.sessions.size,
-        attribution: ipAttribute(ip)
-      }));
-
+    const today = Date.now() - 24 * 60 * 60 * 1000;
+    const sevenDaysAgo = dayStartTimestamp(6);
+    const totalsRow = await this.get(
+      `SELECT
+        SUM(CASE WHEN request_kind = 'page' THEN 1 ELSE 0 END) AS page_views,
+        COUNT(DISTINCT CASE WHEN request_kind = 'page' THEN session_id END) AS unique_visitors,
+        SUM(CASE WHEN request_kind = 'page' AND created_at >= ? THEN 1 ELSE 0 END) AS page_views_24h,
+        COUNT(DISTINCT CASE WHEN request_kind = 'page' AND created_at >= ? THEN session_id END) AS unique_visitors_24h,
+        COUNT(*) AS log_rows
+      FROM access_logs`,
+      [today, today]
+    );
+    const trend = await this.all(
+      `SELECT
+        strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS label,
+        COUNT(*) AS pv,
+        COUNT(DISTINCT session_id) AS uv
+      FROM access_logs
+      WHERE request_kind = 'page' AND created_at >= ?
+      GROUP BY label
+      ORDER BY label ASC`,
+      [sevenDaysAgo]
+    );
+    const topPages = await this.all(
+      `SELECT path, COUNT(*) AS pv
+      FROM access_logs
+      WHERE request_kind = 'page'
+      GROUP BY path
+      ORDER BY pv DESC, path ASC
+      LIMIT 8`
+    );
+    const topIps = await this.all(
+      `SELECT ip, COUNT(*) AS hits, COUNT(DISTINCT session_id) AS uv
+      FROM access_logs
+      GROUP BY ip
+      ORDER BY hits DESC, ip ASC
+      LIMIT 8`
+    );
     return {
       enabled: true,
       totals: {
-        pageViews,
-        uniqueVisitors: pageSessions.size,
-        pageViews24h,
-        uniqueVisitors24h: pageSessions24h.size,
-        logRows: this.rows.length
+        pageViews: Number(totalsRow?.page_views || 0),
+        uniqueVisitors: Number(totalsRow?.unique_visitors || 0),
+        pageViews24h: Number(totalsRow?.page_views_24h || 0),
+        uniqueVisitors24h: Number(totalsRow?.unique_visitors_24h || 0),
+        logRows: Number(totalsRow?.log_rows || 0)
       },
-      trend,
-      topPages,
-      topIps
+      trend: trend.map((row) => ({
+        label: String(row.label || ""),
+        pv: Number(row.pv || 0),
+        uv: Number(row.uv || 0)
+      })),
+      topPages: topPages.map((row) => ({
+        path: String(row.path || "/"),
+        pv: Number(row.pv || 0)
+      })),
+      topIps: topIps.map((row) => ({
+        ip: String(row.ip || "unknown"),
+        hits: Number(row.hits || 0),
+        uv: Number(row.uv || 0),
+        attribution: ipAttribute(row.ip)
+      }))
+    };
+  }
+
+  buildAccessLogWhere(filters = {}, options = {}) {
+    const exactIdentityMatch = Boolean(options.exactIdentityMatch);
+    const clauses = [];
+    const params = [];
+    if (filters.ip) {
+      clauses.push(exactIdentityMatch ? "ip = ?" : "ip LIKE ?");
+      params.push(exactIdentityMatch ? String(filters.ip).trim() : `%${String(filters.ip).trim()}%`);
+    }
+    if (filters.userId) {
+      clauses.push(exactIdentityMatch ? "user_id = ?" : "user_id LIKE ?");
+      params.push(exactIdentityMatch ? String(filters.userId).trim() : `%${String(filters.userId).trim()}%`);
+    }
+    if (filters.sessionId) {
+      clauses.push(exactIdentityMatch ? "session_id = ?" : "session_id LIKE ?");
+      params.push(exactIdentityMatch ? String(filters.sessionId).trim() : `%${String(filters.sessionId).trim()}%`);
+    }
+    if (filters.since) {
+      clauses.push("created_at >= ?");
+      params.push(Number(filters.since));
+    }
+    if (filters.until) {
+      clauses.push("created_at <= ?");
+      params.push(Number(filters.until));
+    }
+    return {
+      whereSql: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+      params
     };
   }
 
@@ -456,37 +546,45 @@ class AccessLogStore {
       return { rows: [], total: 0, page: 1, limit: 50 };
     }
     await this.ready;
-    const exact = Boolean(options.exactIdentityMatch);
     const page = Math.max(1, Number(filters.page) || 1);
     const limit = Math.max(1, Math.min(200, Number(filters.limit) || 50));
     const offset = (page - 1) * limit;
-    const matched = this.rows.filter((row) => this.matchRow(row, filters, exact));
-    matched.sort((left, right) => right.createdAt - left.createdAt || right.id - left.id);
-    const pageRows = matched.slice(offset, offset + limit);
+    const { whereSql, params } = this.buildAccessLogWhere(filters, options);
+    const totalRow = await this.get(`SELECT COUNT(*) AS total FROM access_logs ${whereSql}`, params);
+    const rows = await this.all(
+      `SELECT
+        id, user_id, session_id, ip, user_agent, browser, os, device_type, method, path, referer,
+        request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform, created_at
+      FROM access_logs
+      ${whereSql}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
     return {
-      rows: pageRows.map((row) => ({
+      rows: rows.map((row) => ({
         id: Number(row.id || 0),
-        userId: String(row.userId || ""),
-        sessionId: String(row.sessionId || ""),
+        userId: String(row.user_id || ""),
+        sessionId: String(row.session_id || ""),
         ip: String(row.ip || "unknown"),
         ipAttribution: ipAttribute(row.ip),
-        userAgent: String(row.userAgent || ""),
+        userAgent: String(row.user_agent || ""),
         browser: String(row.browser || ""),
         os: String(row.os || ""),
-        deviceType: String(row.deviceType || ""),
+        deviceType: String(row.device_type || ""),
         method: String(row.method || ""),
         path: String(row.path || "/"),
         referer: String(row.referer || ""),
-        requestTimeMs: Number(row.requestTimeMs || 0),
-        statusCode: Number(row.statusCode || 0),
-        requestKind: String(row.requestKind || "other"),
+        requestTimeMs: Number(row.request_time_ms || 0),
+        statusCode: Number(row.status_code || 0),
+        requestKind: String(row.request_kind || "other"),
         language: String(row.language || ""),
-        screenResolution: String(row.screenResolution || ""),
+        screenResolution: String(row.screen_resolution || ""),
         timezone: String(row.timezone || ""),
         platform: String(row.platform || ""),
-        createdAt: Number(row.createdAt || 0)
+        createdAt: Number(row.created_at || 0)
       })),
-      total: matched.length,
+      total: Number(totalRow?.total || 0),
       page,
       limit
     };
@@ -501,46 +599,62 @@ class AccessLogStore {
     if (!hasIdentityFilter) {
       return null;
     }
-    const matched = this.rows.filter((row) => this.matchRow(row, filters, true));
-    if (matched.length === 0) {
+    const { whereSql, params } = this.buildAccessLogWhere(filters, { exactIdentityMatch: true });
+    if (!whereSql) {
       return null;
     }
-
-    let firstVisit = Infinity;
-    let lastVisit = 0;
-    const pathHits = new Map();
-    for (const row of matched) {
-      firstVisit = Math.min(firstVisit, row.createdAt);
-      lastVisit = Math.max(lastVisit, row.createdAt);
-      pathHits.set(row.path, (pathHits.get(row.path) || 0) + 1);
+    const summary = await this.get(
+      `SELECT
+        MIN(created_at) AS first_visit,
+        MAX(created_at) AS last_visit,
+        COUNT(*) AS visits,
+        MAX(user_id) AS user_id,
+        MAX(session_id) AS session_id,
+        MAX(ip) AS ip
+      FROM access_logs
+      ${whereSql}`,
+      params
+    );
+    if (!summary || Number(summary.visits || 0) === 0) {
+      return null;
     }
-
-    const latest = matched
-      .slice()
-      .sort((left, right) => right.createdAt - left.createdAt || right.id - left.id)[0];
-
-    const topPages = [...pathHits.entries()]
-      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
-      .slice(0, 5)
-      .map(([pagePath, hits]) => ({ path: pagePath, hits }));
-
+    const topPages = await this.all(
+      `SELECT path, COUNT(*) AS hits
+      FROM access_logs
+      ${whereSql}
+      GROUP BY path
+      ORDER BY hits DESC, path ASC
+      LIMIT 5`,
+      params
+    );
+    const latestMeta = await this.get(
+      `SELECT language, screen_resolution, timezone, platform, browser, os, device_type
+      FROM access_logs
+      ${whereSql}
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+      params
+    );
     return {
-      userId: maxString(matched.map((row) => row.userId)),
-      sessionId: maxString(matched.map((row) => row.sessionId)),
-      ip: maxString(matched.map((row) => row.ip)),
-      ipAttribution: ipAttribute(maxString(matched.map((row) => row.ip))),
-      firstVisitAt: Number(firstVisit) || 0,
-      lastVisitAt: Number(lastVisit) || 0,
-      visits: matched.length,
-      topPages,
+      userId: String(summary.user_id || ""),
+      sessionId: String(summary.session_id || ""),
+      ip: String(summary.ip || ""),
+      ipAttribution: ipAttribute(summary.ip),
+      firstVisitAt: Number(summary.first_visit || 0),
+      lastVisitAt: Number(summary.last_visit || 0),
+      visits: Number(summary.visits || 0),
+      topPages: topPages.map((row) => ({
+        path: String(row.path || "/"),
+        hits: Number(row.hits || 0)
+      })),
       clientMeta: {
-        language: String(latest?.language || ""),
-        screenResolution: String(latest?.screenResolution || ""),
-        timezone: String(latest?.timezone || ""),
-        platform: String(latest?.platform || ""),
-        browser: String(latest?.browser || ""),
-        os: String(latest?.os || ""),
-        deviceType: String(latest?.deviceType || "")
+        language: String(latestMeta?.language || ""),
+        screenResolution: String(latestMeta?.screen_resolution || ""),
+        timezone: String(latestMeta?.timezone || ""),
+        platform: String(latestMeta?.platform || ""),
+        browser: String(latestMeta?.browser || ""),
+        os: String(latestMeta?.os || ""),
+        deviceType: String(latestMeta?.device_type || "")
       }
     };
   }
@@ -548,8 +662,8 @@ class AccessLogStore {
   healthSnapshot() {
     return {
       enabled: this.enabled,
-      dbFile: this.logFile,
-      dbBytes: this.enabled && fs.existsSync(this.logFile) ? fs.statSync(this.logFile).size : 0,
+      dbFile: this.dbFile,
+      dbBytes: this.enabled && fs.existsSync(this.dbFile) ? fs.statSync(this.dbFile).size : 0,
       pendingQueue: this.queue.length
     };
   }
