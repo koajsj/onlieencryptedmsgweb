@@ -1147,15 +1147,18 @@ img {
   margin-bottom: 18px;
 }
 
-.message.mine {
-  justify-content: flex-end;
-}
-
 .message-body {
-  width: fit-content;
   max-width: min(72%, 520px);
   display: inline-grid;
+  /* Size each row (bubble, reply, meta) to its own content so a short
+     bubble fits its text instead of stretching to the always-visible
+     action-button row. */
+  justify-items: start;
   gap: 8px;
+}
+
+.message.is-own .message-body {
+  justify-items: end;
 }
 
 .bubble,
@@ -1167,22 +1170,12 @@ img {
   background: rgba(245, 245, 242, 0.96);
 }
 
-.message.mine .bubble,
-.message.mine .bubble-file {
-  background: #111111;
-  color: #ffffff;
-}
-
 .message-meta {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   row-gap: 8px;
-}
-
-.message.mine .message-meta {
-  justify-content: flex-end;
 }
 
 .message-day-sep,
