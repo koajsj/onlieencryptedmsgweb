@@ -715,9 +715,13 @@ img {
   min-width: 0;
 }
 
-.thread-copy strong,
-.contact-profile-card strong {
+.thread-copy strong {
   font-size: 24px;
+  font-weight: 600;
+}
+
+.contact-profile-card strong {
+  font-size: 17px;
   font-weight: 600;
 }
 
@@ -929,8 +933,8 @@ img {
 .contact-profile-card {
   display: grid;
   justify-items: center;
-  gap: 10px;
-  padding: 28px 24px;
+  gap: 6px;
+  padding: 16px 18px;
 }
 
 .contact-profile-avatar-wrap {
@@ -938,9 +942,9 @@ img {
 }
 
 .contact-profile-avatar {
-  width: 96px;
-  height: 96px;
-  font-size: 28px;
+  width: 56px;
+  height: 56px;
+  font-size: 17px;
 }
 
 .contact-profile-dot {
