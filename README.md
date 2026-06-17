@@ -18,7 +18,12 @@
 
 管理员用户名默认是 `admin`，也可以在部署时通过 `ADMIN_USERNAME` 覆盖。
 
-管理员密码默认是仓库内置的明文口令（不要在公共文档里写出来）。生产环境建议至少在部署前用 `ADMIN_PASSWORD` 环境变量覆盖一次，仓库本身只保存一份默认值。脚本会把最终的 `ADMIN_PASSWORD` 写入 `/etc/default/secure-chat`，权限 0600。
+管理员密码**没有可用的内置默认值**：服务启动时如果没有配置 `ADMIN_PASSWORD` 或 `ADMIN_PASSWORD_HASH`，进程会直接报错退出。生产环境必须在部署前设置其中之一：
+
+- `ADMIN_PASSWORD`：明文口令，服务会在写入 `/etc/default/secure-chat`（权限 0600）前自动哈希。
+- `ADMIN_PASSWORD_HASH`：`scrypt:salt:hash` 形式的预生成哈希，直接喂入。
+
+部署脚本会把最终的凭据写入 `/etc/default/secure-chat`。仓库里存在一个仅供本地试跑的弱口令，但它默认被禁用，只有显式设置 `ALLOW_INSECURE_DEFAULT_ADMIN=1` 时才会启用——**切勿在生产环境这样做**。
 
 后台地址：
 
@@ -241,13 +246,19 @@ ss -lntp | grep ':443'
 
 ## 8. 本地开发
 
-直接 `npm start` 即可使用仓库内置的管理员用户名和密码。要换成自己的值，可以设置环境变量：
+本地启动必须提供管理员凭据，否则服务会报错退出：
 
 ```bash
 ADMIN_USERNAME=admin ADMIN_PASSWORD='你的口令' npm start
 ```
 
-也仍然支持旧的 `ADMIN_PASSWORD_HASH`（`scrypt:salt:hash` 形式）来直接喂入哈希。
+也支持用 `ADMIN_PASSWORD_HASH`（`scrypt:salt:hash` 形式）直接喂入预生成哈希。
+
+如果只是想用内置弱口令快速试跑（**仅限本地**），可以显式开启：
+
+```bash
+ALLOW_INSECURE_DEFAULT_ADMIN=1 npm start
+```
 
 安装依赖：
 
