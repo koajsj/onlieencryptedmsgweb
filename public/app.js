@@ -53,6 +53,7 @@ const elements = {
   meStatus: document.querySelector("#meStatus"),
   meStatusDot: document.querySelector("#meStatusDot"),
   sidebarTitle: document.querySelector(".sidebar-head h2"),
+  sidebarEyebrow: document.querySelector(".sidebar-head .eyebrow"),
   sidebarMeta: document.querySelector("#sidebarMeta"),
   searchGroup: document.querySelector("#searchGroup"),
   pinnedGroup: document.querySelector("#pinnedGroup"),
@@ -2024,6 +2025,9 @@ function renderSidebar() {
   }
   if (elements.sidebarTitle) {
     elements.sidebarTitle.textContent = contactsMode ? "联系人" : "最近消息";
+  }
+  if (elements.sidebarEyebrow) {
+    elements.sidebarEyebrow.textContent = contactsMode ? "联系人列表" : "会话列表";
   }
   if (state.workspaceLoading) {
     if (elements.sidebarMeta) {
@@ -4387,7 +4391,7 @@ function bindEvents() {
     openSettingsDialog("account");
   });
   elements.accountMenuButton?.addEventListener("click", () => {
-    openSettingsDialog("account");
+    toggleAccountMenu(undefined, elements.accountMenuButton);
   });
   elements.editAccountButton?.addEventListener("click", () => {
     closeAccountMenu();
