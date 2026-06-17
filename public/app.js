@@ -746,19 +746,10 @@ function formatBytes(bytes) {
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function buildAttachmentMessageText(file, dataUrl = "") {
+function buildAttachmentMessageText(file) {
   const name = String(file?.name || "未命名文件").trim().slice(0, 80);
   const meta = `${fileKindLabel(file)} · ${formatBytes(file?.size || 0)}`;
-  return `[附件] ${name}\n${meta}${dataUrl ? `\n${dataUrl}` : ""}`;
-}
-
-async function readFileAsDataUrl(file) {
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("文件读取失败"));
-    reader.readAsDataURL(file);
-  });
+  return `[附件] ${name}\n${meta}`;
 }
 
 async function sendAttachmentFiles(fileList) {
@@ -771,8 +762,7 @@ async function sendAttachmentFiles(fileList) {
       showToast(`${file.name} 超过 10MB，暂不支持`);
       continue;
     }
-    const dataUrl = String(file.type || "").startsWith("image/") ? await readFileAsDataUrl(file) : "";
-    const text = buildAttachmentMessageText(file, dataUrl);
+    const text = buildAttachmentMessageText(file);
     const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
     const tempId = addPendingMessage(state.activePeer, text, replyTo);
     renderThread({ scrollBehavior: "bottom" });

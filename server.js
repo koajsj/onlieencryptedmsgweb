@@ -21,7 +21,7 @@ const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 const MESSAGES_LOG_FILE = path.join(DATA_DIR, "messages.jsonl");
 const ADMIN_AUDIT_FILE = path.join(DATA_DIR, "admin_audit.jsonl");
 
-const MAX_BODY_BYTES = 12 * 1024 * 1024;
+const MAX_BODY_BYTES = 128 * 1024;
 const RATE_WINDOW_MS = 60 * 1000;
 const MAX_AUTH_REQUESTS_PER_WINDOW = 40;
 const MAX_API_REQUESTS_PER_WINDOW = 240;
