@@ -113,15 +113,11 @@ const elements = {
   detailsAccountId: document.querySelector("#detailsAccountId"),
   detailsLastSeen: document.querySelector("#detailsLastSeen"),
   detailsAbout: document.querySelector("#detailsAbout"),
-  detailsMediaGrid: document.querySelector("#detailsMediaGrid"),
-  detailsFilesList: document.querySelector("#detailsFilesList"),
   notificationsToggle: document.querySelector("#notificationsToggle"),
   copyContactIdButton: document.querySelector("#copyContactIdButton"),
   deleteContactButton: document.querySelector("#deleteContactButton"),
   blockContactButton: document.querySelector("#blockContactButton"),
   blockContactButtonLabel: document.querySelector("#blockContactButtonLabel"),
-  editMediaButton: document.querySelector("#editMediaButton"),
-  editFilesButton: document.querySelector("#editFilesButton"),
   settingsDialog: document.querySelector("#settingsDialog"),
   settingsDialogCloseButton: document.querySelector("#settingsDialogCloseButton"),
   settingsDialogTabs: document.querySelector("#settingsDialogTabs"),
@@ -322,37 +318,11 @@ function normalizeAccountProfile(profile) {
   };
 }
 
-function normalizeContactMediaEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return [];
-  }
-  return entries
-    .map((entry) => String(entry || "").trim().slice(0, 48))
-    .filter(Boolean)
-    .slice(0, 12);
-}
-
-function normalizeContactFileEntries(entries) {
-  if (!Array.isArray(entries)) {
-    return [];
-  }
-  return entries
-    .map((entry) => ({
-      name: String(entry?.name || "").trim().slice(0, 80),
-      meta: String(entry?.meta || "").trim().slice(0, 80),
-      kind: String(entry?.kind || "").trim().slice(0, 12).toLowerCase() || "file"
-    }))
-    .filter((entry) => entry.name)
-    .slice(0, 12);
-}
-
 function normalizeContactProfile(profile) {
   return {
     displayName: String(profile?.displayName || "").trim().slice(0, 32),
     role: String(profile?.role || "").trim().slice(0, 48),
-    about: String(profile?.about || "").trim().slice(0, 240),
-    media: normalizeContactMediaEntries(profile?.media),
-    files: normalizeContactFileEntries(profile?.files)
+    about: String(profile?.about || "").trim().slice(0, 240)
   };
 }
 
@@ -459,34 +429,6 @@ function formatLastSeen(timestamp) {
     hour: "2-digit",
     minute: "2-digit"
   });
-}
-
-function parseMediaInput(value) {
-  return normalizeContactMediaEntries(String(value || "").split(/\r?\n/));
-}
-
-function inferFileKind(name) {
-  const match = String(name || "").trim().toLowerCase().match(/\.([a-z0-9]+)$/);
-  return match ? match[1].slice(0, 12) : "file";
-}
-
-function parseFileInput(value) {
-  return normalizeContactFileEntries(
-    String(value || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [namePart, ...metaParts] = line.split("|");
-        const name = String(namePart || "").trim();
-        const meta = metaParts.join("|").trim();
-        return {
-          name,
-          meta,
-          kind: inferFileKind(name)
-        };
-      })
-  );
 }
 
 function escapeHtml(value) {
@@ -1911,39 +1853,6 @@ function setDetailsPanelOpen(force) {
   syncLayoutState();
 }
 
-function renderDetailFileRow(file) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "detail-file-row";
-
-  const icon = document.createElement("div");
-  icon.className = "detail-file-icon";
-  icon.dataset.kind = file.kind || "doc";
-  icon.textContent = String(file.kind || "doc").toUpperCase();
-
-  const copy = document.createElement("div");
-  copy.className = "detail-file-copy";
-  copy.innerHTML = `
-    <strong>${escapeHtml(file.name || "\u672a\u547d\u540d\u6587\u4ef6")}</strong>
-    <span class="detail-file-meta">${escapeHtml(file.meta || "\u6587\u4ef6")}</span>
-  `;
-
-  const download = document.createElement("button");
-  download.type = "button";
-  download.className = "detail-file-download";
-  download.dataset.detailAction = "download";
-  download.setAttribute("aria-label", `\u4e0b\u8f7d ${file.name || "\u6587\u4ef6"}`);
-  download.innerHTML = `
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-      <polyline points="7 10 12 15 17 10"></polyline>
-      <line x1="12" y1="15" x2="12" y2="3"></line>
-    </svg>
-  `;
-
-  wrapper.append(icon, copy, download);
-  return wrapper;
-}
-
 function renderSimpleDetailRow(title, meta, actionLabel = "", action = "") {
   const wrapper = document.createElement("div");
   wrapper.className = "detail-file-row detail-file-row-simple";
@@ -2058,22 +1967,6 @@ async function setBlockedContact(username, blocked) {
   }
 }
 
-function extractFilesFromHistory(peerUsername) {
-  const messages = state.messageCache.get(peerUsername) || [];
-  const files = [];
-  for (const msg of messages) {
-    if (msg.recalled) continue;
-    const text = messagePlaintext(msg);
-    if (!text.startsWith("[附件]")) continue;
-    const lines = text.split("\n");
-    const nameLine = (lines[0] || "").replace("[附件] ", "").trim();
-    const metaLine = (lines[1] || "").trim();
-    const ext = nameLine.includes(".") ? nameLine.split(".").pop().toLowerCase() : "doc";
-    files.push({ name: nameLine, meta: metaLine, kind: ext.slice(0, 4) });
-  }
-  return files;
-}
-
 function renderContactDetails(peer) {
   if (!elements.contactDetailsEmpty || !elements.contactDetailsContent) {
     return;
@@ -2090,11 +1983,8 @@ function renderContactDetails(peer) {
     return;
   }
 
-  const profile = activeContactProfile(peer.username);
   const contact = contactRecord(peer.username);
   const prefs = peerPrefs(peer.username);
-  const mediaEntries = profile.media;
-  const fileEntries = profile.files;
   elements.contactDetailsEmpty.hidden = true;
   elements.contactDetailsContent.hidden = false;
   setAvatar(elements.detailsAvatar, peer.username);
@@ -2120,42 +2010,6 @@ function renderContactDetails(peer) {
   }
   if (elements.editContactButton) {
     elements.editContactButton.disabled = false;
-  }
-
-  elements.detailsMediaGrid.textContent = "";
-  if (mediaEntries.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "media-thumb media-thumb-empty";
-    empty.innerHTML = `
-      <strong>暂无共享媒体</strong>
-      <span>发送图片或补充媒体标签后会显示在这里。</span>
-    `;
-    elements.detailsMediaGrid.append(empty);
-  } else {
-    for (const item of mediaEntries) {
-      const thumb = document.createElement("div");
-      thumb.className = "media-thumb media-thumb-label";
-      thumb.textContent = item;
-      thumb.setAttribute("role", "img");
-      thumb.setAttribute("aria-label", item);
-      elements.detailsMediaGrid.append(thumb);
-    }
-  }
-
-  elements.detailsFilesList.textContent = "";
-  const historyFiles = extractFilesFromHistory(peer.username);
-  if (historyFiles.length === 0 && fileEntries.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "detail-file-row detail-file-empty";
-    empty.innerHTML = "<span>暂无共享文件。发送文件后将在此处显示。</span>";
-    elements.detailsFilesList.append(empty);
-  } else {
-    for (const file of historyFiles) {
-      elements.detailsFilesList.append(renderDetailFileRow(file));
-    }
-    for (const file of fileEntries) {
-      elements.detailsFilesList.append(renderDetailFileRow(file));
-    }
   }
 }
 
@@ -4636,57 +4490,6 @@ function bindEvents() {
     } catch (error) {
       showToast(error.message || "备注保存失败", "error");
     }
-  });
-  elements.editMediaButton?.addEventListener("click", () => {
-    if (!state.activePeer) {
-      showToast("请先选择联系人", "error");
-      return;
-    }
-    const current = activeContactProfile(state.activePeer);
-    const next = window.prompt("用逗号分隔媒体标签", (current.media || []).join(", "));
-    if (next === null) {
-      return;
-    }
-    state.contactProfiles[state.activePeer] = normalizeContactProfile({
-      ...current,
-      media: next.split(",").map((item) => item.trim()).filter(Boolean)
-    });
-    saveContactProfiles();
-    renderThread({ scrollBehavior: "preserve" });
-    showToast("媒体标签已更新");
-  });
-  elements.editFilesButton?.addEventListener("click", () => {
-    if (!state.activePeer) {
-      showToast("请先选择联系人", "error");
-      return;
-    }
-    const current = activeContactProfile(state.activePeer);
-    const next = window.prompt("每行一个共享文件，格式：文件名 | 说明", (current.files || []).map((item) => `${item.name} | ${item.meta}`).join("\n"));
-    if (next === null) {
-      return;
-    }
-    const files = next
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [name, meta] = line.split("|");
-        const cleanName = String(name || "").trim();
-        const ext = cleanName.includes(".") ? cleanName.split(".").pop() : "file";
-        return {
-          name: cleanName,
-          meta: String(meta || "").trim() || "文件",
-          kind: String(ext || "file").toLowerCase().slice(0, 12)
-        };
-      })
-      .filter((item) => item.name);
-    state.contactProfiles[state.activePeer] = normalizeContactProfile({
-      ...current,
-      files
-    });
-    saveContactProfiles();
-    renderThread({ scrollBehavior: "preserve" });
-    showToast("共享文件已更新");
   });
   elements.copyContactIdButton?.addEventListener("click", async () => {
     if (!state.activePeer) {
