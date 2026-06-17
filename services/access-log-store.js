@@ -426,6 +426,21 @@ class AccessLogStore {
     );
   }
 
+  async renameUserId(previousUserId, nextUserId) {
+    const previous = normalizeText(previousUserId, 64);
+    const next = normalizeText(nextUserId, 64);
+    if (!this.enabled || !previous || !next || previous === next) {
+      return 0;
+    }
+    for (const item of this.queue) {
+      if (item?.type === "log" && item.row && item.row.userId === previous) {
+        item.row.userId = next;
+      }
+    }
+    const result = await this.run("UPDATE access_logs SET user_id = ? WHERE user_id = ?", [next, previous]);
+    return Number(result?.changes || 0);
+  }
+
   async getDashboardSummary() {
     if (!this.enabled) {
       return createEmptySummary();

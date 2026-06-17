@@ -18,6 +18,7 @@ const elements = {
   overviewGrid: document.querySelector("#overviewGrid"),
   recentLoginsList: document.querySelector("#recentLoginsList"),
   recentUsersList: document.querySelector("#recentUsersList"),
+  abnormalLoginsList: document.querySelector("#abnormalLoginsList"),
   systemStatusText: document.querySelector("#systemStatusText"),
   currentIpText: document.querySelector("#currentIpText"),
   statsGrid: document.querySelector("#statsGrid"),
@@ -759,7 +760,9 @@ function renderMessages() {
       </div>
       <div class="msg-text"></div>
     `;
-    article.querySelector(".msg-text").textContent = `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
+    article.querySelector(".msg-text").textContent = message.recalled
+      ? "消息已撤回"
+      : `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
     elements.messagesList.append(article);
   }
   elements.loadMoreMessagesButton.disabled = !state.hasMoreMessages || state.loadingMessages;

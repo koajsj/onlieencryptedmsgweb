@@ -52,6 +52,7 @@ const elements = {
   logoutButton: document.querySelector("#logoutButton"),
   meStatus: document.querySelector("#meStatus"),
   meStatusDot: document.querySelector("#meStatusDot"),
+  sidebarTitle: document.querySelector(".sidebar-head h2"),
   sidebarMeta: document.querySelector("#sidebarMeta"),
   searchGroup: document.querySelector("#searchGroup"),
   pinnedGroup: document.querySelector("#pinnedGroup"),
@@ -93,10 +94,13 @@ const elements = {
   emojiPanel: document.querySelector("#emojiPanel"),
   toast: document.querySelector("#toast"),
   messageContextMenu: document.querySelector("#messageContextMenu"),
+  contextReplyButton: document.querySelector("#contextReplyButton"),
   contextCopyButton: document.querySelector("#contextCopyButton"),
   contextRecallButton: document.querySelector("#contextRecallButton"),
+  contextDeleteButton: document.querySelector("#contextDeleteButton"),
   contactPanel: document.querySelector("#contactPanel"),
   editContactButton: document.querySelector("#editContactButton"),
+  detailsCollapseButton: document.querySelector("#detailsCollapseButton"),
   detailsCloseButton: document.querySelector("#detailsCloseButton"),
   contactDetailsEmpty: document.querySelector("#contactDetailsEmpty"),
   contactDetailsContent: document.querySelector("#contactDetailsContent"),
@@ -105,10 +109,17 @@ const elements = {
   detailsStatus: document.querySelector("#detailsStatus"),
   detailsStatusDot: document.querySelector("#detailsStatusDot"),
   detailsRole: document.querySelector("#detailsRole"),
+  detailsNote: document.querySelector("#detailsNote"),
+  detailsAccountId: document.querySelector("#detailsAccountId"),
+  detailsLastSeen: document.querySelector("#detailsLastSeen"),
   detailsAbout: document.querySelector("#detailsAbout"),
   detailsMediaGrid: document.querySelector("#detailsMediaGrid"),
   detailsFilesList: document.querySelector("#detailsFilesList"),
   notificationsToggle: document.querySelector("#notificationsToggle"),
+  copyContactIdButton: document.querySelector("#copyContactIdButton"),
+  deleteContactButton: document.querySelector("#deleteContactButton"),
+  blockContactButton: document.querySelector("#blockContactButton"),
+  blockContactButtonLabel: document.querySelector("#blockContactButtonLabel"),
   editMediaButton: document.querySelector("#editMediaButton"),
   editFilesButton: document.querySelector("#editFilesButton"),
   settingsDialog: document.querySelector("#settingsDialog"),
@@ -122,6 +133,10 @@ const elements = {
   accountDisplayNameInput: document.querySelector("#accountDisplayNameInput"),
   accountStatusInput: document.querySelector("#accountStatusInput"),
   accountAboutInput: document.querySelector("#accountAboutInput"),
+  presenceVisibleToggle: document.querySelector("#presenceVisibleToggle"),
+  allowSearchToggle: document.querySelector("#allowSearchToggle"),
+  deviceSessionsList: document.querySelector("#deviceSessionsList"),
+  blockedUsersList: document.querySelector("#blockedUsersList"),
   contactSettingsHeading: document.querySelector("#contactSettingsHeading"),
   contactUsernameInput: document.querySelector("#contactUsernameInput"),
   contactDisplayNameInput: document.querySelector("#contactDisplayNameInput"),
@@ -163,12 +178,20 @@ const state = {
   connectionState: "offline",
   accountProfile: {},
   contactProfiles: {},
+  contacts: [],
+  deviceSessions: [],
+  securitySettings: {
+    showOnlineStatus: true,
+    allowUserSearch: true,
+    blockedUsers: []
+  },
   outboxFlushing: false,
   searchTimer: 0,
   searchRequestId: 0,
   messageListRenderRaf: 0,
   resizeRenderRaf: 0,
   toastTimer: 0,
+  longPressTimer: 0,
   openConversationRequest: 0,
   conversationPrefs: {},
   drafts: {},
@@ -176,6 +199,7 @@ const state = {
   scrollBottomNewCount: 0,
   scrollBottomHideTimer: 0,
   detailsPanelOpen: false,
+  detailsPanelCollapsed: false,
   activeNavSection: "messages",
   emojiPanelOpen: false,
   accountMenuOpen: false,
@@ -183,7 +207,8 @@ const state = {
   settingsDialogOpen: false,
   settingsDialogSection: "account",
   contextMenuMessageId: "",
-  previewMode: false
+  previewMode: false,
+  workspaceLoading: false
 };
 
 if (elements.accountMenu && elements.accountMenu.parentElement !== document.body) {
@@ -397,16 +422,43 @@ function activeContactProfile(username) {
   return normalizeContactProfile(state.contactProfiles[username]);
 }
 
+function contactRecord(username) {
+  return state.contacts.find((item) => item.username === username) || null;
+}
+
 function contactDisplayName(username) {
-  return activeContactProfile(username).displayName || String(username || "");
+  return contactRecord(username)?.note || activeContactProfile(username).displayName || String(username || "");
 }
 
 function contactRoleLabel(username) {
-  return activeContactProfile(username).role || `@${String(username || "")}`;
+  return activeContactProfile(username).role || `账号 ID · @${String(username || "")}`;
 }
 
 function contactAboutText(username) {
   return activeContactProfile(username).about || "暂无简介，可在设置面板中自定义。";
+}
+
+function formatLastSeen(timestamp) {
+  const value = Number(timestamp || 0);
+  if (!value) {
+    return "暂不可见";
+  }
+  const diff = Date.now() - value;
+  if (diff < 60 * 1000) {
+    return "刚刚在线";
+  }
+  if (diff < 60 * 60 * 1000) {
+    return `${Math.max(1, Math.floor(diff / 60000))} 分钟前`;
+  }
+  if (diff < 24 * 60 * 60 * 1000) {
+    return formatTime(value);
+  }
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function parseMediaInput(value) {
@@ -613,6 +665,9 @@ function setSettingsDialogSection(section) {
   if (securityForm) {
     securityForm.hidden = nextSection !== "security";
   }
+  if (nextSection === "security" && state.token) {
+    void refreshSecuritySettingsPanel().catch(() => {});
+  }
 }
 
 function populateSettingsDialog() {
@@ -689,14 +744,31 @@ function hideMessageContextMenu() {
   }
 }
 
+function setContextMenuButtonState(button, enabled, hidden = false) {
+  if (!button) {
+    return;
+  }
+  button.hidden = hidden;
+  button.disabled = !enabled;
+}
+
 function showMessageContextMenu(messageId, x, y) {
   if (!elements.messageContextMenu || !messageId) {
     return;
   }
+  const message = findMessageById(state.activePeer, messageId);
+  const hasText = Boolean(messagePlaintext(message).trim());
+  const canReply = Boolean(message && !message.recalled && message.id);
+  const canRecall = Boolean(message?.mine && !message?.pending && !message?.failed && !message?.recalled && message?.id);
+  const canDelete = Boolean(message && (message.id || message.tempId));
+  setContextMenuButtonState(elements.contextReplyButton, canReply);
+  setContextMenuButtonState(elements.contextCopyButton, hasText);
+  setContextMenuButtonState(elements.contextRecallButton, canRecall, !message?.mine);
+  setContextMenuButtonState(elements.contextDeleteButton, canDelete);
   state.contextMenuMessageId = messageId;
   elements.messageContextMenu.hidden = false;
   const maxX = window.innerWidth - 180;
-  const maxY = window.innerHeight - 120;
+  const maxY = window.innerHeight - 220;
   elements.messageContextMenu.style.left = `${Math.min(x, maxX)}px`;
   elements.messageContextMenu.style.top = `${Math.min(y, maxY)}px`;
 }
@@ -957,6 +1029,51 @@ function buildReplyTarget(message) {
 
 function messagePlaintext(message) {
   return typeof message?.text === "string" ? message.text : "";
+}
+
+function recalledMessageLabel(message) {
+  return message?.mine ? "你撤回了一条消息" : "对方撤回了一条消息";
+}
+
+function conversationMessageLabel(message) {
+  if (!message) {
+    return "";
+  }
+  if (message.recalled) {
+    return recalledMessageLabel(message);
+  }
+  return messagePlaintext(message);
+}
+
+function syncConversationFromCache(peer) {
+  if (!peer) {
+    return;
+  }
+  const conversation = getConversation(peer);
+  if (!conversation) {
+    return;
+  }
+  const messages = state.messageCache.get(peer) || [];
+  const latest = messages.at(-1) || null;
+  conversation.latestMessage = latest
+    ? {
+        id: latest.id || latest.tempId || "",
+        clientId: latest.clientId || latest.tempId || "",
+        from: latest.from,
+        to: latest.to,
+        mine: Boolean(latest.mine),
+        text: messagePlaintext(latest) || null,
+        recalled: Boolean(latest.recalled),
+        replyTo: latest.replyTo || null,
+        nonce: "",
+        ciphertext: "",
+        createdAt: Number(latest.createdAt || 0)
+      }
+    : null;
+  conversation.previewText = latest ? conversationMessageLabel(latest) : "";
+  conversation.lastAt = Number(latest?.createdAt || 0);
+  sortConversations();
+  rebuildConversationSearchIndex(peer);
 }
 
 function threadMessageMatchesQuery(message, query) {
@@ -1276,6 +1393,9 @@ function updateSecurityStatus(peer = activePeerMeta()) {
   if (pendingCount > 0) {
     parts.push(`\u5f85\u53d1\u9001 ${pendingCount}`);
   }
+  if (contactRecord(peer.username)?.blocked) {
+    parts.push("已拉黑，对话发送已禁用");
+  }
   elements.securityStatus.textContent = parts.join(" \u00b7 ");
 }
 
@@ -1288,8 +1408,9 @@ function setAuthBusy(busy) {
 
 function setComposerBusy(busy) {
   state.composerBusy = busy;
-  elements.sendButton.disabled = busy || !state.activePeer;
-  elements.messageInput.disabled = busy || !state.activePeer;
+  const blocked = Boolean(state.activePeer && contactRecord(state.activePeer)?.blocked);
+  elements.sendButton.disabled = busy || !state.activePeer || blocked;
+  elements.messageInput.disabled = busy || !state.activePeer || blocked;
 }
 
 function isMobile() {
@@ -1303,6 +1424,7 @@ function syncLayoutState() {
   document.body.classList.toggle("is-mobile", isMobile());
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
   document.body.classList.toggle("is-details-open", isDetailsDrawerLayout() && state.detailsPanelOpen);
+  document.body.classList.toggle("is-details-collapsed", !isDetailsDrawerLayout() && state.detailsPanelCollapsed);
   document.body.classList.toggle("is-dialog-open", state.settingsDialogOpen);
   if (state.accountMenuOpen && state.accountMenuAnchor && state.accountMenuAnchor.offsetParent === null) {
     closeAccountMenu();
@@ -1425,6 +1547,8 @@ function translateApiError(pathname, status, payload) {
     "account banned": "账号已被禁用",
     "account key material is missing": "账号密钥异常，请重新登录或重新注册",
     "too many auth requests": "请求过于频繁，请稍后再试",
+    "current password invalid": "当前密码不正确",
+    "peer unavailable": "对方当前不可接收消息",
     unauthorized: "请先登录",
     "session expired": "登录已过期，请重新登录"
   };
@@ -1534,12 +1658,23 @@ function clearSession(showAuth = true, clearToken = true) {
   state.pendingSequence = 0;
   state.accountProfile = {};
   state.contactProfiles = {};
+  state.contacts = [];
+  state.deviceSessions = [];
+  state.securitySettings = {
+    showOnlineStatus: true,
+    allowUserSearch: true,
+    blockedUsers: []
+  };
   state.outboxFlushing = false;
   state.searchRequestId += 1;
   state.openConversationRequest += 1;
+  state.detailsPanelOpen = false;
+  state.activeNavSection = "messages";
   state.settingsDialogOpen = false;
   state.settingsDialogSection = "account";
   state.previewMode = false;
+  state.detailsPanelCollapsed = false;
+  state.workspaceLoading = false;
 
   clearStoredSessionArtifacts(clearToken, true);
   elements.globalSearchInput.value = "";
@@ -1770,6 +1905,9 @@ function buildLocalSearchResults(query) {
 
 function setDetailsPanelOpen(force) {
   state.detailsPanelOpen = typeof force === "boolean" ? force : !state.detailsPanelOpen;
+  if (state.detailsPanelOpen) {
+    state.detailsPanelCollapsed = false;
+  }
   syncLayoutState();
 }
 
@@ -1806,6 +1944,120 @@ function renderDetailFileRow(file) {
   return wrapper;
 }
 
+function renderSimpleDetailRow(title, meta, actionLabel = "", action = "") {
+  const wrapper = document.createElement("div");
+  wrapper.className = "detail-file-row detail-file-row-simple";
+  wrapper.innerHTML = `
+    <div class="detail-file-copy">
+      <strong>${escapeHtml(title)}</strong>
+      <span class="detail-file-meta">${escapeHtml(meta)}</span>
+    </div>
+    ${actionLabel ? `<button class="detail-file-download" type="button" data-security-action="${escapeHtml(action)}">${escapeHtml(actionLabel)}</button>` : ""}
+  `;
+  return wrapper;
+}
+
+function renderSecurityLists(deviceSessions = state.deviceSessions) {
+  if (elements.presenceVisibleToggle) {
+    elements.presenceVisibleToggle.checked = state.securitySettings.showOnlineStatus !== false;
+  }
+  if (elements.allowSearchToggle) {
+    elements.allowSearchToggle.checked = state.securitySettings.allowUserSearch !== false;
+  }
+  if (elements.deviceSessionsList) {
+    elements.deviceSessionsList.textContent = "";
+    if (!deviceSessions.length) {
+      const empty = document.createElement("div");
+      empty.className = "detail-file-row detail-file-empty";
+      empty.innerHTML = "<span>暂无可展示的登录设备。</span>";
+      elements.deviceSessionsList.append(empty);
+    } else {
+      for (const sessionItem of deviceSessions) {
+        const title = [sessionItem.device || "设备", sessionItem.browser || "浏览器"].filter(Boolean).join(" · ");
+        const meta = [sessionItem.os || "系统", `最近活动 ${formatDateTime(sessionItem.lastSeenAt)}`].filter(Boolean).join(" · ");
+        elements.deviceSessionsList.append(renderSimpleDetailRow(title, meta));
+      }
+    }
+  }
+  if (elements.blockedUsersList) {
+    elements.blockedUsersList.textContent = "";
+    if (!state.securitySettings.blockedUsers.length) {
+      const empty = document.createElement("div");
+      empty.className = "detail-file-row detail-file-empty";
+      empty.innerHTML = "<span>黑名单为空。</span>";
+      elements.blockedUsersList.append(empty);
+    } else {
+      for (const username of state.securitySettings.blockedUsers) {
+        elements.blockedUsersList.append(
+          renderSimpleDetailRow(`@${username}`, "已阻止对方继续发送消息", "解除拉黑", `unblock:${username}`)
+        );
+      }
+    }
+  }
+}
+
+async function refreshSecuritySettingsPanel() {
+  const deviceSessions = await loadSecuritySettings();
+  renderSecurityLists(deviceSessions);
+}
+
+async function updateSecuritySettings(patch) {
+  const payload = await api("/api/me/settings", {
+    method: "PATCH",
+    body: patch
+  });
+  state.securitySettings = {
+    showOnlineStatus: payload?.settings?.showOnlineStatus !== false,
+    allowUserSearch: payload?.settings?.allowUserSearch !== false,
+    blockedUsers: Array.isArray(payload?.blockedUsers) ? payload.blockedUsers : []
+  };
+  renderSecurityLists();
+  renderSidebar();
+  renderThread({ scrollBehavior: "preserve" });
+}
+
+async function saveContactNote(username, note) {
+  if (!username) {
+    return;
+  }
+  await api(`/api/contacts/${encodeURIComponent(username)}`, {
+    method: "PATCH",
+    body: { note }
+  });
+  await loadContacts();
+  renderSidebar();
+  renderThread({ scrollBehavior: "preserve" });
+}
+
+async function deleteContactRecord(username) {
+  if (!username) {
+    return;
+  }
+  await api(`/api/contacts/${encodeURIComponent(username)}`, {
+    method: "DELETE"
+  });
+  await loadContacts();
+  renderSidebar();
+  renderThread({ scrollBehavior: "preserve" });
+}
+
+async function setBlockedContact(username, blocked) {
+  if (!username) {
+    return;
+  }
+  const payload = await api(`/api/contacts/${encodeURIComponent(username)}/block`, {
+    method: "POST",
+    body: { blocked }
+  });
+  await loadContacts();
+  state.securitySettings.blockedUsers = Array.isArray(payload?.blockedUsers) ? payload.blockedUsers : [];
+  renderSidebar();
+  renderThread({ scrollBehavior: "preserve" });
+  if (state.settingsDialogOpen && state.settingsDialogSection === "security") {
+    renderSecurityLists();
+  }
+}
+
 function extractFilesFromHistory(peerUsername) {
   const messages = state.messageCache.get(peerUsername) || [];
   const files = [];
@@ -1839,6 +2091,7 @@ function renderContactDetails(peer) {
   }
 
   const profile = activeContactProfile(peer.username);
+  const contact = contactRecord(peer.username);
   const prefs = peerPrefs(peer.username);
   const mediaEntries = profile.media;
   const fileEntries = profile.files;
@@ -1846,10 +2099,25 @@ function renderContactDetails(peer) {
   elements.contactDetailsContent.hidden = false;
   setAvatar(elements.detailsAvatar, peer.username);
   elements.detailsName.textContent = contactDisplayName(peer.username);
-  elements.detailsStatus.textContent = peer.online ? "在线" : "离线";
+  elements.detailsStatus.textContent = peer.online ? "在线" : contact?.lastSeenAt ? `离线 · ${formatLastSeen(contact.lastSeenAt)}` : "离线";
   elements.detailsRole.textContent = contactRoleLabel(peer.username);
+  if (elements.detailsNote) {
+    elements.detailsNote.textContent = contact?.note || "未设置";
+  }
+  if (elements.detailsAccountId) {
+    elements.detailsAccountId.textContent = `@${peer.username}`;
+  }
+  if (elements.detailsLastSeen) {
+    elements.detailsLastSeen.textContent = peer.online ? "当前在线" : formatLastSeen(contact?.lastSeenAt || 0);
+  }
   elements.detailsAbout.textContent = contactAboutText(peer.username);
   elements.notificationsToggle.checked = !prefs.muted;
+  if (elements.blockContactButtonLabel) {
+    elements.blockContactButtonLabel.textContent = contact?.blocked ? "取消拉黑" : "拉黑联系人";
+  }
+  if (elements.detailsCollapseButton) {
+    elements.detailsCollapseButton.textContent = state.detailsPanelCollapsed ? "展开" : "收起";
+  }
   if (elements.editContactButton) {
     elements.editContactButton.disabled = false;
   }
@@ -1858,7 +2126,10 @@ function renderContactDetails(peer) {
   if (mediaEntries.length === 0) {
     const empty = document.createElement("div");
     empty.className = "media-thumb media-thumb-empty";
-    empty.textContent = "暂无媒体标签";
+    empty.innerHTML = `
+      <strong>暂无共享媒体</strong>
+      <span>发送图片或补充媒体标签后会显示在这里。</span>
+    `;
     elements.detailsMediaGrid.append(empty);
   } else {
     for (const item of mediaEntries) {
@@ -1890,16 +2161,61 @@ function renderContactDetails(peer) {
 
 function renderSidebar() {
   const query = state.searchQuery.trim().toLowerCase();
+  const contactsMode = state.activeNavSection === "contacts";
   if (elements.globalSearchInput && elements.globalSearchInput.value !== state.searchQuery) {
     elements.globalSearchInput.value = state.searchQuery;
   }
   if (elements.sidebarSearchInput && elements.sidebarSearchInput.value !== state.searchQuery) {
     elements.sidebarSearchInput.value = state.searchQuery;
   }
+  if (elements.sidebarTitle) {
+    elements.sidebarTitle.textContent = contactsMode ? "联系人" : "最近消息";
+  }
+  if (state.workspaceLoading) {
+    if (elements.sidebarMeta) {
+      elements.sidebarMeta.textContent = "同步中";
+    }
+    elements.searchGroup.hidden = true;
+    elements.pinnedGroup.hidden = true;
+    elements.recentGroup.hidden = false;
+    elements.conversationEmpty.hidden = true;
+    elements.conversationList.textContent = "";
+    for (let index = 0; index < 5; index += 1) {
+      const skeleton = document.createElement("div");
+      skeleton.className = "list-item is-skeleton";
+      skeleton.innerHTML = `<div class="list-item-avatar"><div class="avatar"></div></div><div class="list-item-meta"><div class="skeleton-line"></div><div class="skeleton-line is-short"></div></div>`;
+      elements.conversationList.append(skeleton);
+    }
+    return;
+  }
   const localResults = query ? buildLocalSearchResults(query) : [];
+  const contacts = state.contacts
+    .filter((item) => {
+      if (!query || !contactsMode) {
+        return true;
+      }
+      return (
+        String(item.username || "").toLowerCase().includes(query) ||
+        String(item.note || "").toLowerCase().includes(query)
+      );
+    })
+    .map((item) => ({
+      username: item.username,
+      usernameKey: item.usernameKey || "",
+      online: Boolean(item.online),
+      lastAt: Number(item.lastSeenAt || 0),
+      previewText: item.blocked
+        ? "已拉黑，双方消息已阻断"
+        : item.online
+          ? "当前在线"
+          : item.lastSeenAt
+            ? `最后在线 ${formatLastSeen(item.lastSeenAt)}`
+            : "暂未公开在线状态",
+      unread: 0
+    }));
   const conversations = state.conversations.filter((item) => {
     if (!query) {
-      return true;
+      return !contactsMode;
     }
     return (
       item.username.toLowerCase().includes(query) ||
@@ -1907,9 +2223,9 @@ function renderSidebar() {
       );
   });
 
-  const pinnedConversations = conversations.filter((item) => peerPrefs(item.username).pinned);
-  const recentConversations = conversations.filter((item) => !peerPrefs(item.username).pinned);
-  const visibleCount = conversations.length;
+  const pinnedConversations = contactsMode ? [] : conversations.filter((item) => peerPrefs(item.username).pinned);
+  const recentConversations = contactsMode ? contacts : conversations.filter((item) => !peerPrefs(item.username).pinned);
+  const visibleCount = contactsMode ? contacts.length : conversations.length;
   const mergedSearchRows = query
     ? (() => {
         const remoteResults = state.searchResults.map((user) => ({
@@ -1932,7 +2248,7 @@ function renderSidebar() {
     : `${visibleCount} 个会话`;
   elements.searchGroup.hidden = !query;
   if (elements.pinnedGroup) {
-    elements.pinnedGroup.hidden = query || pinnedConversations.length === 0;
+    elements.pinnedGroup.hidden = contactsMode || query || pinnedConversations.length === 0;
   }
   if (elements.recentGroup) {
     elements.recentGroup.hidden = Boolean(query) || recentConversations.length === 0;
@@ -1969,7 +2285,19 @@ function renderSidebar() {
   }
 
   elements.conversationList.textContent = "";
-  elements.conversationEmpty.hidden = query || conversations.length > 0;
+  elements.conversationEmpty.hidden = query || recentConversations.length > 0;
+  if (elements.conversationEmpty && !elements.conversationEmpty.hidden) {
+    const emptyTitle = elements.conversationEmpty.querySelector("strong");
+    const emptyText = elements.conversationEmpty.querySelector("span");
+    if (emptyTitle) {
+      emptyTitle.textContent = contactsMode ? "暂无联系人" : "暂无会话";
+    }
+    if (emptyText) {
+      emptyText.textContent = contactsMode
+        ? "搜索用户或开始聊天后，联系人会出现在这里。"
+        : "在左上角搜索联系人，即可开始新的加密聊天。";
+    }
+  }
   for (const conversation of recentConversations) {
     elements.conversationList.append(renderListItem(conversation, false));
   }
@@ -1978,11 +2306,9 @@ function renderSidebar() {
 function renderListItem(item, isSearchResult) {
   const prefs = peerPrefs(item.username);
   const draft = isSearchResult ? "" : draftTextForPeer(item.username).trim();
-  const indicators = [];
+  const indicators = [`<i class="online-dot${item.online ? " is-online" : ""}"></i>`];
   if (item.unread && !prefs.muted) {
     indicators.push(`<b class="unread-badge">${item.unread}</b>`);
-  } else {
-    indicators.push(`<i class="online-dot${item.online ? " is-online" : ""}"></i>`);
   }
   if (!isSearchResult && draft) {
     indicators.push('<span class="draft-badge">草稿</span>');
@@ -2084,11 +2410,14 @@ function isMessageConsecutive(prev, current) {
 function renderMessage(message, options = {}) {
   const article = document.createElement("article");
   const isConsecutive = options.consecutive ? " is-consecutive" : "";
-  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${message.recalled ? " is-recalled" : ""}${isConsecutive}`;
+  const isSearchMatch = options.searchMatch ? " is-search-match" : "";
+  article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${message.recalled ? " is-recalled" : ""}${isConsecutive}${isSearchMatch}`;
   article.dataset.messageId = message.id || message.tempId || "";
   article.dataset.messageText = messagePlaintext(message);
   article.dataset.mine = message.mine ? "1" : "0";
   const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || message.tempId || "")}">\u56de\u590d</button>`;
+  const recallAction = `<button class="message-recall-button" type="button" data-recall-id="${escapeHtml(message.id || message.tempId || "")}">\u64a4\u56de</button>`;
+  const deleteAction = `<button class="message-delete-button" type="button" data-delete-id="${escapeHtml(message.id || message.tempId || "")}">\u5220\u9664</button>`;
   let statusAction = "";
   if (message.failed) {
     statusAction = `<span class="message-state is-error"><i class="dot"></i>\u53d1\u9001\u5931\u8d25</span><span class="message-meta-sep">·</span><button class="message-retry-button" type="button" data-temp-id="${escapeHtml(message.tempId || "")}">\u91cd\u8bd5</button>`;
@@ -2109,15 +2438,22 @@ function renderMessage(message, options = {}) {
     `
     : "";
   const bubbleMarkup = message.recalled
-    ? `<div class="bubble bubble-recalled">\u4f60\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f</div>`
+    ? `<div class="bubble bubble-recalled">${escapeHtml(recalledMessageLabel(message))}</div>`
     : `<div class="bubble">${escapeHtml(messagePlaintext(message)).replaceAll("\n", "<br />")}</div>`;
   const metaParts = [escapeHtml(formatTime(message.createdAt))];
   if (statusAction && !message.recalled) metaParts.push(statusAction);
-  if (!message.recalled && (!isConsecutive || !message.mine)) {
-    metaParts.push(replyAction);
-  }
+  const actionParts = [];
   if (!message.recalled) {
-    metaParts.push(copyAction);
+    if (message.id) {
+      actionParts.push(replyAction);
+    }
+    actionParts.push(copyAction);
+    if (message.mine && !message.pending && !message.failed && message.id) {
+      actionParts.push(recallAction);
+    }
+  }
+  if (message.id || message.tempId) {
+    actionParts.push(deleteAction);
   }
   const avatarMarkup = isConsecutive
     ? ""
@@ -2127,7 +2463,10 @@ function renderMessage(message, options = {}) {
     <div class="message-body">
       ${replyMarkup}
       ${bubbleMarkup}
-      <div class="message-meta">${metaParts.join('<span class="message-meta-sep">·</span>')}</div>
+      <div class="message-meta">
+        <div class="message-meta-main">${metaParts.join('<span class="message-meta-sep">·</span>')}</div>
+        ${actionParts.length > 0 ? `<div class="message-actions">${actionParts.join("")}</div>` : ""}
+      </div>
     </div>
   `;
   return article;
@@ -2162,6 +2501,7 @@ function renderThread(options = {}) {
     connectionLabel = " · 离线队列";
   }
   const prefs = peerPrefs(peer.username);
+  const contact = contactRecord(peer.username);
   const statusTags = [];
   if (prefs.pinned) {
     statusTags.push("已置顶");
@@ -2169,9 +2509,13 @@ function renderThread(options = {}) {
   if (prefs.muted) {
     statusTags.push("免打扰");
   }
+  if (contact?.blocked) {
+    statusTags.push("已拉黑");
+  }
   const threadQuery = state.threadSearchQuery.trim().toLowerCase();
   const statusSuffix = statusTags.length ? ` · ${statusTags.join(" · ")}` : "";
-  elements.peerStatus.textContent = `${peer.online ? "在线" : "离线"} · 端到端加密${connectionLabel}${statusSuffix}`;
+  const basePresence = peer.online ? "在线" : contact?.lastSeenAt ? `最后在线 ${formatLastSeen(contact.lastSeenAt)}` : "离线";
+  elements.peerStatus.textContent = `${basePresence} · 端到端加密${connectionLabel}${statusSuffix}`;
   updateSecurityStatus(peer);
   setAvatar(elements.peerAvatar, peer.username);
 
@@ -2230,7 +2574,7 @@ function renderThread(options = {}) {
         prevMessage = null;
       }
       const consecutive = isMessageConsecutive(prevMessage, message);
-      elements.messageList.append(renderMessage(message, { consecutive }));
+      elements.messageList.append(renderMessage(message, { consecutive, searchMatch: Boolean(threadQuery) }));
       prevMessage = message;
     }
     if (virtualWindow && virtualWindow.bottomSpacer > 0) {
@@ -2261,8 +2605,8 @@ function renderThread(options = {}) {
 
 function render() {
   syncLayoutState();
+  elements.workspace?.classList.toggle("is-loading", state.workspaceLoading);
   setActiveNavSection(state.activeNavSection);
-  renderSidebar();
   renderThread();
   if (state.settingsDialogOpen) {
     populateSettingsDialog();
@@ -2546,7 +2890,10 @@ async function decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPe
 
 async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "") {
   let text = "";
-  if (!message?.ciphertext || !message?.nonce) {
+  const recalled = Boolean(message?.recalled);
+  if (recalled) {
+    text = message.from === state.me?.username ? "你撤回了一条消息" : "对方撤回了一条消息";
+  } else if (!message?.ciphertext || !message?.nonce) {
     text = messagePlaintext(message);
   } else {
     try {
@@ -2562,6 +2909,9 @@ async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "
     to: message.to,
     peer: peerFromMessage(message, fallbackPeer),
     mine: message.mine,
+    clientId: String(message.clientId || ""),
+    recalled,
+    replyTo: message.replyTo || null,
     text,
     createdAt: message.createdAt
   };
@@ -2624,6 +2974,25 @@ async function loadConversations() {
     rebuildConversationSearchIndex(conversation.username);
   }
   hydratePendingMessagesIntoCache();
+}
+
+async function loadContacts() {
+  const payload = await api("/api/contacts");
+  state.contacts = Array.isArray(payload.contacts) ? payload.contacts : [];
+}
+
+async function loadSecuritySettings() {
+  const [settingsPayload, sessionsPayload] = await Promise.all([
+    api("/api/me/settings"),
+    api("/api/me/sessions")
+  ]);
+  state.securitySettings = {
+    showOnlineStatus: settingsPayload?.settings?.showOnlineStatus !== false,
+    allowUserSearch: settingsPayload?.settings?.allowUserSearch !== false,
+    blockedUsers: Array.isArray(settingsPayload?.blockedUsers) ? settingsPayload.blockedUsers : []
+  };
+  state.deviceSessions = Array.isArray(sessionsPayload?.sessions) ? sessionsPayload.sessions : [];
+  return state.deviceSessions;
 }
 
 async function loadSearchResults(query) {
@@ -2923,6 +3292,7 @@ async function openConversation(username) {
     return;
   }
 
+  const switchingPeer = Boolean(state.activePeer && state.activePeer !== username);
   closeEmojiPanel();
   hideMessageContextMenu();
   ensureConversationEntry(username);
@@ -2934,6 +3304,11 @@ async function openConversation(username) {
   elements.threadSearchInput.value = "";
   elements.messageInput.value = draftTextForPeer(username);
   autoResizeComposer();
+  if (switchingPeer && elements.chatThread) {
+    elements.chatThread.classList.remove("is-switching");
+    void elements.chatThread.offsetWidth;
+    elements.chatThread.classList.add("is-switching");
+  }
   const conversation = getConversation(username);
   if (conversation) {
     conversation.unread = 0;
@@ -3073,6 +3448,9 @@ function mergePresence(username, online) {
   if (conversation) {
     conversation.online = online;
   }
+  state.contacts = state.contacts.map((item) =>
+    item.username === username ? { ...item, online } : item
+  );
   state.searchResults = state.searchResults.map((item) =>
     item.username === username ? { ...item, online } : item
   );
@@ -3157,8 +3535,10 @@ async function handleUserRenamed(payload) {
   state.importedPeerKeys.clear();
   state.peerKeys.clear();
   state.pendingMessages.clear();
+  state.contacts = [];
 
   await loadConversations();
+  await loadContacts();
   if (state.searchQuery.trim()) {
     await loadSearchResults(state.searchQuery);
   }
@@ -3328,6 +3708,11 @@ async function openEventStream() {
     handleRemoteRecall(payload);
   });
 
+  source.addEventListener("message-deleted", (event) => {
+    const payload = JSON.parse(event.data);
+    handleRemoteDelete(payload);
+  });
+
   source.addEventListener("error", () => {
     if (state.manualEventSourceClose || !state.token) {
       return;
@@ -3375,15 +3760,25 @@ async function openEventStream() {
 }
 
 async function afterLogin() {
-  await loadConversations();
-  startEventStream();
-  void flushPendingOutbox();
-
-  const savedPeer = localStorage.getItem(STORAGE.activePeer) || "";
+  state.workspaceLoading = true;
   render();
-  if (savedPeer && state.peerKeys.has(savedPeer)) {
-    await openConversation(savedPeer);
+  try {
+    await Promise.all([loadConversations(), loadContacts()]);
+    startEventStream();
+    void flushPendingOutbox();
+
+    const savedPeer = localStorage.getItem(STORAGE.activePeer) || "";
+    render();
+    if (savedPeer && state.peerKeys.has(savedPeer)) {
+      await openConversation(savedPeer);
+    }
+  } finally {
+    state.workspaceLoading = false;
+    render();
   }
+  elements.workspace?.classList.remove("is-entering");
+  void elements.workspace?.offsetWidth;
+  elements.workspace?.classList.add("is-entering");
 }
 
 async function submitAuth(event) {
@@ -3520,6 +3915,10 @@ async function submitMessage(event) {
   if (!state.activePeer) {
     return;
   }
+  if (contactRecord(state.activePeer)?.blocked) {
+    showToast("已拉黑该联系人，无法继续发送消息", "error");
+    return;
+  }
   if (state.submitInFlight) {
     return;
   }
@@ -3547,6 +3946,11 @@ async function submitMessage(event) {
   elements.messageInput.value = "";
   autoResizeComposer();
   closeEmojiPanel();
+  if (elements.sendButton) {
+    elements.sendButton.classList.remove("is-sent-feedback");
+    void elements.sendButton.offsetWidth;
+    elements.sendButton.classList.add("is-sent-feedback");
+  }
   renderThread({ scrollBehavior: "bottom" });
   if (state.previewMode) {
     const pending = findMessageById(peer, tempId);
@@ -3593,6 +3997,25 @@ function findMessageById(peer, messageId) {
   return (state.messageCache.get(peer) || []).find((item) => item.id === messageId || item.tempId === messageId) || null;
 }
 
+function removeMessageFromConversationCache(peer, messageId) {
+  if (!peer || !messageId) {
+    return null;
+  }
+  const messages = state.messageCache.get(peer) || [];
+  const target = messages.find((item) => item.id === messageId || item.tempId === messageId);
+  if (!target) {
+    return null;
+  }
+  const next = messages.filter((item) => item !== target);
+  state.messageCache.set(peer, next);
+  if (target.tempId) {
+    removePendingOutboxEntry(target.tempId);
+    state.pendingMessages.delete(target.tempId);
+  }
+  syncConversationFromCache(peer);
+  return target;
+}
+
 function recallMessageById(peer, messageId) {
   const messageNode = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
   if (messageNode) {
@@ -3610,16 +4033,13 @@ function recallMessageById(peer, messageId) {
     removePendingOutboxEntry(target.tempId);
     state.pendingMessages.delete(target.tempId);
   }
-  const conversation = getConversation(peer);
-  if (conversation && conversation.latestMessage && (conversation.latestMessage.id === target.id || conversation.latestMessage.id === target.tempId)) {
-    conversation.previewText = "\u4f60\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f";
-  }
+  syncConversationFromCache(peer);
   renderSidebar();
   renderThread({ scrollBehavior: "preserve" });
   showToast("\u6d88\u606f\u5df2\u64a4\u56de");
   const serverId = target.id || messageId;
   if (serverId && !target.tempId) {
-    api("/api/messages/recall", { method: "POST", body: JSON.stringify({ messageId: serverId }) }).catch(() => {});
+    api("/api/messages/recall", { method: "POST", body: { messageId: serverId } }).catch(() => {});
   }
   }, messageNode ? 180 : 0);
 }
@@ -3633,9 +4053,53 @@ function handleRemoteRecall(payload) {
   if (!target || target.recalled) return;
   target.recalled = true;
   target.text = "";
-  const conversation = getConversation(peer);
-  if (conversation && conversation.latestMessage && conversation.latestMessage.id === target.id) {
-    conversation.previewText = "\u5bf9\u65b9\u64a4\u56de\u4e86\u4e00\u6761\u6d88\u606f";
+  syncConversationFromCache(peer);
+  renderSidebar();
+  if (state.activePeer === peer) {
+    renderThread({ scrollBehavior: "preserve" });
+  }
+}
+
+async function deleteMessageById(peer, messageId) {
+  const target = findMessageById(peer, messageId);
+  if (!target) {
+    return;
+  }
+  const messageNode = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
+  if (messageNode) {
+    messageNode.classList.add("is-recalling");
+  }
+  const serverId = target.id || "";
+  try {
+    if (serverId) {
+      await api("/api/messages/delete", {
+        method: "POST",
+        body: { messageId: serverId }
+      });
+    }
+  } catch (error) {
+    messageNode?.classList.remove("is-recalling");
+    showToast(error.message || "删除失败", "error");
+    return;
+  }
+  if (!removeMessageFromConversationCache(peer, messageId)) {
+    removeMessageFromConversationCache(peer, serverId);
+  }
+  renderSidebar();
+  if (state.activePeer === peer) {
+    renderThread({ scrollBehavior: isNearBottom(elements.messageList) ? "bottom" : "preserve" });
+  }
+  showToast("消息已删除");
+}
+
+function handleRemoteDelete(payload) {
+  const peer = String(payload?.peer || "").trim();
+  const messageId = String(payload?.messageId || "").trim();
+  if (!peer || !messageId) {
+    return;
+  }
+  if (!removeMessageFromConversationCache(peer, messageId)) {
+    return;
   }
   renderSidebar();
   if (state.activePeer === peer) {
@@ -3735,6 +4199,16 @@ function handleMessageListClick(event) {
     void copyMessageFromButton(copyButton);
     return;
   }
+  const recallButton = event.target.closest(".message-recall-button");
+  if (recallButton && state.activePeer) {
+    void recallMessageById(state.activePeer, recallButton.dataset.recallId || "");
+    return;
+  }
+  const deleteButton = event.target.closest(".message-delete-button");
+  if (deleteButton && state.activePeer) {
+    void deleteMessageById(state.activePeer, deleteButton.dataset.deleteId || "");
+    return;
+  }
   const retryButton = event.target.closest(".message-retry-button");
   if (!retryButton) {
     return;
@@ -3820,6 +4294,7 @@ function setActiveNavSection(section) {
   state.activeNavSection = section === "contacts" ? "contacts" : "messages";
   elements.navMessagesButton?.classList.toggle("is-active", state.activeNavSection === "messages");
   elements.navContactsButton?.classList.toggle("is-active", state.activeNavSection === "contacts");
+  renderSidebar();
 }
 
 function focusThreadSearch() {
@@ -4010,39 +4485,158 @@ function bindEvents() {
       return;
     }
     const message = event.target.closest(".message");
-    if (!message || message.dataset.mine !== "1") {
+    if (!message) {
       hideMessageContextMenu();
       return;
     }
     event.preventDefault();
     showMessageContextMenu(message.dataset.messageId || "", event.clientX, event.clientY);
   });
+  elements.messageList.addEventListener("touchstart", (event) => {
+    if (!isElementNode(event.target) || event.touches.length !== 1) {
+      return;
+    }
+    const message = event.target.closest(".message");
+    if (!message) {
+      return;
+    }
+    const touch = event.touches[0];
+    window.clearTimeout(state.longPressTimer);
+    state.longPressTimer = window.setTimeout(() => {
+      showMessageContextMenu(message.dataset.messageId || "", touch.clientX, touch.clientY);
+    }, 420);
+  }, { passive: true });
+  elements.messageList.addEventListener("touchend", () => {
+    window.clearTimeout(state.longPressTimer);
+    state.longPressTimer = 0;
+  }, { passive: true });
+  elements.messageList.addEventListener("touchmove", () => {
+    window.clearTimeout(state.longPressTimer);
+    state.longPressTimer = 0;
+  }, { passive: true });
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
   elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
   elements.headerSearchButton?.addEventListener("click", focusThreadSearch);
   elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
   elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
-  elements.editContactButton?.addEventListener("click", () => {
+  elements.detailsCollapseButton?.addEventListener("click", () => {
+    if (isDetailsDrawerLayout()) {
+      setDetailsPanelOpen(false);
+      return;
+    }
+    state.detailsPanelCollapsed = !state.detailsPanelCollapsed;
+    syncLayoutState();
+    renderThread({ scrollBehavior: "preserve" });
+  });
+  elements.editContactButton?.addEventListener("click", async () => {
     if (!state.activePeer) {
       showToast("请先选择联系人", "error");
       return;
     }
-    openSettingsDialog("contact");
+    const currentNote = contactRecord(state.activePeer)?.note || "";
+    const nextNote = window.prompt("设置联系人备注", currentNote);
+    if (nextNote === null) {
+      return;
+    }
+    try {
+      await saveContactNote(state.activePeer, nextNote);
+      showToast("备注已更新");
+    } catch (error) {
+      showToast(error.message || "备注保存失败", "error");
+    }
   });
   elements.editMediaButton?.addEventListener("click", () => {
     if (!state.activePeer) {
       showToast("请先选择联系人", "error");
       return;
     }
-    openSettingsDialog("contact");
+    const current = activeContactProfile(state.activePeer);
+    const next = window.prompt("用逗号分隔媒体标签", (current.media || []).join(", "));
+    if (next === null) {
+      return;
+    }
+    state.contactProfiles[state.activePeer] = normalizeContactProfile({
+      ...current,
+      media: next.split(",").map((item) => item.trim()).filter(Boolean)
+    });
+    saveContactProfiles();
+    renderThread({ scrollBehavior: "preserve" });
+    showToast("媒体标签已更新");
   });
   elements.editFilesButton?.addEventListener("click", () => {
     if (!state.activePeer) {
       showToast("请先选择联系人", "error");
       return;
     }
-    openSettingsDialog("contact");
+    const current = activeContactProfile(state.activePeer);
+    const next = window.prompt("每行一个共享文件，格式：文件名 | 说明", (current.files || []).map((item) => `${item.name} | ${item.meta}`).join("\n"));
+    if (next === null) {
+      return;
+    }
+    const files = next
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [name, meta] = line.split("|");
+        const cleanName = String(name || "").trim();
+        const ext = cleanName.includes(".") ? cleanName.split(".").pop() : "file";
+        return {
+          name: cleanName,
+          meta: String(meta || "").trim() || "文件",
+          kind: String(ext || "file").toLowerCase().slice(0, 12)
+        };
+      })
+      .filter((item) => item.name);
+    state.contactProfiles[state.activePeer] = normalizeContactProfile({
+      ...current,
+      files
+    });
+    saveContactProfiles();
+    renderThread({ scrollBehavior: "preserve" });
+    showToast("共享文件已更新");
+  });
+  elements.copyContactIdButton?.addEventListener("click", async () => {
+    if (!state.activePeer) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(state.activePeer);
+      showToast("账号 ID 已复制");
+    } catch (error) {
+      showToast("复制失败", "error");
+    }
+  });
+  elements.deleteContactButton?.addEventListener("click", async () => {
+    if (!state.activePeer) {
+      return;
+    }
+    if (!window.confirm(`确认删除联系人 ${state.activePeer} 吗？`)) {
+      return;
+    }
+    try {
+      await deleteContactRecord(state.activePeer);
+      showToast("联系人已删除");
+    } catch (error) {
+      showToast(error.message || "删除联系人失败", "error");
+    }
+  });
+  elements.blockContactButton?.addEventListener("click", async () => {
+    if (!state.activePeer) {
+      return;
+    }
+    const blocked = Boolean(contactRecord(state.activePeer)?.blocked);
+    const confirmed = window.confirm(blocked ? `确认取消拉黑 ${state.activePeer} 吗？` : `确认拉黑 ${state.activePeer} 吗？`);
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await setBlockedContact(state.activePeer, !blocked);
+      showToast(blocked ? "已解除拉黑" : "已加入黑名单");
+    } catch (error) {
+      showToast(error.message || "操作失败", "error");
+    }
   });
   elements.contactPanel?.addEventListener("click", handleDetailActionClick);
   elements.notificationsToggle?.addEventListener("change", () => {
@@ -4050,6 +4644,39 @@ function bindEvents() {
       return;
     }
     setPeerMutedState(state.activePeer, !elements.notificationsToggle.checked);
+  });
+  elements.presenceVisibleToggle?.addEventListener("change", () => {
+    void updateSecuritySettings({
+      showOnlineStatus: Boolean(elements.presenceVisibleToggle.checked)
+    }).catch((error) => {
+      showToast(error.message || "设置保存失败", "error");
+      void refreshSecuritySettingsPanel().catch(() => {});
+    });
+  });
+  elements.allowSearchToggle?.addEventListener("change", () => {
+    void updateSecuritySettings({
+      allowUserSearch: Boolean(elements.allowSearchToggle.checked)
+    }).catch((error) => {
+      showToast(error.message || "设置保存失败", "error");
+      void refreshSecuritySettingsPanel().catch(() => {});
+    });
+  });
+  elements.blockedUsersList?.addEventListener("click", (event) => {
+    if (!isElementNode(event.target)) {
+      return;
+    }
+    const button = event.target.closest("[data-security-action]");
+    if (!button) {
+      return;
+    }
+    const raw = button.dataset.securityAction || "";
+    if (!raw.startsWith("unblock:")) {
+      return;
+    }
+    const username = raw.slice("unblock:".length);
+    void setBlockedContact(username, false)
+      .then(() => showToast("已解除拉黑"))
+      .catch((error) => showToast(error.message || "解除失败", "error"));
   });
   elements.settingsDialogCloseButton?.addEventListener("click", closeSettingsDialog);
   elements.settingsDialogTabs?.addEventListener("click", (event) => {
@@ -4086,9 +4713,24 @@ function bindEvents() {
     }
     hideMessageContextMenu();
   });
+  elements.contextReplyButton?.addEventListener("click", () => {
+    if (state.activePeer && state.contextMenuMessageId) {
+      const message = findMessageById(state.activePeer, state.contextMenuMessageId);
+      if (message && !message.recalled) {
+        setReplyTarget(message);
+      }
+    }
+    hideMessageContextMenu();
+  });
   elements.contextRecallButton?.addEventListener("click", () => {
     if (state.activePeer && state.contextMenuMessageId) {
       recallMessageById(state.activePeer, state.contextMenuMessageId);
+    }
+    hideMessageContextMenu();
+  });
+  elements.contextDeleteButton?.addEventListener("click", () => {
+    if (state.activePeer && state.contextMenuMessageId) {
+      void deleteMessageById(state.activePeer, state.contextMenuMessageId);
     }
     hideMessageContextMenu();
   });
@@ -4176,7 +4818,7 @@ function bindEvents() {
   });
 
   const changePasswordButton = document.querySelector("#changePasswordButton");
-  changePasswordButton?.addEventListener("click", () => {
+  changePasswordButton?.addEventListener("click", async () => {
     const currentPw = document.querySelector("#currentPasswordInput")?.value || "";
     const newPw = document.querySelector("#newPasswordInput")?.value || "";
     const confirmPw = document.querySelector("#confirmPasswordInput")?.value || "";
@@ -4192,7 +4834,24 @@ function bindEvents() {
       showToast("新密码至少需要 4 个字符", "error");
       return;
     }
-    showToast("密码修改功能需要后端支持，请联系管理员");
+    try {
+      await api("/api/me/password", {
+        method: "POST",
+        body: {
+          currentPassword: currentPw,
+          newPassword: newPw
+        }
+      });
+      const currentPwInput = document.querySelector("#currentPasswordInput");
+      const newPwInput = document.querySelector("#newPasswordInput");
+      const confirmPwInput = document.querySelector("#confirmPasswordInput");
+      if (currentPwInput) currentPwInput.value = "";
+      if (newPwInput) newPwInput.value = "";
+      if (confirmPwInput) confirmPwInput.value = "";
+      showToast("密码已更新");
+    } catch (error) {
+      showToast(error.message || "密码修改失败", "error");
+    }
   });
 
   const settingsLogoutButton = document.querySelector("#settingsLogoutButton");

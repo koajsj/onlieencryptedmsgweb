@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f6f6f4" />
     <meta name="color-scheme" content="light" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=1ccec8cf49" />
+    <link rel="stylesheet" href="./styles.min.css?v=0f7c62550a" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -219,8 +219,10 @@
                 <span class="count" id="scrollBottomCount" hidden></span>
               </button>
               <div class="message-context-menu floating-menu" id="messageContextMenu" hidden>
+                <button class="floating-menu-item" id="contextReplyButton" type="button">回复消息</button>
                 <button class="floating-menu-item" id="contextCopyButton" type="button">复制消息</button>
                 <button class="floating-menu-item is-danger" id="contextRecallButton" type="button">撤回消息</button>
+                <button class="floating-menu-item is-danger" id="contextDeleteButton" type="button">删除消息</button>
               </div>
             </div>
 
@@ -270,7 +272,8 @@
           <div class="contact-panel-header">
             <h2>联系人详情</h2>
             <div class="contact-panel-header-actions">
-              <button class="ghost-button compact" id="editContactButton" type="button">编辑</button>
+              <button class="ghost-button compact" id="editContactButton" type="button">备注</button>
+              <button class="ghost-button compact" id="detailsCollapseButton" type="button">收起</button>
               <button class="icon-button details-close" id="detailsCloseButton" type="button" aria-label="关闭联系人详情"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
             </div>
           </div>
@@ -294,9 +297,19 @@
 
               <div class="detail-action-grid detail-action-grid-2col">
                 <button class="detail-action is-active" type="button" data-detail-action="message"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg></span><span>消息</span></button>
-                <button class="detail-action" type="button" data-detail-action="more"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.4"></circle><circle cx="19" cy="12" r="1.4"></circle><circle cx="5" cy="12" r="1.4"></circle></svg></span><span>更多</span></button>
+                <button class="detail-action" id="copyContactIdButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></span><span>复制 ID</span></button>
+                <button class="detail-action" id="deleteContactButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></span><span>删除联系人</span></button>
+                <button class="detail-action" id="blockContactButton" type="button"><span class="detail-action-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="6.7" y1="6.7" x2="17.3" y2="17.3"></line></svg></span><span id="blockContactButtonLabel">拉黑联系人</span></button>
               </div>
 
+              <section class="detail-block">
+                <div class="detail-block-head"><h3>账号信息</h3></div>
+                <div class="detail-info-list">
+                  <div class="detail-info-row"><span>备注</span><strong id="detailsNote">未设置</strong></div>
+                  <div class="detail-info-row"><span>账号 ID</span><strong id="detailsAccountId">@user</strong></div>
+                  <div class="detail-info-row"><span>最后在线</span><strong id="detailsLastSeen">刚刚</strong></div>
+                </div>
+              </section>
               <section class="detail-block"><div class="detail-block-head"><h3>联系人简介</h3></div><p id="detailsAbout"></p></section>
               <section class="detail-block"><div class="detail-block-head"><h3>共享媒体</h3><button class="link-button" id="editMediaButton" type="button">编辑</button></div><div class="media-grid" id="detailsMediaGrid"></div></section>
               <section class="detail-block"><div class="detail-block-head"><h3>共享文件</h3><button class="link-button" id="editFilesButton" type="button">编辑</button></div><div class="detail-file-list" id="detailsFilesList"></div></section>
@@ -368,7 +381,7 @@
           <form class="dialog-form" id="securitySettingsForm" hidden>
             <div class="dialog-note">
               <strong>安全设置</strong>
-              <span>修改密码或退出登录。</span>
+              <span>修改密码、管理设备与隐私开关。</span>
             </div>
             <div class="field">
               <label class="field-label" for="currentPasswordInput">当前密码</label>
@@ -385,12 +398,41 @@
             <button class="primary-button" id="changePasswordButton" type="button" style="justify-self:start">修改密码</button>
             <div class="settings-divider"></div>
             <div class="dialog-note">
+              <strong>隐私设置</strong>
+              <span>以下开关会直接同步到服务端并即时生效。</span>
+            </div>
+            <label class="switch-row" for="presenceVisibleToggle">
+              <span class="switch-copy"><strong>显示在线状态</strong><small>关闭后其他人将看不到你的在线状态与最后在线时间。</small></span>
+              <span class="switch"><input id="presenceVisibleToggle" type="checkbox" /><span class="switch-slider"></span></span>
+            </label>
+            <label class="switch-row" for="allowSearchToggle">
+              <span class="switch-copy"><strong>允许通过账号 ID 搜索我</strong><small>关闭后你不会出现在账号搜索结果中。</small></span>
+              <span class="switch"><input id="allowSearchToggle" type="checkbox" /><span class="switch-slider"></span></span>
+            </label>
+            <div class="settings-divider"></div>
+            <div class="dialog-note">
+              <strong>登录设备</strong>
+              <span>仅展示设备类型、浏览器、系统和最近登录时间。</span>
+            </div>
+            <div class="detail-file-list" id="deviceSessionsList"></div>
+            <div class="settings-divider"></div>
+            <div class="dialog-note">
+              <strong>黑名单</strong>
+              <span>已拉黑的联系人将无法继续给你发送消息。</span>
+            </div>
+            <div class="detail-file-list" id="blockedUsersList"></div>
+            <div class="settings-divider"></div>
+            <div class="dialog-note">
               <strong>退出登录</strong>
               <span>退出当前设备或所有设备的登录状态。</span>
             </div>
             <div class="settings-logout-actions">
               <button class="ghost-button compact" id="settingsLogoutButton" type="button">退出当前设备</button>
               <button class="ghost-button compact is-danger-text" id="settingsLogoutAllButton" type="button">退出全部设备</button>
+            </div>
+            <div class="dialog-note privacy-note">
+              <strong>隐私说明</strong>
+              <span>不会在前端展示密码、token、cookie 等敏感信息；设备列表仅用于提醒你当前账号的活跃登录环境。</span>
             </div>
           </form>
         </div>
@@ -409,6 +451,6 @@
       </div>
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.min.js?v=5348cc35d8" defer></script>
+    <script src="./app.min.js?v=692f407de1" defer></script>
   </body>
 </html>

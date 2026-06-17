@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { promisify } = require("node:util");
+const UAParser = require("ua-parser-js");
 const { createAccessLogMiddleware } = require("./middleware/access-log");
 const { createAccessLogStore } = require("./services/access-log-store");
 
@@ -336,6 +337,34 @@ function rewriteJsonLinesFile(filePath, rows) {
   fs.renameSync(tempPath, filePath);
 }
 
+function normalizeUserList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))];
+}
+
+function normalizeUserContacts(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [username, entry] of Object.entries(value)) {
+    const normalizedUsername = normalizeUsername(username);
+    if (!normalizedUsername) {
+      continue;
+    }
+    const note = normalizeBoundedText(entry?.note || "", 32);
+    normalized[normalizedUsername.value] = {
+      note,
+      createdAt: Number.parseInt(String(entry?.createdAt || "0"), 10) || 0,
+      updatedAt: Number.parseInt(String(entry?.updatedAt || "0"), 10) || 0,
+      removedAt: Number.parseInt(String(entry?.removedAt || "0"), 10) || 0
+    };
+  }
+  return normalized;
+}
+
 function loadData() {
   ensureDataFiles();
   const loadedUsers = readJsonFile(USERS_FILE);
@@ -348,7 +377,13 @@ function loadData() {
     usernameKey: String(user?.usernameKey || normalizeUsername(user?.username)?.key || ""),
     banned: Boolean(user?.banned),
     bannedReason: String(user?.bannedReason || ""),
-    bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0
+    bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0,
+    showOnlineStatus: user?.showOnlineStatus !== false,
+    allowUserSearch: user?.allowUserSearch !== false,
+    blockedUsers: normalizeUserList(user?.blockedUsers),
+    contacts: normalizeUserContacts(user?.contacts),
+    lastSeenAt: Number.parseInt(String(user?.lastSeenAt || "0"), 10) || 0,
+    lastLoginAt: Number.parseInt(String(user?.lastLoginAt || "0"), 10) || 0
   }));
   rebuildUserIndex();
 
@@ -359,7 +394,12 @@ function loadData() {
   }
   messages = loadedMessages.map((message) => ({
     ...message,
-    clientId: typeof message?.clientId === "string" ? message.clientId : ""
+    clientId: typeof message?.clientId === "string" ? message.clientId : "",
+    deletedFor: Array.isArray(message?.deletedFor)
+      ? message.deletedFor
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean)
+      : []
   }));
   messages.sort((left, right) => Number(left.createdAt) - Number(right.createdAt));
   rebuildMessageBuckets();
@@ -853,11 +893,18 @@ function isBase64Blob(value, minBytes, maxBytes) {
 function publicUser(user) {
   return {
     username: user.username,
+    usernameKey: user.usernameKey,
     createdAt: user.createdAt,
     publicKey: user.publicKey,
     banned: Boolean(user.banned),
     bannedReason: String(user.bannedReason || ""),
-    bannedAt: Number.parseInt(String(user.bannedAt || "0"), 10) || 0
+    bannedAt: Number.parseInt(String(user.bannedAt || "0"), 10) || 0,
+    lastSeenAt: Number.parseInt(String(user.lastSeenAt || "0"), 10) || 0,
+    lastLoginAt: Number.parseInt(String(user.lastLoginAt || "0"), 10) || 0,
+    settings: {
+      showOnlineStatus: userShowsPresence(user),
+      allowUserSearch: userAllowsSearch(user)
+    }
   };
 }
 
@@ -869,8 +916,186 @@ function adminPublicUser(user) {
     createdAt: user.createdAt,
     banned: Boolean(user.banned),
     bannedReason: String(user.bannedReason || ""),
-    bannedAt: Number.parseInt(String(user.bannedAt || "0"), 10) || 0
+    bannedAt: Number.parseInt(String(user.bannedAt || "0"), 10) || 0,
+    online: isUserOnline(user.username),
+    lastSeenAt: Number.parseInt(String(user.lastSeenAt || "0"), 10) || 0,
+    lastLoginAt: Number.parseInt(String(user.lastLoginAt || "0"), 10) || 0
   };
+}
+
+function touchUserActivity(username, persist = false, at = Date.now()) {
+  const user = findUserByUsername(username);
+  if (!user) {
+    return null;
+  }
+  user.lastSeenAt = Number(at) || Date.now();
+  if (persist) {
+    persistUsers();
+  }
+  return user;
+}
+
+function touchUserLogin(username, at = Date.now()) {
+  const user = findUserByUsername(username);
+  if (!user) {
+    return null;
+  }
+  user.lastLoginAt = Number(at) || Date.now();
+  user.lastSeenAt = user.lastLoginAt;
+  persistUsers();
+  return user;
+}
+
+function userAllowsSearch(user) {
+  return user?.allowUserSearch !== false;
+}
+
+function userShowsPresence(user) {
+  return user?.showOnlineStatus !== false;
+}
+
+function isUserBlocked(user, candidateUsername) {
+  return Boolean(user && candidateUsername && Array.isArray(user.blockedUsers) && user.blockedUsers.includes(candidateUsername));
+}
+
+function isPresenceVisibleTo(viewerUsername, targetUsername) {
+  if (!targetUsername) {
+    return false;
+  }
+  if (viewerUsername === targetUsername) {
+    return isUserOnline(targetUsername);
+  }
+  const targetUser = findUserByUsername(targetUsername);
+  const viewerUser = findUserByUsername(viewerUsername);
+  if (!targetUser || !userShowsPresence(targetUser)) {
+    return false;
+  }
+  if (viewerUser && isUserBlocked(viewerUser, targetUsername)) {
+    return false;
+  }
+  if (isUserBlocked(targetUser, viewerUsername)) {
+    return false;
+  }
+  return isUserOnline(targetUsername);
+}
+
+function canSearchUser(viewerUsername, targetUser) {
+  if (!targetUser || targetUser.username === viewerUsername) {
+    return false;
+  }
+  const viewerUser = findUserByUsername(viewerUsername);
+  if (!userAllowsSearch(targetUser) || isUserBlocked(targetUser, viewerUsername)) {
+    return false;
+  }
+  if (viewerUser && isUserBlocked(viewerUser, targetUser.username)) {
+    return false;
+  }
+  return true;
+}
+
+function canExchangeMessages(leftUsername, rightUsername) {
+  const leftUser = findUserByUsername(leftUsername);
+  const rightUser = findUserByUsername(rightUsername);
+  if (!leftUser || !rightUser) {
+    return false;
+  }
+  if (isUserBlocked(leftUser, rightUsername) || isUserBlocked(rightUser, leftUsername)) {
+    return false;
+  }
+  return true;
+}
+
+function contactEntryFor(user, username) {
+  if (!user?.contacts || !username) {
+    return null;
+  }
+  return user.contacts[username] || null;
+}
+
+function upsertUserContact(user, username, patch = {}) {
+  if (!user || !username) {
+    return null;
+  }
+  const existing = contactEntryFor(user, username) || {
+    note: "",
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  const next = {
+    ...existing,
+    ...patch,
+    note: normalizeBoundedText(patch.note === undefined ? existing.note : patch.note, 32),
+    removedAt: 0,
+    updatedAt: Date.now()
+  };
+  if (!user.contacts || typeof user.contacts !== "object" || Array.isArray(user.contacts)) {
+    user.contacts = {};
+  }
+  user.contacts[username] = next;
+  return next;
+}
+
+function removeUserContact(user, username) {
+  if (!user || !username) {
+    return false;
+  }
+  if (!user.contacts || typeof user.contacts !== "object" || Array.isArray(user.contacts)) {
+    user.contacts = {};
+  }
+  const existing = user.contacts[username] || {
+    note: "",
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  user.contacts[username] = {
+    ...existing,
+    updatedAt: Date.now(),
+    removedAt: Date.now()
+  };
+  return true;
+}
+
+function publicContactView(ownerUsername, peerUser) {
+  const owner = findUserByUsername(ownerUsername);
+  const entry = contactEntryFor(owner, peerUser.username);
+  return {
+    username: peerUser.username,
+    usernameKey: peerUser.usernameKey,
+    note: entry?.note || "",
+    blocked: Boolean(owner && isUserBlocked(owner, peerUser.username)),
+    online: isPresenceVisibleTo(ownerUsername, peerUser.username),
+    lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, ownerUsername)
+      ? Number.parseInt(String(peerUser.lastSeenAt || "0"), 10) || 0
+      : 0
+  };
+}
+
+function listContactsFor(ownerUsername) {
+  const owner = findUserByUsername(ownerUsername);
+  if (!owner) {
+    return [];
+  }
+  const peerNames = new Set([
+    ...Object.keys(owner.contacts || {}),
+    ...(userPeersIndex.get(ownerUsername) || [])
+  ]);
+  return [...peerNames]
+    .map((username) => findUserByUsername(username))
+    .filter(Boolean)
+    .filter((peerUser) => peerUser.username !== ownerUsername)
+    .filter((peerUser) => Number(contactEntryFor(owner, peerUser.username)?.removedAt || 0) === 0)
+    .map((peerUser) => publicContactView(ownerUsername, peerUser))
+    .sort((left, right) => {
+      const leftPinned = Number(Boolean(left.note));
+      const rightPinned = Number(Boolean(right.note));
+      if (rightPinned !== leftPinned) {
+        return rightPinned - leftPinned;
+      }
+      if (Number(right.online) !== Number(left.online)) {
+        return Number(right.online) - Number(left.online);
+      }
+      return left.username.localeCompare(right.username);
+    });
 }
 
 function keyBundleForUser(user) {
@@ -888,7 +1113,7 @@ function summarizeEncodedBlob(value) {
   return {
     present: raw.length > 0,
     bytes: bytes ? bytes.length : 0,
-    preview: raw.length > 36 ? `${raw.slice(0, 16)}...${raw.slice(-12)}` : raw
+    preview: raw.length > 0 ? "[hidden]" : ""
   };
 }
 
@@ -1153,16 +1378,35 @@ function findUserByUsername(username) {
   return normalized ? findUserByKey(normalized.key) : null;
 }
 
-function createSession(username, role = "user") {
+function sessionClientMeta(req) {
+  const userAgent = String(req?.headers?.["user-agent"] || "").slice(0, 240);
+  const parser = new UAParser(userAgent);
+  const parsed = parser.getResult();
+  return {
+    ip: req ? getClientAddress(req) : "",
+    userAgent,
+    browser: [parsed.browser?.name, parsed.browser?.version].filter(Boolean).join(" ").trim(),
+    os: [parsed.os?.name, parsed.os?.version].filter(Boolean).join(" ").trim(),
+    device: parsed.device?.model || parsed.device?.type || "Desktop"
+  };
+}
+
+function createSession(username, role = "user", req = null) {
   const token = crypto.randomBytes(24).toString("hex");
   const now = Date.now();
+  const meta = sessionClientMeta(req);
   sessions.set(token, {
     token,
     username,
     role,
     createdAt: now,
     lastSeenAt: now,
-    expiresAt: now + SESSION_TTL_MS
+    expiresAt: now + SESSION_TTL_MS,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+    browser: meta.browser,
+    os: meta.os,
+    device: meta.device
   });
   return token;
 }
@@ -1261,6 +1505,7 @@ function requireSession(req, res, url) {
       sendJson(res, 403, { error: "account banned" });
       return null;
     }
+    user.lastSeenAt = now;
   }
   session.lastSeenAt = now;
   session.expiresAt = now + SESSION_TTL_MS;
@@ -1338,16 +1583,33 @@ function parseAdminUserPath(pathname) {
   return match[1] || "";
 }
 
+function parseContactPath(pathname) {
+  const match = pathname.match(/^\/api\/contacts\/([A-Za-z0-9_]{3,24})(?:\/(block))?$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    username: match[1] || "",
+    action: match[2] || ""
+  };
+}
+
 function adminBasicStats() {
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayStartAt = todayStart.getTime();
   return {
     users: users.length,
+    usersToday: users.filter((user) => Number(user.createdAt || 0) >= todayStartAt).length,
     bannedUsers: users.filter((user) => user.banned).length,
     onlineUsers: listOnlineUsers().length,
+    activeUsers: users.filter((user) => Number(user.lastSeenAt || 0) >= dayAgo).length,
     sessions: sessions.size,
     messages: messages.length,
-    messages24h: messages.filter((message) => Number(message.createdAt) >= dayAgo).length
+    messages24h: messages.filter((message) => Number(message.createdAt) >= dayAgo).length,
+    messagesToday: messages.filter((message) => Number(message.createdAt) >= todayStartAt).length
   };
 }
 
@@ -1397,7 +1659,11 @@ function listUserSessions(username) {
     .map((sessionRecord) => ({
       createdAt: Number(sessionRecord.createdAt || 0),
       lastSeenAt: Number(sessionRecord.lastSeenAt || 0),
-      expiresAt: Number(sessionRecord.expiresAt || 0)
+      expiresAt: Number(sessionRecord.expiresAt || 0),
+      browser: String(sessionRecord.browser || ""),
+      os: String(sessionRecord.os || ""),
+      device: String(sessionRecord.device || ""),
+      ip: String(sessionRecord.ip || "")
     }));
 }
 
@@ -1457,6 +1723,7 @@ function adminUserMessageView(message, username) {
     text: typeof message.text === "string" && !message.ciphertext ? message.text : null,
     nonce: String(message.nonce || ""),
     ciphertext: String(message.ciphertext || ""),
+    recalled: Boolean(message.recalled),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     createdAt: Number(message.createdAt || 0)
   };
@@ -1587,13 +1854,24 @@ async function buildAdminUserDetail(user) {
 function adminDashboardSnapshot(session, req) {
   const auditEntries = readRecentAdminAuditEntries(200);
   const recentLogins = auditEntries
-    .filter((entry) => entry.action === "admin_login")
+    .filter((entry) => entry.action === "admin_login" || entry.action === "user_login")
     .slice(-5)
     .reverse()
     .map((entry) => ({
       at: entry.at,
       ip: String(entry.ip || ""),
-      username: String(entry.actor || session.username || "")
+      username: String(entry.actor || session.username || ""),
+      role: String(entry.role || "user")
+    }));
+  const abnormalLogins = auditEntries
+    .filter((entry) => entry.action === "admin_login_failed" || entry.action === "user_login_failed")
+    .slice(-5)
+    .reverse()
+    .map((entry) => ({
+      at: entry.at,
+      ip: String(entry.ip || ""),
+      username: String(entry.actor || "unknown"),
+      role: String(entry.role || "user")
     }));
   const recentUsers = [...users]
     .sort((left, right) => Number(right.createdAt) - Number(left.createdAt))
@@ -1613,6 +1891,7 @@ function adminDashboardSnapshot(session, req) {
     },
     currentIp: getClientAddress(req),
     recentLogins,
+    abnormalLogins,
     recentUsers,
     systemStatus: {
       ok: Boolean(health.ok),
@@ -1628,6 +1907,7 @@ function adminMessageView(message) {
     to: message.to,
     nonce: message.nonce,
     ciphertext: message.ciphertext,
+    recalled: Boolean(message.recalled),
     auditText: null,
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     createdAt: message.createdAt
@@ -1664,6 +1944,17 @@ function resolveReplyTarget(leftUser, rightUser, replyToId) {
   return normalizeReplyTargetView(message);
 }
 
+function isMessageDeletedFor(message, viewer) {
+  if (!message || !viewer) {
+    return false;
+  }
+  return Array.isArray(message.deletedFor) && message.deletedFor.includes(viewer);
+}
+
+function visibleMessagesBetween(viewer, peer) {
+  return messagesBetween(viewer, peer).filter((message) => !isMessageDeletedFor(message, viewer));
+}
+
 function createMessageView(message, viewer) {
   const peer = message.from === viewer ? message.to : message.from;
   const peerUser = findUserByUsername(peer);
@@ -1676,6 +1967,7 @@ function createMessageView(message, viewer) {
     mine: message.from === viewer,
     publicKey: peerUser?.publicKey || "",
     text: typeof message.text === "string" && !message.ciphertext ? message.text : null,
+    recalled: Boolean(message.recalled),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     nonce: message.nonce,
     ciphertext: message.ciphertext,
@@ -1689,20 +1981,25 @@ function buildConversationSummary(viewer, peer) {
     return null;
   }
 
-  const conversationMessages = messagesBetween(viewer, peer);
+  const conversationMessages = visibleMessagesBetween(viewer, peer);
   const latest = conversationMessages.at(-1) || null;
 
   return {
     username: peer,
-    online: isUserOnline(peer),
+    online: isPresenceVisibleTo(viewer, peer),
     avatarSeed: makeAvatarSeed(peer),
     publicKey: peerUser.publicKey,
+    usernameKey: peerUser.usernameKey,
+    lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, viewer)
+      ? Number.parseInt(String(peerUser.lastSeenAt || "0"), 10) || 0
+      : 0,
       latestMessage: latest
       ? {
           id: latest.id,
           from: latest.from,
           to: latest.to,
           text: typeof latest.text === "string" && !latest.ciphertext ? latest.text : null,
+          recalled: Boolean(latest.recalled),
           replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
           nonce: latest.nonce,
           ciphertext: latest.ciphertext,
@@ -1720,7 +2017,7 @@ function listConversationsFor(username) {
   }
   return [...peers]
     .map((peer) => buildConversationSummary(username, peer))
-    .filter(Boolean)
+    .filter((conversation) => conversation && conversation.lastAt > 0)
     .sort((left, right) => {
       if (right.lastAt !== left.lastAt) {
         return right.lastAt - left.lastAt;
@@ -1732,10 +2029,10 @@ function listConversationsFor(username) {
 function listUsersForSearch(viewer, query) {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   return users
-    .filter((user) => user.username !== viewer)
+    .filter((user) => canSearchUser(viewer, user))
     .filter((user) => !normalizedQuery || user.usernameKey.includes(normalizedQuery))
     .sort((left, right) => {
-      const onlineDelta = Number(isUserOnline(right.username)) - Number(isUserOnline(left.username));
+      const onlineDelta = Number(isPresenceVisibleTo(viewer, right.username)) - Number(isPresenceVisibleTo(viewer, left.username));
       if (onlineDelta !== 0) {
         return onlineDelta;
       }
@@ -1744,9 +2041,13 @@ function listUsersForSearch(viewer, query) {
     .slice(0, 24)
     .map((user) => ({
       username: user.username,
-      online: isUserOnline(user.username),
+      usernameKey: user.usernameKey,
+      online: isPresenceVisibleTo(viewer, user.username),
       avatarSeed: makeAvatarSeed(user.username),
-      publicKey: user.publicKey
+      publicKey: user.publicKey,
+      lastSeenAt: userShowsPresence(user) && !isUserBlocked(user, viewer)
+        ? Number.parseInt(String(user.lastSeenAt || "0"), 10) || 0
+        : 0
     }));
 }
 
@@ -1808,7 +2109,7 @@ function collectPagedMessages(sourceMessages, limit, beforeCursor, predicate = n
 }
 
 function pagedMessagesBetween(leftUser, rightUser, limit, beforeCursor) {
-  return collectPagedMessages(messagesBetween(leftUser, rightUser), limit, beforeCursor);
+  return collectPagedMessages(visibleMessagesBetween(leftUser, rightUser), limit, beforeCursor);
 }
 
 function writeSse(res, event, payload) {
@@ -1841,6 +2142,10 @@ function pushPresence(username, online) {
       continue;
     }
     for (const connection of connections) {
+      if (!isPresenceVisibleTo(connection.username, username)) {
+        writeSse(connection.res, "presence", { username, online: false });
+        continue;
+      }
       writeSse(connection.res, "presence", payload);
     }
   }
@@ -1867,7 +2172,7 @@ function attachConnection(username, res) {
     writeSse(res, "heartbeat", { at: Date.now() });
   }, HEARTBEAT_MS);
 
-  const connection = { res, heartbeat };
+  const connection = { res, heartbeat, username };
   const bucket = onlineConnections.get(username) || new Set();
   const wasOnline = bucket.size > 0;
   bucket.add(connection);
@@ -2057,12 +2362,19 @@ async function handleRegister(req, res) {
     banned: false,
     bannedReason: "",
     bannedAt: 0,
-    createdAt: Date.now()
+    showOnlineStatus: true,
+    allowUserSearch: true,
+    blockedUsers: [],
+    contacts: {},
+    createdAt: Date.now(),
+    lastSeenAt: Date.now(),
+    lastLoginAt: Date.now()
   };
   users.push(user);
   persistUsers();
 
-  const token = createSession(user.username);
+  recordAdminAction("user_register", { username: user.username, role: "user" }, req, {});
+  const token = createSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 201, {
     token,
@@ -2112,6 +2424,9 @@ async function handleLogin(req, res) {
   const passwordOk = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
   if (!user || !passwordOk) {
     const next = recordUserLoginFailure(normalizedUsername.value);
+    recordAdminAction("user_login_failed", { username: normalizedUsername.value, role: "user" }, req, {
+      exists: Boolean(user)
+    });
     const message = next && next.lockedUntil > Date.now()
       ? "too many failed attempts, try again later"
       : "invalid username or password";
@@ -2128,7 +2443,9 @@ async function handleLogin(req, res) {
     return;
   }
 
-  const token = createSession(user.username);
+  touchUserLogin(user.username, Date.now());
+  recordAdminAction("user_login", { username: user.username, role: "user" }, req, {});
+  const token = createSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 200, {
     token,
@@ -2144,6 +2461,18 @@ function handleLogout(req, res, url) {
   if (!session) {
     return;
   }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:logout:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
   sessions.delete(session.token);
   sendJson(res, 200, { ok: true }, {
     "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
@@ -2153,6 +2482,18 @@ function handleLogout(req, res, url) {
 function handleLogoutAll(req, res, url) {
   const session = requireSession(req, res, url);
   if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:logout-all:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
     return;
   }
   const revoked = deleteSessionsForUsername(session.username, session.role);
@@ -2209,6 +2550,286 @@ function handleMeKeyBundle(req, res, url) {
   });
 }
 
+function handleMeSettings(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    sessions.delete(session.token);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  sendJson(res, 200, {
+    settings: publicUser(user).settings,
+    blockedUsers: normalizeUserList(user.blockedUsers)
+  });
+}
+
+async function handleMeSettingsPatch(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:me:settings:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    sessions.delete(session.token);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "showOnlineStatus")) {
+    if (typeof body.showOnlineStatus !== "boolean") {
+      sendJson(res, 400, { error: "showOnlineStatus must be a boolean" });
+      return;
+    }
+    user.showOnlineStatus = body.showOnlineStatus;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "allowUserSearch")) {
+    if (typeof body.allowUserSearch !== "boolean") {
+      sendJson(res, 400, { error: "allowUserSearch must be a boolean" });
+      return;
+    }
+    user.allowUserSearch = body.allowUserSearch;
+  }
+  persistUsers();
+  pushPresence(user.username, isUserOnline(user.username));
+  sendJson(res, 200, {
+    settings: publicUser(user).settings,
+    blockedUsers: normalizeUserList(user.blockedUsers)
+  });
+}
+
+async function handleMePassword(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:me:password:${session.username}:${address}`,
+      MAX_AUTH_REQUESTS_PER_WINDOW,
+      "too many auth requests"
+    )
+  ) {
+    return;
+  }
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    sessions.delete(session.token);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  const currentPassword = normalizePassword(body.currentPassword);
+  const nextPassword = normalizePassword(body.newPassword);
+  if (!currentPassword || !nextPassword) {
+    sendJson(res, 400, { error: "currentPassword and newPassword are required" });
+    return;
+  }
+  if (nextPassword.length < 4 || nextPassword.length > 72) {
+    sendJson(res, 400, { error: "password must be 4-72 characters" });
+    return;
+  }
+  const currentOk = await verifyPassword(currentPassword, user.passwordHash || DUMMY_PASSWORD_HASH);
+  if (!currentOk) {
+    sendJson(res, 403, { error: "current password invalid" });
+    return;
+  }
+  user.passwordHash = await hashPassword(nextPassword);
+  persistUsers();
+  sendJson(res, 200, { ok: true });
+}
+
+function handleMeSessions(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    sessions.delete(session.token);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  sendJson(res, 200, {
+    sessions: listUserSessions(user.username)
+  });
+}
+
+function handleContacts(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  sendJson(res, 200, {
+    contacts: listContactsFor(session.username)
+  });
+}
+
+async function handleContactPatch(req, res, url, pathname) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:contacts:patch:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const parsed = parseContactPath(pathname);
+  const peer = parsed?.username ? findUserByUsername(parsed.username) : null;
+  if (!peer || peer.username === session.username) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  const owner = findUserByUsername(session.username);
+  if (!owner) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "note") && typeof body.note !== "string") {
+    sendJson(res, 400, { error: "note must be a string" });
+    return;
+  }
+  const entry = upsertUserContact(owner, peer.username, { note: body.note || "" });
+  persistUsers();
+  sendJson(res, 200, {
+    contact: publicContactView(session.username, peer),
+    entry
+  });
+}
+
+function handleContactDelete(req, res, url, pathname) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:contacts:delete:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const parsed = parseContactPath(pathname);
+  const peer = parsed?.username ? findUserByUsername(parsed.username) : null;
+  if (!peer || peer.username === session.username) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  const owner = findUserByUsername(session.username);
+  if (!owner) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  removeUserContact(owner, peer.username);
+  persistUsers();
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleContactBlock(req, res, url, pathname) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:contacts:block:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const parsed = parseContactPath(pathname);
+  const peer = parsed?.username ? findUserByUsername(parsed.username) : null;
+  if (!peer || peer.username === session.username) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  const owner = findUserByUsername(session.username);
+  if (!owner) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  if (typeof body.blocked !== "boolean") {
+    sendJson(res, 400, { error: "blocked must be a boolean" });
+    return;
+  }
+  const blockedUsers = new Set(normalizeUserList(owner.blockedUsers));
+  if (body.blocked) {
+    blockedUsers.add(peer.username);
+  } else {
+    blockedUsers.delete(peer.username);
+  }
+  owner.blockedUsers = [...blockedUsers];
+  upsertUserContact(owner, peer.username, {});
+  persistUsers();
+  pushPresence(owner.username, isUserOnline(owner.username));
+  sendJson(res, 200, {
+    contact: publicContactView(session.username, peer),
+    blockedUsers: owner.blockedUsers
+  });
+}
+
 async function handleAdminLogin(req, res) {
   try {
     syncRuntimeAdminConfigFromConfiguredSources();
@@ -2246,6 +2867,7 @@ async function handleAdminLogin(req, res) {
   const passwordOk = await verifyConfiguredAdminPassword(password);
   if (!account || !passwordOk) {
     const next = recordAdminLoginFailure(username);
+    recordAdminAction("admin_login_failed", { username: username || "admin", role: "admin" }, req, {});
     const message = next && next.lockedUntil > Date.now()
       ? "too many failed attempts, try again later"
       : "管理员账号或密码错误";
@@ -2253,7 +2875,7 @@ async function handleAdminLogin(req, res) {
     return;
   }
   clearAdminLoginFailures(account.username);
-  const token = createSession(account.username, "admin");
+  const token = createSession(account.username, "admin", req);
   accessLogMiddleware.setUserId(req, account.username);
   recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
@@ -2371,6 +2993,18 @@ async function handleAdminAccountReset(req, res) {
 function handleAdminLogout(req, res, url) {
   const session = requireAdminSession(req, res, url);
   if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:admin:logout:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
     return;
   }
   recordAdminAction("admin_logout", session, req, {});
@@ -2625,6 +3259,7 @@ async function handleAdminUserPatch(req, res, url, pathname) {
       onlineConnections.set(user.username, connections);
     }
     purgeUserEventTickets(previousUsername);
+    await accessLogStore.renameUserId(previousUsername, user.username);
     broadcastUserRename(previousUsername, user.username);
   }
 
@@ -3032,7 +3667,11 @@ function handleMessages(req, res, url) {
   sendJson(res, 200, {
     peer: {
       username: peer.username,
-      online: isUserOnline(peer.username),
+      usernameKey: peer.usernameKey,
+      online: isPresenceVisibleTo(session.username, peer.username),
+      lastSeenAt: userShowsPresence(peer) && !isUserBlocked(peer, session.username)
+        ? Number.parseInt(String(peer.lastSeenAt || "0"), 10) || 0
+        : 0,
       avatarSeed: makeAvatarSeed(peer.username),
       publicKey: peer.publicKey
     },
@@ -3081,6 +3720,10 @@ async function handleSendMessage(req, res, url) {
     sendJson(res, 403, { error: "peer is banned" });
     return;
   }
+  if (!canExchangeMessages(session.username, peer.username)) {
+    sendJson(res, 403, { error: "peer unavailable" });
+    return;
+  }
   if (clientId) {
     const existing = messageClientIndex.get(`${session.username}\u0000${peer.username}\u0000${clientId}`);
     if (existing) {
@@ -3125,8 +3768,22 @@ async function handleSendMessage(req, res, url) {
     ciphertext,
     createdAt: Date.now(),
     replyToId: replyTo?.id || "",
-    replyTo
+    replyTo,
+    deletedFor: []
   };
+  const senderUser = findUserByUsername(session.username);
+  let contactsChanged = false;
+  if (senderUser && !contactEntryFor(senderUser, peer.username)) {
+    upsertUserContact(senderUser, peer.username, {});
+    contactsChanged = true;
+  }
+  if (!contactEntryFor(peer, session.username)) {
+    upsertUserContact(peer, session.username, {});
+    contactsChanged = true;
+  }
+  if (contactsChanged) {
+    persistUsers();
+  }
   messages.push(message);
   appendMessageBucket(message);
   schedulePersistMessages(message);
@@ -3147,18 +3804,26 @@ async function handleRecallMessage(req, res, url) {
   if (!session) {
     return;
   }
-  const body = await readBody(req, res);
-  if (body === null) {
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:messages:recall:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
     return;
   }
-  let parsed;
+  let body;
   try {
-    parsed = JSON.parse(body);
-  } catch {
-    sendJson(res, 400, { error: "invalid json" });
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
     return;
   }
-  const messageId = String(parsed.messageId || "").trim();
+  const messageId = String(body.messageId || "").trim();
   if (!messageId) {
     sendJson(res, 400, { error: "messageId required" });
     return;
@@ -3175,6 +3840,56 @@ async function handleRecallMessage(req, res, url) {
   const peer = target.to === session.username ? target.from : target.to;
   pushEventToUser(session.username, "message-recalled", { messageId, by: session.username, peer });
   pushEventToUser(peer, "message-recalled", { messageId, by: session.username, peer: session.username });
+  sendJson(res, 200, { ok: true });
+}
+
+async function handleDeleteMessage(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:messages:delete:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+
+  const messageId = String(body.messageId || "").trim();
+  if (!messageId) {
+    sendJson(res, 400, { error: "messageId required" });
+    return;
+  }
+
+  const target = messageIdIndex.get(messageId);
+  if (!target || (target.from !== session.username && target.to !== session.username)) {
+    sendJson(res, 404, { error: "message not found" });
+    return;
+  }
+
+  const deletedFor = Array.isArray(target.deletedFor) ? target.deletedFor : [];
+  if (!deletedFor.includes(session.username)) {
+    deletedFor.push(session.username);
+    target.deletedFor = deletedFor;
+    schedulePersistMessages();
+  }
+
+  const peer = target.from === session.username ? target.to : target.from;
+  pushEventToUser(session.username, "message-deleted", { messageId, peer });
   sendJson(res, 200, { ok: true });
 }
 
@@ -3249,7 +3964,7 @@ function handleEvents(req, res, url) {
   const connection = attachConnection(ticketRecord.username, res);
   writeSse(res, "ready", {
     me: ticketRecord.username,
-    onlineUsers: listOnlineUsers()
+    onlineUsers: listOnlineUsers().filter((username) => isPresenceVisibleTo(ticketRecord.username, username))
   });
 
   req.on("close", () => {
@@ -3465,6 +4180,39 @@ const server = http.createServer((req, res) => {
     handleMeKeyBundle(req, res, url);
     return;
   }
+  if (req.method === "GET" && pathname === "/api/me/settings") {
+    handleMeSettings(req, res, url);
+    return;
+  }
+  if (req.method === "PATCH" && pathname === "/api/me/settings") {
+    void handleMeSettingsPatch(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/me/password") {
+    void handleMePassword(req, res, url);
+    return;
+  }
+  if (req.method === "GET" && pathname === "/api/me/sessions") {
+    handleMeSessions(req, res, url);
+    return;
+  }
+  const contactPath = parseContactPath(pathname);
+  if (req.method === "GET" && pathname === "/api/contacts") {
+    handleContacts(req, res, url);
+    return;
+  }
+  if (contactPath && req.method === "PATCH" && !contactPath.action) {
+    void handleContactPatch(req, res, url, pathname);
+    return;
+  }
+  if (contactPath && req.method === "DELETE" && !contactPath.action) {
+    handleContactDelete(req, res, url, pathname);
+    return;
+  }
+  if (contactPath && req.method === "POST" && contactPath.action === "block") {
+    void handleContactBlock(req, res, url, pathname);
+    return;
+  }
   if (req.method === "GET" && pathname === "/api/users") {
     handleUsers(req, res, url);
     return;
@@ -3483,6 +4231,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && pathname === "/api/messages/recall") {
     void handleRecallMessage(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/messages/delete") {
+    void handleDeleteMessage(req, res, url);
     return;
   }
   if (req.method === "POST" && pathname === "/api/events/token") {

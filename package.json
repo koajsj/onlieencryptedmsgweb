@@ -7,7 +7,7 @@
   "scripts": {
     "verify:build": "node scripts/verify-build.js",
     "start": "npm run verify:build && node server.js",
-    "lint": "node --check server.js && node --check middleware/access-log.js && node --check services/access-log-store.js && node --check public/app.js && node --check public/admin.js && node --check public/admin-user.js && node --check tests/e2e.test.js",
+    "lint": "node --check server.js && node --check middleware/access-log.js && node --check services/access-log-store.js && node --check scripts/build-assets.js && node --check scripts/verify-build.js && node --check scripts/write-build-manifest.js && node --check public/app.js && node --check public/admin.js && node --check public/admin-user.js && node --check tests/e2e.test.js",
     "build": "terser public/app.js --compress --mangle --output public/app.min.js && terser public/admin.js --compress --mangle --output public/admin.min.js && terser public/admin-user.js --compress --mangle --output public/admin-user.min.js && cleancss -o public/styles.min.css public/styles.css && cleancss -o public/admin.min.css public/admin.css && cleancss -o public/admin-user.min.css public/admin-user.css && node scripts/write-build-manifest.js",
     "check": "npm run lint && npm run verify:build",
     "test": "node --test tests/e2e.test.js"

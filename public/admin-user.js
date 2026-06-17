@@ -306,11 +306,15 @@ function renderMessages(detail) {
   }
   elements.messageList.innerHTML = rows
     .map((message) => {
-      const text = message.text ? `历史明文：${message.text}` : `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
+      const text = message.recalled
+        ? "消息已撤回"
+        : message.text
+          ? `历史明文：${message.text}`
+          : `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
       return `
-        <article class="msg-item">
-          <div class="msg-meta">
-            <span>${escapeHtml(`${message.direction === "sent" ? "发给" : "收到自"} ${message.peer}`)}</span>
+<article class="msg-item">
+<div class="msg-meta">
+<span>${escapeHtml(`${message.direction === "sent" ? "发给" : "收到自"} ${message.peer}`)}</span>
             <span>${escapeHtml(formatDateTime(message.createdAt))}</span>
           </div>
           <div class="msg-text">${escapeHtml(text)}</div>

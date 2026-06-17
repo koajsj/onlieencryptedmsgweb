@@ -680,6 +680,313 @@ test("session expires and is rejected after ttl", async () => {
   }
 });
 
+test("message recall persists across history reloads and rejects cross-origin requests", async () => {
+  const server = await startServer();
+
+  try {
+    const aliceRegister = await postJson(server.port, "/api/register", {
+      username: "RecallA",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 71).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 72).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 73).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 74).toString("base64")
+    });
+    const bobRegister = await postJson(server.port, "/api/register", {
+      username: "RecallB",
+      password: "world123",
+      publicKey: Buffer.alloc(65, 75).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 76).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 77).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 78).toString("base64")
+    });
+    const aliceToken = (await aliceRegister.json()).token;
+    const bobToken = (await bobRegister.json()).token;
+
+    const encrypted = makeEncryptedPayload(79);
+    const sent = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "RecallB",
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      },
+      aliceToken
+    );
+    assert.equal(sent.status, 201);
+    const sentBody = await sent.json();
+    const messageId = sentBody.message.id;
+    assert.ok(messageId);
+
+    const recall = await postJson(server.port, "/api/messages/recall", { messageId }, aliceToken);
+    assert.equal(recall.status, 200);
+    assert.equal((await recall.json()).ok, true);
+
+    const aliceHistory = await getJson(server.port, "/api/messages?with=RecallB", aliceToken);
+    assert.equal(aliceHistory.response.status, 200);
+    assert.equal(aliceHistory.json.messages.length, 1);
+    assert.equal(aliceHistory.json.messages[0].id, messageId);
+    assert.equal(aliceHistory.json.messages[0].recalled, true);
+    assert.equal(aliceHistory.json.messages[0].ciphertext, "");
+    assert.equal(aliceHistory.json.messages[0].nonce, "");
+
+    const bobHistory = await getJson(server.port, "/api/messages?with=RecallA", bobToken);
+    assert.equal(bobHistory.response.status, 200);
+    assert.equal(bobHistory.json.messages.length, 1);
+    assert.equal(bobHistory.json.messages[0].recalled, true);
+
+    const crossOriginRecall = await fetch(`http://127.0.0.1:${server.port}/api/messages/recall`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`,
+        Origin: "https://evil.example"
+      },
+      body: JSON.stringify({ messageId })
+    });
+    assert.equal(crossOriginRecall.status, 403);
+    assert.equal((await crossOriginRecall.json()).error, "forbidden origin");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("message delete hides only the current viewer and updates conversation summaries", async () => {
+  const server = await startServer();
+
+  try {
+    const aliceRegister = await postJson(server.port, "/api/register", {
+      username: "DeleteA",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 91).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 92).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 93).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 94).toString("base64")
+    });
+    const bobRegister = await postJson(server.port, "/api/register", {
+      username: "DeleteB",
+      password: "world123",
+      publicKey: Buffer.alloc(65, 95).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 96).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 97).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 98).toString("base64")
+    });
+    const aliceToken = (await aliceRegister.json()).token;
+    const bobToken = (await bobRegister.json()).token;
+
+    const firstSend = await postJsonAndRead(
+      server.port,
+      "/api/messages",
+      {
+        to: "DeleteB",
+        clientId: "delete-msg-1",
+        ...makeEncryptedPayload(81)
+      },
+      aliceToken
+    );
+    const secondSend = await postJsonAndRead(
+      server.port,
+      "/api/messages",
+      {
+        to: "DeleteB",
+        clientId: "delete-msg-2",
+        ...makeEncryptedPayload(83)
+      },
+      aliceToken
+    );
+    assert.equal(firstSend.response.status, 201);
+    assert.equal(secondSend.response.status, 201);
+
+    const deletion = await postJson(
+      server.port,
+      "/api/messages/delete",
+      { messageId: secondSend.json.message.id },
+      bobToken
+    );
+    assert.equal(deletion.status, 200);
+    assert.equal((await deletion.json()).ok, true);
+
+    const bobHistory = await getJson(server.port, "/api/messages?with=DeleteA", bobToken);
+    assert.equal(bobHistory.response.status, 200);
+    assert.equal(bobHistory.json.messages.length, 1);
+    assert.equal(bobHistory.json.messages[0].id, firstSend.json.message.id);
+
+    const aliceHistory = await getJson(server.port, "/api/messages?with=DeleteB", aliceToken);
+    assert.equal(aliceHistory.response.status, 200);
+    assert.equal(aliceHistory.json.messages.length, 2);
+    assert.equal(aliceHistory.json.messages[1].id, secondSend.json.message.id);
+
+    const bobConversations = await getJson(server.port, "/api/conversations", bobToken);
+    assert.equal(bobConversations.response.status, 200);
+    const bobConversation = bobConversations.json.conversations.find((item) => item.username === "DeleteA");
+    assert.ok(bobConversation);
+    assert.equal(bobConversation.latestMessage.id, firstSend.json.message.id);
+
+    const crossOriginDelete = await fetch(`http://127.0.0.1:${server.port}/api/messages/delete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${bobToken}`,
+        Origin: "https://evil.example"
+      },
+      body: JSON.stringify({ messageId: firstSend.json.message.id })
+    });
+    assert.equal(crossOriginDelete.status, 403);
+    assert.equal((await crossOriginDelete.json()).error, "forbidden origin");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("contacts endpoints enforce same-origin and support note, block and delete flows", async () => {
+  const server = await startServer();
+
+  try {
+    const aliceRegister = await postJson(server.port, "/api/register", {
+      username: "ContactA",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 101).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 102).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 103).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 104).toString("base64")
+    });
+    const bobRegister = await postJson(server.port, "/api/register", {
+      username: "ContactB",
+      password: "world123",
+      publicKey: Buffer.alloc(65, 105).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 106).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 107).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 108).toString("base64")
+    });
+    const aliceToken = (await aliceRegister.json()).token;
+    const bobToken = (await bobRegister.json()).token;
+
+    const noteUpdate = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`
+      },
+      body: JSON.stringify({ note: "同事" })
+    });
+    assert.equal(noteUpdate.status, 200);
+    const notePayload = await noteUpdate.json();
+    assert.equal(notePayload.entry.note, "同事");
+    assert.equal(notePayload.contact.username, "ContactB");
+
+    const contactsAfterNote = await getJson(server.port, "/api/contacts", aliceToken);
+    assert.equal(contactsAfterNote.response.status, 200);
+    assert.equal(contactsAfterNote.json.contacts.length, 1);
+    assert.equal(contactsAfterNote.json.contacts[0].note, "同事");
+    assert.equal(contactsAfterNote.json.contacts[0].blocked, false);
+
+    const crossOriginPatch = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`,
+        Origin: "https://evil.example"
+      },
+      body: JSON.stringify({ note: "恶意来源" })
+    });
+    assert.equal(crossOriginPatch.status, 403);
+    assert.equal((await crossOriginPatch.json()).error, "forbidden origin");
+
+    const blockResponse = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB/block`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`
+      },
+      body: JSON.stringify({ blocked: true })
+    });
+    assert.equal(blockResponse.status, 200);
+    const blockPayload = await blockResponse.json();
+    assert.ok(blockPayload.blockedUsers.includes("ContactB"));
+
+    const blockedContacts = await getJson(server.port, "/api/contacts", aliceToken);
+    assert.equal(blockedContacts.response.status, 200);
+    assert.equal(blockedContacts.json.contacts[0].blocked, true);
+
+    const blockedSend = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "ContactB",
+        ...makeEncryptedPayload(109)
+      },
+      aliceToken
+    );
+    assert.equal(blockedSend.status, 403);
+    assert.equal((await blockedSend.json()).error, "peer unavailable");
+
+    const crossOriginBlock = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB/block`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`,
+        Origin: "https://evil.example"
+      },
+      body: JSON.stringify({ blocked: false })
+    });
+    assert.equal(crossOriginBlock.status, 403);
+    assert.equal((await crossOriginBlock.json()).error, "forbidden origin");
+
+    const unblockResponse = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB/block`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${aliceToken}`
+      },
+      body: JSON.stringify({ blocked: false })
+    });
+    assert.equal(unblockResponse.status, 200);
+    assert.deepEqual((await unblockResponse.json()).blockedUsers, []);
+
+    const unblockedSend = await postJson(
+      server.port,
+      "/api/messages",
+      {
+        to: "ContactB",
+        clientId: "contact-flow-1",
+        ...makeEncryptedPayload(110)
+      },
+      aliceToken
+    );
+    assert.equal(unblockedSend.status, 201);
+
+    const bobHistory = await getJson(server.port, "/api/messages?with=ContactA", bobToken);
+    assert.equal(bobHistory.response.status, 200);
+    assert.equal(bobHistory.json.messages.length, 1);
+
+    const deleteResponse = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${aliceToken}`
+      }
+    });
+    assert.equal(deleteResponse.status, 200);
+    assert.equal((await deleteResponse.json()).ok, true);
+
+    const contactsAfterDelete = await getJson(server.port, "/api/contacts", aliceToken);
+    assert.equal(contactsAfterDelete.response.status, 200);
+    assert.equal(contactsAfterDelete.json.contacts.length, 0);
+
+    const crossOriginDelete = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${aliceToken}`,
+        Origin: "https://evil.example"
+      }
+    });
+    assert.equal(crossOriginDelete.status, 403);
+    assert.equal((await crossOriginDelete.json()).error, "forbidden origin");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("per-conversation message rate limit returns 429 when exceeded", async () => {
   const server = await startServer({ MAX_MESSAGES_PER_CONVERSATION_WINDOW: "2" });
 
@@ -927,6 +1234,12 @@ test("admin rename broadcasts user rename and keeps the session synchronized", a
     assert.equal(adminLogin.status, 200);
     const adminToken = (await adminLogin.json()).token;
 
+    const beforeRenameProfile = await getJson(server.port, "/api/me", bobToken);
+    assert.equal(beforeRenameProfile.response.status, 200);
+    const beforeRenameConversations = await getJson(server.port, "/api/conversations", bobToken);
+    assert.equal(beforeRenameConversations.response.status, 200);
+    await delay(120);
+
     const renameResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/RenameB`, {
       method: "PATCH",
       headers: {
@@ -946,6 +1259,13 @@ test("admin rename broadcasts user rename and keeps the session synchronized", a
     const renamedSession = await getJson(server.port, "/api/me", bobToken);
     assert.equal(renamedSession.response.status, 200);
     assert.equal(renamedSession.json.user.username, "RenameC");
+
+    await delay(120);
+    const renamedDetail = await getJson(server.port, "/api/admin/users/RenameC", adminToken);
+    assert.equal(renamedDetail.response.status, 200);
+    assert.equal(renamedDetail.json.detail.user.username, "RenameC");
+    assert.equal(renamedDetail.json.detail.access.profile.userId, "RenameC");
+    assert.ok(renamedDetail.json.detail.access.totalLogs >= 2);
 
     const renamedSend = await postJson(
       server.port,

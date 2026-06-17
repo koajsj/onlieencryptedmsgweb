@@ -3,17 +3,9 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { ROOT_DIR, BUILD_ASSETS } = require("./build-assets");
 
-const ROOT_DIR = path.resolve(__dirname, "..");
 const MANIFEST_PATH = path.join(ROOT_DIR, "public/build-manifest.json");
-const CHECKS = [
-  { source: "public/app.js", built: "public/app.min.js" },
-  { source: "public/admin.js", built: "public/admin.min.js" },
-  { source: "public/admin-user.js", built: "public/admin-user.min.js" },
-  { source: "public/styles.css", built: "public/styles.min.css" },
-  { source: "public/admin.css", built: "public/admin.min.css" },
-  { source: "public/admin-user.css", built: "public/admin-user.min.css" }
-];
 
 function sha256Hex(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
@@ -60,7 +52,7 @@ function main() {
 
   const problems = [];
 
-  for (const pair of CHECKS) {
+  for (const pair of BUILD_ASSETS) {
     const manifestItem = manifestBySource.get(pair.source);
     if (!manifestItem || manifestItem.built !== pair.built) {
       problems.push(`- ${pair.source}: missing manifest entry`);
