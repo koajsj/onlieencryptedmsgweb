@@ -1348,6 +1348,12 @@ function setAuthBusy(busy) {
   elements.authSubmitButton.disabled = busy;
   elements.authUsernameInput.disabled = busy;
   elements.authPasswordInput.disabled = busy;
+  if (busy) {
+    elements.authSubmitButton.dataset.originalText = elements.authSubmitButton.textContent;
+    elements.authSubmitButton.textContent = state.authMode === "login" ? "登录中…" : "注册中…";
+  } else {
+    elements.authSubmitButton.textContent = elements.authSubmitButton.dataset.originalText || (state.authMode === "login" ? "登录" : "注册");
+  }
 }
 
 function setComposerBusy(busy) {
@@ -1648,6 +1654,10 @@ function setSession(token, user, identity) {
   resetLocalConversationState();
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
+  elements.workspace.classList.add("is-entering");
+  elements.workspace.addEventListener("animationend", () => {
+    elements.workspace.classList.remove("is-entering");
+  }, { once: true });
   if (elements.meUsername) {
     elements.meUsername.textContent = accountDisplayName();
   }
