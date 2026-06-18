@@ -512,6 +512,7 @@ function updateNotificationBadge() {
   } else {
     badge.hidden = true;
   }
+  document.title = total > 0 ? `(${total > 99 ? "99+" : total}) Echo` : "Echo";
 }
 
 function clearNotificationBadge() {
@@ -4327,6 +4328,12 @@ function handleGlobalKeydown(event) {
   if (isMeta && event.key.toLowerCase() === "e") {
     event.preventDefault();
     exportActiveConversation();
+    return;
+  }
+  if (event.key === "Escape" && document.activeElement === elements.globalSearchInput) {
+    elements.globalSearchInput.value = "";
+    elements.globalSearchInput.blur();
+    handleSearchInput({ target: elements.globalSearchInput });
     return;
   }
   if (event.key === "Escape" && elements.threadSearchInput && document.activeElement === elements.threadSearchInput) {
