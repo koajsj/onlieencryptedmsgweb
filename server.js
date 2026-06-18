@@ -4,7 +4,6 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
-const { promisify } = require("node:util");
 const UAParser = require("ua-parser-js");
 const { createAccessLogMiddleware } = require("./middleware/access-log");
 const { createAccessLogStore } = require("./services/access-log-store");
@@ -17,6 +16,14 @@ const {
   normalizeUsername, normalizePassword, normalizeBoundedText, normalizeAuditReason,
   normalizeUserList, normalizeUserContacts, readOptionalUsernameFilter, readSubmittedUsername
 } = require("./utils/normalize");
+const {
+  isRateLimited, cleanRateBucketMap, loginFailureState, loginFailureActive,
+  recordLoginFailure, clearLoginFailures, cleanLoginFailuresMap
+} = require("./utils/rate-limit");
+const {
+  hashPassword, verifyPassword, isPasswordHashFormat, verifyPlainSecret,
+  decodeBase64Blob, isBase64Blob, makeAvatarSeed
+} = require("./utils/crypto");
 
 const {
   HOST, PORT, SESSION_TTL_MS, PUBLIC_DIR, DATA_DIR,
@@ -49,7 +56,6 @@ const userPeersIndex = new Map();
 const usersByKey = new Map();
 const adminLoginFailures = new Map();
 const userLoginFailures = new Map();
-const scryptAsync = promisify(crypto.scrypt);
 
 let users = [];
 let messages = [];
@@ -384,25 +390,6 @@ function appendMessageBucket(message) {
 }
 
 
-function isRateLimited(bucketMap, key, limit, windowMs = RATE_WINDOW_MS) {
-  const now = Date.now();
-  const bucket = bucketMap.get(key);
-  if (!bucket || now - bucket.startedAt > windowMs) {
-    bucketMap.set(key, { count: 1, startedAt: now });
-    return false;
-  }
-  bucket.count += 1;
-  return bucket.count > limit;
-}
-
-function cleanRateBucketMap(bucketMap, windowMs = RATE_WINDOW_MS) {
-  const now = Date.now();
-  for (const [key, bucket] of bucketMap) {
-    if (now - bucket.startedAt > windowMs * 3) {
-      bucketMap.delete(key);
-    }
-  }
-}
 
 function cleanRateBuckets() {
   cleanRateBucketMap(rateBuckets, RATE_WINDOW_MS);
@@ -439,57 +426,6 @@ function rejectIfForbiddenOrLimited(req, res, key, limit, limitMessage) {
   return false;
 }
 
-function loginFailureState(failureMap, key) {
-  if (!key) {
-    return null;
-  }
-  return failureMap.get(String(key).toLowerCase()) || null;
-}
-
-function loginFailureActive(state) {
-  if (!state || !state.lockedUntil) {
-    return false;
-  }
-  return state.lockedUntil > Date.now();
-}
-
-function recordLoginFailure(failureMap, key, maxFailures, failureWindowMs, lockoutMs) {
-  const normalizedKey = String(key || "").toLowerCase();
-  if (!normalizedKey) {
-    return null;
-  }
-  const now = Date.now();
-  const previous = failureMap.get(normalizedKey);
-  const recentFailures = previous && now - (previous.lastFailedAt || 0) <= failureWindowMs
-    ? previous.count
-    : 0;
-  const count = recentFailures + 1;
-  const lockedUntil = count > maxFailures ? now + lockoutMs : 0;
-  const next = { count, lockedUntil, lastFailedAt: now };
-  failureMap.set(normalizedKey, next);
-  return next;
-}
-
-function clearLoginFailures(failureMap, key) {
-  if (!key) {
-    return;
-  }
-  failureMap.delete(String(key).toLowerCase());
-}
-
-function cleanLoginFailuresMap(failureMap, failureWindowMs) {
-  const now = Date.now();
-  for (const [key, state] of failureMap) {
-    if (!state) {
-      failureMap.delete(key);
-      continue;
-    }
-    const lastFailedAt = Number(state.lastFailedAt || 0);
-    if (now - lastFailedAt > failureWindowMs && now > Number(state.lockedUntil || 0)) {
-      failureMap.delete(key);
-    }
-  }
-}
 
 function adminLoginLockState(username) {
   return loginFailureState(adminLoginFailures, username);
@@ -566,29 +502,6 @@ function normalizeClientId(value) {
   return clientId;
 }
 
-function decodeBase64Blob(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  if (!trimmed || !/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
-    return null;
-  }
-  try {
-    const bytes = Buffer.from(trimmed, "base64");
-    return bytes.length > 0 ? bytes : null;
-  } catch (error) {
-    return null;
-  }
-}
-
-function isBase64Blob(value, minBytes, maxBytes) {
-  const bytes = decodeBase64Blob(value);
-  if (!bytes) {
-    return false;
-  }
-  return bytes.length >= minBytes && bytes.length <= maxBytes;
-}
 
 function publicUser(user) {
   return {
@@ -817,36 +730,6 @@ function summarizeEncodedBlob(value) {
   };
 }
 
-function makeAvatarSeed(username) {
-  return crypto.createHash("sha1").update(username).digest("hex").slice(0, 8);
-}
-
-async function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = (await scryptAsync(password, salt, 64)).toString("hex");
-  return `scrypt:${salt}:${hash}`;
-}
-
-async function verifyPassword(password, storedHash) {
-  const parts = String(storedHash || "").split(":");
-  const [salt, hash] = parts[0] === "scrypt" ? parts.slice(1) : parts;
-  if (!salt || !hash || !/^[a-f0-9]{128}$/i.test(hash)) {
-    return false;
-  }
-  try {
-    const expected = Buffer.from(hash, "hex");
-    const computed = await scryptAsync(password, salt, expected.length);
-    return crypto.timingSafeEqual(expected, computed);
-  } catch (error) {
-    return false;
-  }
-}
-
-function isPasswordHashFormat(value) {
-  const parts = String(value || "").split(":");
-  const [salt, hash] = parts[0] === "scrypt" ? parts.slice(1) : parts;
-  return Boolean(salt) && /^[a-f0-9]{128}$/i.test(String(hash || ""));
-}
 
 function readConfiguredAdminUsername() {
   const fromEnv = normalizeUsername(process.env.ADMIN_USERNAME || readEnvFileValue("ADMIN_USERNAME"));
@@ -940,11 +823,6 @@ function readAuditHmacKeyState(credential) {
   return { key: derived, source: `derived:${String(credential?.type || "plain")}` };
 }
 
-function verifyPlainSecret(password, expected) {
-  const providedDigest = crypto.createHash("sha256").update(String(password || ""), "utf8").digest();
-  const expectedDigest = crypto.createHash("sha256").update(String(expected || ""), "utf8").digest();
-  return crypto.timingSafeEqual(providedDigest, expectedDigest);
-}
 
 function readEnvFileValue(key) {
   const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
