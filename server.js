@@ -12,6 +12,11 @@ const {
   securityHeaders, sendJson, getClientAddress, normalizedRequestHost,
   parseRequestUrl, isSameOriginRequest, cacheControlForStaticFile, weakEtagForStat
 } = require("./utils/http");
+const { readJsonFile, readJsonLinesFile, writeJsonFile, rewriteJsonLinesFile } = require("./utils/data");
+const {
+  normalizeUsername, normalizePassword, normalizeBoundedText, normalizeAuditReason,
+  normalizeUserList, normalizeUserContacts, readOptionalUsernameFilter, readSubmittedUsername
+} = require("./utils/normalize");
 
 const {
   HOST, PORT, SESSION_TTL_MS, PUBLIC_DIR, DATA_DIR,
@@ -221,69 +226,6 @@ function verifyAdminAuditChain() {
   return { ok: mismatches.length === 0, checked, mismatches, hmacKeySource };
 }
 
-function readJsonFile(filePath) {
-  const raw = fs.readFileSync(filePath, "utf8");
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`failed to parse JSON file ${filePath}: ${error.message}`);
-  }
-}
-
-function readJsonLinesFile(filePath) {
-  const raw = fs.readFileSync(filePath, "utf8");
-  const rows = [];
-  const lines = raw.split(/\r?\n/).filter(Boolean);
-  for (const [index, line] of lines.entries()) {
-    try {
-      rows.push(JSON.parse(line));
-    } catch (error) {
-      throw new Error(`failed to parse JSON line ${index + 1} in ${filePath}: ${error.message}`);
-    }
-  }
-  return rows;
-}
-
-function writeJsonFile(filePath, value) {
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, filePath);
-}
-
-function rewriteJsonLinesFile(filePath, rows) {
-  const tempPath = `${filePath}.tmp`;
-  const body = rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join("\n")}\n` : "";
-  fs.writeFileSync(tempPath, body, "utf8");
-  fs.renameSync(tempPath, filePath);
-}
-
-function normalizeUserList(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return [...new Set(value.map((entry) => String(entry || "").trim()).filter(Boolean))];
-}
-
-function normalizeUserContacts(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {};
-  }
-  const normalized = {};
-  for (const [username, entry] of Object.entries(value)) {
-    const normalizedUsername = normalizeUsername(username);
-    if (!normalizedUsername) {
-      continue;
-    }
-    const note = normalizeBoundedText(entry?.note || "", 32);
-    normalized[normalizedUsername.value] = {
-      note,
-      createdAt: Number.parseInt(String(entry?.createdAt || "0"), 10) || 0,
-      updatedAt: Number.parseInt(String(entry?.updatedAt || "0"), 10) || 0,
-      removedAt: Number.parseInt(String(entry?.removedAt || "0"), 10) || 0
-    };
-  }
-  return normalized;
-}
 
 function loadData() {
   ensureDataFiles();
@@ -602,66 +544,8 @@ function cleanUserLoginFailures() {
 }
 
 
-function normalizeUsername(value) {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const username = value.trim();
-  if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) {
-    return null;
-  }
-  return {
-    value: username,
-    key: username.toLowerCase()
-  };
-}
-
 function isReservedUsernameKey(usernameKey) {
   return String(usernameKey || "").trim().toLowerCase() === String(adminConfig.username || "").trim().toLowerCase();
-}
-
-function normalizePassword(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim();
-}
-
-function normalizeBoundedText(value, maxLength) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim().slice(0, maxLength);
-}
-
-function normalizeAuditReason(value, fallback) {
-  const normalized = normalizeBoundedText(value, 120).replace(/\s+/g, " ");
-  return normalized || fallback;
-}
-
-function readOptionalUsernameFilter(value) {
-  const raw = normalizeBoundedText(value, 24);
-  if (!raw) {
-    return { ok: true, value: "" };
-  }
-  const normalized = normalizeUsername(raw);
-  if (!normalized) {
-    return { ok: false, value: "" };
-  }
-  return { ok: true, value: normalized.value };
-}
-
-function readSubmittedUsername(body) {
-  if (!body || typeof body !== "object") {
-    return "";
-  }
-  const account =
-    body.username !== undefined
-      ? body.username
-      : body.account !== undefined
-        ? body.account
-        : body.email;
-  return typeof account === "string" ? account.trim() : "";
 }
 
 function normalizeMessageText(value) {
