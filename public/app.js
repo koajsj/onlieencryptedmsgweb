@@ -17,6 +17,8 @@ const PRIVATE_KEY_ITERATIONS = 150000;
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
 const MESSAGE_VIRTUAL_THRESHOLD = 140;
 const MESSAGE_VIRTUAL_OVERSCAN = 480;
+const ATTACHMENT_MARKER = "[[echo-attachment-v1]]";
+const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const CLIENT_META_SENT_STORAGE_KEY = "secure_chat_client_meta_sent_v1";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -55,6 +57,7 @@ const elements = {
   sidebarTitle: document.querySelector(".sidebar-head h2"),
   sidebarEyebrow: document.querySelector(".sidebar-head .eyebrow"),
   sidebarMeta: document.querySelector("#sidebarMeta"),
+  addContactButton: document.querySelector("#addContactButton"),
   searchGroup: document.querySelector("#searchGroup"),
   pinnedGroup: document.querySelector("#pinnedGroup"),
   pinnedConversationList: document.querySelector("#pinnedConversationList"),
@@ -67,7 +70,6 @@ const elements = {
   mobileBackButton: document.querySelector("#mobileBackButton"),
   pinPeerButton: document.querySelector("#pinPeerButton"),
   mutePeerButton: document.querySelector("#mutePeerButton"),
-  exportPeerButton: document.querySelector("#exportPeerButton"),
   headerSearchButton: document.querySelector("#headerSearchButton"),
   headerCallButton: document.querySelector("#headerCallButton"),
   headerVideoButton: document.querySelector("#headerVideoButton"),
@@ -123,9 +125,7 @@ const elements = {
   settingsDialogCloseButton: document.querySelector("#settingsDialogCloseButton"),
   settingsDialogTabs: document.querySelector("#settingsDialogTabs"),
   accountSettingsTab: document.querySelector("#accountSettingsTab"),
-  contactSettingsTab: document.querySelector("#contactSettingsTab"),
   accountSettingsForm: document.querySelector("#accountSettingsForm"),
-  contactSettingsForm: document.querySelector("#contactSettingsForm"),
   accountUsernameInput: document.querySelector("#accountUsernameInput"),
   accountDisplayNameInput: document.querySelector("#accountDisplayNameInput"),
   accountStatusInput: document.querySelector("#accountStatusInput"),
@@ -134,13 +134,6 @@ const elements = {
   allowSearchToggle: document.querySelector("#allowSearchToggle"),
   deviceSessionsList: document.querySelector("#deviceSessionsList"),
   blockedUsersList: document.querySelector("#blockedUsersList"),
-  contactSettingsHeading: document.querySelector("#contactSettingsHeading"),
-  contactUsernameInput: document.querySelector("#contactUsernameInput"),
-  contactDisplayNameInput: document.querySelector("#contactDisplayNameInput"),
-  contactRoleInput: document.querySelector("#contactRoleInput"),
-  contactAboutInput: document.querySelector("#contactAboutInput"),
-  contactMediaInput: document.querySelector("#contactMediaInput"),
-  contactFilesInput: document.querySelector("#contactFilesInput"),
   settingsResetButton: document.querySelector("#settingsResetButton"),
   settingsSaveButton: document.querySelector("#settingsSaveButton")
 };
@@ -609,6 +602,12 @@ function setSettingsDialogSection(section) {
   if (securityForm) securityForm.hidden = nextSection !== "security";
   const otherForm = document.querySelector("#otherSettingsForm");
   if (otherForm) otherForm.hidden = nextSection !== "other";
+  if (elements.settingsSaveButton) {
+    elements.settingsSaveButton.hidden = nextSection !== "account";
+  }
+  if (elements.settingsResetButton) {
+    elements.settingsResetButton.hidden = nextSection === "other";
+  }
   if ((nextSection === "security" || nextSection === "other") && state.token) {
     void refreshSecuritySettingsPanel().catch(() => {});
   }
@@ -762,27 +761,79 @@ function formatBytes(bytes) {
   return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-function buildAttachmentMessageText(file) {
-  const name = String(file?.name || "未命名文件").trim().slice(0, 80);
-  const meta = `${fileKindLabel(file)} · ${formatBytes(file?.size || 0)}`;
-  return `[附件] ${name}\n${meta}`;
+function sanitizeAttachmentName(value) {
+  return String(value || "未命名文件").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim().slice(0, 80) || "未命名文件";
+}
+
+function parseAttachmentMessage(text) {
+  const value = String(text || "");
+  if (!value.startsWith(ATTACHMENT_MARKER)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(value.slice(ATTACHMENT_MARKER.length));
+    const name = sanitizeAttachmentName(payload?.name);
+    const type = String(payload?.type || "application/octet-stream").toLowerCase().slice(0, 100);
+    const size = Number(payload?.size || 0);
+    const data = String(payload?.data || "");
+    if (!Number.isInteger(size) || size < 0 || size > MAX_ATTACHMENT_BYTES || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+      return null;
+    }
+    const estimatedSize = Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    if (Math.abs(estimatedSize - size) > 2) {
+      return null;
+    }
+    return {
+      name,
+      type,
+      size,
+      data,
+      isImage: ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(type)
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function buildAttachmentMessageText(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return `${ATTACHMENT_MARKER}${JSON.stringify({
+    name: sanitizeAttachmentName(file.name),
+    type: String(file.type || "application/octet-stream").toLowerCase().slice(0, 100),
+    size: bytes.byteLength,
+    data: bytesToBase64(bytes)
+  })}`;
 }
 
 async function sendAttachmentFiles(fileList) {
   if (!state.activePeer) {
     return;
   }
-  const files = Array.from(fileList || []).filter(Boolean).slice(0, 5);
+  if (state.connectionState !== "online") {
+    showToast("附件需联网发送，避免大文件占满本地存储", "error");
+    return;
+  }
+  const contact = contactRecord(state.activePeer);
+  if (contact?.blocked || contact?.blockedByPeer) {
+    showToast(contact.blocked ? "您已拉黑对方，解除后才能继续互动" : "对方已将您拉黑，暂时无法发送消息", "error");
+    return;
+  }
+  const files = Array.from(fileList || []).filter(Boolean).slice(0, 3);
   for (const file of files) {
-    if (file.size > 10 * 1024 * 1024) {
-      showToast(`${file.name} 超过 10MB，暂不支持`);
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      showToast(`${file.name} 超过 4MB，未发送`, "error");
       continue;
     }
-    const text = buildAttachmentMessageText(file);
-    const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
-    const tempId = addPendingMessage(state.activePeer, text, replyTo);
-    renderThread({ scrollBehavior: "bottom" });
-    void sendMessageWithRetry(tempId, state.activePeer, text, tempId, false, replyTo?.id || "");
+    try {
+      const text = await buildAttachmentMessageText(file);
+      const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
+      const tempId = addPendingMessage(state.activePeer, text, replyTo);
+      renderSidebar();
+      renderThread({ scrollBehavior: "bottom" });
+      await sendMessageWithRetry(tempId, state.activePeer, text, tempId, false, replyTo?.id || "");
+    } catch (error) {
+      showToast(`${file.name} 读取或发送失败`, "error");
+    }
   }
   if (elements.attachmentInput) {
     elements.attachmentInput.value = "";
@@ -986,7 +1037,8 @@ function conversationMessageLabel(message) {
   if (message.recalled) {
     return recalledMessageLabel(message);
   }
-  return messagePlaintext(message);
+  const attachment = parseAttachmentMessage(messagePlaintext(message));
+  return attachment ? `[${attachment.isImage ? "图片" : "文件"}] ${attachment.name}` : messagePlaintext(message);
 }
 
 function syncConversationFromCache(peer) {
@@ -1026,7 +1078,7 @@ function threadMessageMatchesQuery(message, query) {
     return true;
   }
   const haystacks = [
-    message.text,
+    conversationMessageLabel(message),
     message.from,
     message.to,
     message.replyTo?.from,
@@ -1036,11 +1088,11 @@ function threadMessageMatchesQuery(message, query) {
 }
 
 function bytesToBase64(bytes) {
-  let binary = "";
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
+  const chunks = [];
+  for (let index = 0; index < bytes.length; index += 32768) {
+    chunks.push(String.fromCharCode(...bytes.subarray(index, index + 32768)));
   }
-  return btoa(binary);
+  return btoa(chunks.join(""));
 }
 
 function base64ToBytes(value) {
@@ -1132,7 +1184,7 @@ function rebuildConversationSearchIndex(username) {
   }
   const conversation = getConversation(username);
   const historyText = (state.messageCache.get(username) || [])
-    .map((message) => message.text || "")
+    .map((message) => conversationMessageLabel(message))
     .join(" ");
   const indexText = [
     conversation?.username || username,
@@ -1271,6 +1323,29 @@ function updatePeerPrefs(username, patch) {
   saveConversationPrefs();
 }
 
+async function persistPeerPrefs(username, patch) {
+  const previous = peerPrefs(username);
+  updatePeerPrefs(username, patch);
+  render();
+  try {
+    const payload = await api(`/api/contacts/${encodeURIComponent(username)}`, {
+      method: "PATCH",
+      body: patch
+    });
+    const index = state.contacts.findIndex((item) => item.username === username);
+    if (payload.contact && index >= 0) {
+      state.contacts[index] = payload.contact;
+    }
+    showToast(patch.pinned !== undefined
+      ? (patch.pinned ? "会话已置顶" : "已取消置顶")
+      : (patch.muted ? "已开启免打扰，仍会保留未读数" : "已恢复消息提醒"));
+  } catch (error) {
+    updatePeerPrefs(username, previous);
+    render();
+    throw error;
+  }
+}
+
 function setAuthMode(mode) {
   state.authMode = mode === "register" ? "register" : "login";
   localStorage.setItem(STORAGE.authMode, state.authMode);
@@ -1338,7 +1413,9 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     parts.push(`\u5f85\u53d1\u9001 ${pendingCount}`);
   }
   if (contactRecord(peer.username)?.blocked) {
-    parts.push("已拉黑，对话发送已禁用");
+    parts.push("您已拉黑对方，解除后才能继续互动");
+  } else if (contactRecord(peer.username)?.blockedByPeer) {
+    parts.push("对方已将您拉黑，暂时无法发送消息");
   }
   elements.securityStatus.textContent = parts.join(" \u00b7 ");
 }
@@ -1358,7 +1435,8 @@ function setAuthBusy(busy) {
 
 function setComposerBusy(busy) {
   state.composerBusy = busy;
-  const blocked = Boolean(state.activePeer && contactRecord(state.activePeer)?.blocked);
+  const activeContact = state.activePeer ? contactRecord(state.activePeer) : null;
+  const blocked = Boolean(activeContact?.blocked || activeContact?.blockedByPeer);
   elements.sendButton.disabled = busy || !state.activePeer || blocked;
   elements.messageInput.disabled = busy || !state.activePeer || blocked;
 }
@@ -1499,6 +1577,10 @@ function translateApiError(pathname, status, payload) {
     "too many auth requests": "请求过于频繁，请稍后再试",
     "current password invalid": "当前密码不正确",
     "peer unavailable": "对方当前不可接收消息",
+    "you blocked peer": "您已拉黑对方，解除后才能继续互动",
+    "blocked by peer": "对方已将您拉黑，暂时无法发送消息",
+    "already a contact": "该用户已经是好友",
+    "user not found": "用户不存在",
     unauthorized: "请先登录",
     "session expired": "登录已过期，请重新登录"
   };
@@ -1770,46 +1852,16 @@ function applyThreadActionState(peer) {
   const hasPeer = Boolean(peer);
   elements.pinPeerButton.disabled = !hasPeer;
   elements.mutePeerButton.disabled = !hasPeer;
-  elements.exportPeerButton.disabled = !hasPeer;
   elements.pinPeerButton.textContent = prefs.pinned ? "\u53d6\u6d88\u7f6e\u9876" : "\u7f6e\u9876";
   elements.mutePeerButton.textContent = prefs.muted ? "\u53d6\u6d88\u514d\u6253\u6270" : "\u514d\u6253\u6270";
-  elements.exportPeerButton.textContent = "\u5bfc\u51fa";
 }
 
-function togglePeerPref(peer, key) {
+async function togglePeerPref(peer, key) {
   if (!peer) {
     return;
   }
   const prefs = peerPrefs(peer);
-  updatePeerPrefs(peer, { [key]: !prefs[key] });
-  sortConversations();
-  render();
-}
-
-function exportActiveConversation() {
-  const peer = state.activePeer;
-  if (!peer) {
-    return;
-  }
-  const messages = state.messageCache.get(peer) || [];
-  if (messages.length === 0) {
-    showToast("当前会话没有可导出的消息");
-    return;
-  }
-  const lines = messages.map((message) => {
-    const who = message.mine ? "我" : message.from;
-    return `[${new Date(message.createdAt).toLocaleString()}] ${who}: ${message.text}`;
-  });
-  const content = lines.join("\n");
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `chat-${peer}-${Date.now()}.txt`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  await persistPeerPrefs(peer, { [key]: !prefs[key] });
 }
 
 function matchConversationSearchScope(conversation, query) {
@@ -1950,6 +2002,18 @@ async function saveContactNote(username, note) {
   renderThread({ scrollBehavior: "preserve" });
 }
 
+async function addContactRecord(username) {
+  const payload = await api("/api/contacts", {
+    method: "POST",
+    body: { username }
+  });
+  await Promise.all([loadContacts(), loadConversations()]);
+  renderSidebar();
+  if (payload.contact?.username) {
+    await openConversation(payload.contact.username);
+  }
+}
+
 async function deleteContactRecord(username) {
   if (!username) {
     return;
@@ -2040,6 +2104,9 @@ function renderSidebar() {
   if (elements.sidebarEyebrow) {
     elements.sidebarEyebrow.textContent = contactsMode ? "联系人列表" : "会话列表";
   }
+  if (elements.addContactButton) {
+    elements.addContactButton.hidden = !contactsMode;
+  }
   if (state.workspaceLoading) {
     if (elements.sidebarMeta) {
       elements.sidebarMeta.textContent = "同步中";
@@ -2065,6 +2132,7 @@ function renderSidebar() {
       }
       return (
         String(item.username || "").toLowerCase().includes(query) ||
+        String(item.usernameKey || "").toLowerCase().includes(query) ||
         String(item.note || "").toLowerCase().includes(query)
       );
     })
@@ -2175,9 +2243,9 @@ function renderSidebar() {
 function renderListItem(item, isSearchResult) {
   const prefs = peerPrefs(item.username);
   const draft = isSearchResult ? "" : draftTextForPeer(item.username).trim();
-  const indicators = [`<i class="online-dot${item.online ? " is-online" : ""}"></i>`];
-  if (item.unread && !prefs.muted) {
-    indicators.push(`<b class="unread-badge">${item.unread}</b>`);
+  const indicators = [];
+  if (item.unread) {
+    indicators.push(`<b class="unread-badge${prefs.muted ? " is-muted" : ""}">${item.unread > 99 ? "99+" : item.unread}</b>`);
   }
   if (!isSearchResult && draft) {
     indicators.push('<span class="draft-badge">草稿</span>');
@@ -2308,13 +2376,24 @@ function messageReceiptMarkup(message) {
   return `<span class="message-receipt is-${stateKey}" title="${label}" aria-label="${label}">${RECEIPT_ICONS[stateKey]}</span>`;
 }
 
+function attachmentMarkup(attachment, messageId) {
+  const safeId = escapeHtml(messageId || "");
+  const title = escapeHtml(attachment.name);
+  const meta = escapeHtml(`${attachment.isImage ? "图片" : "文件"} · ${formatBytes(attachment.size)}`);
+  const preview = attachment.isImage
+    ? `<button class="attachment-preview" type="button" data-attachment-preview="${safeId}" aria-label="预览 ${title}"><img src="data:${escapeHtml(attachment.type)};base64,${attachment.data}" alt="${title}" loading="lazy" /></button>`
+    : `<div class="attachment-file-icon" aria-hidden="true">FILE</div>`;
+  return `<div class="bubble-file inline-file-card">${preview}<div class="attachment-copy"><strong>${title}</strong><span>${meta}</span></div><button class="ghost-button compact attachment-download" type="button" data-attachment-download="${safeId}">下载</button></div>`;
+}
+
 function renderMessage(message, options = {}) {
   const article = document.createElement("article");
   const isConsecutive = options.consecutive ? " is-consecutive" : "";
   const isSearchMatch = options.searchMatch ? " is-search-match" : "";
   article.className = `message ${message.mine ? "is-own" : "is-peer"}${message.pending ? " is-pending" : ""}${message.failed ? " is-failed" : ""}${message.replyTo ? " is-reply" : ""}${message.recalled ? " is-recalled" : ""}${isConsecutive}${isSearchMatch}`;
   article.dataset.messageId = message.id || message.tempId || "";
-  article.dataset.messageText = messagePlaintext(message);
+  const attachment = message.recalled ? null : parseAttachmentMessage(messagePlaintext(message));
+  article.dataset.messageText = attachment ? `[附件] ${attachment.name}` : messagePlaintext(message);
   article.dataset.mine = message.mine ? "1" : "0";
   const replyAction = `<button class="message-reply-button" type="button" data-reply-id="${escapeHtml(message.id || message.tempId || "")}">\u56de\u590d</button>`;
   const recallAction = `<button class="message-recall-button" type="button" data-recall-id="${escapeHtml(message.id || message.tempId || "")}">\u64a4\u56de</button>`;
@@ -2335,7 +2414,9 @@ function renderMessage(message, options = {}) {
     : "";
   const bubbleMarkup = message.recalled
     ? `<div class="bubble bubble-recalled">${escapeHtml(recalledMessageLabel(message))}</div>`
-    : `<div class="bubble">${escapeHtml(messagePlaintext(message)).replaceAll("\n", "<br />")}</div>`;
+    : attachment
+      ? attachmentMarkup(attachment, message.id || message.tempId || "")
+      : `<div class="bubble">${escapeHtml(messagePlaintext(message)).replaceAll("\n", "<br />")}</div>`;
   const metaParts = [escapeHtml(formatTime(message.createdAt))];
   if (statusAction && !message.recalled) metaParts.push(statusAction);
   const actionParts = [];
@@ -2407,6 +2488,8 @@ function renderThread(options = {}) {
   }
   if (contact?.blocked) {
     statusTags.push("已拉黑");
+  } else if (contact?.blockedByPeer) {
+    statusTags.push("被对方拉黑");
   }
   const threadQuery = state.threadSearchQuery.trim().toLowerCase();
   const statusSuffix = statusTags.length ? ` · ${statusTags.join(" · ")}` : "";
@@ -2861,7 +2944,7 @@ async function loadConversations() {
   const conversations = await Promise.all(
     payload.conversations.map(async (conversation) => ({
       ...conversation,
-      unread: getConversation(conversation.username)?.unread || 0,
+      unread: Math.max(Number(conversation.unread || 0), Number(getConversation(conversation.username)?.unread || 0)),
       previewText: await decryptPreview(conversation)
     }))
   );
@@ -2877,6 +2960,14 @@ async function loadConversations() {
 async function loadContacts() {
   const payload = await api("/api/contacts");
   state.contacts = Array.isArray(payload.contacts) ? payload.contacts : [];
+  for (const contact of state.contacts) {
+    const saved = peerPrefs(contact.username);
+    updatePeerPrefs(contact.username, {
+      pinned: contact.prefsVersion ? Boolean(contact.pinned) : saved.pinned,
+      muted: contact.prefsVersion ? Boolean(contact.muted) : saved.muted
+    });
+  }
+  sortConversations();
 }
 
 async function loadSecuritySettings() {
@@ -2993,7 +3084,7 @@ function setPendingMessageState(tempId, status, lastError = "") {
     if (changed) {
       state.messageCache.set(peer, next);
       const entry = state.pendingMessages.get(tempId);
-      if (entry) {
+      if (entry && !entry.transient) {
         upsertPendingOutboxEntry(
           failed
             ? {
@@ -3023,6 +3114,7 @@ function addPendingMessage(peer, text, replyTo = null) {
   current.push(pending);
   current.sort((left, right) => left.createdAt - right.createdAt);
   state.messageCache.set(peer, current);
+  const transient = Boolean(parseAttachmentMessage(text));
   state.pendingMessages.set(pending.tempId, {
     tempId: pending.tempId,
     clientId: pending.clientId,
@@ -3034,27 +3126,30 @@ function addPendingMessage(peer, text, replyTo = null) {
     attempts: 0,
     failed: false,
     sendStatus: pending.sendStatus,
-    lastError: ""
+    lastError: "",
+    transient
   });
-  upsertPendingOutboxEntry({
-    tempId: pending.tempId,
-    clientId: pending.clientId,
-    peer,
-    text,
-    replyToId: pending.replyToId || "",
-    replyTo: pending.replyTo || null,
-    createdAt: pending.createdAt,
-    attempts: 0,
-    failed: false,
-    sendStatus: pending.sendStatus,
-    lastError: ""
-  });
+  if (!transient) {
+    upsertPendingOutboxEntry({
+      tempId: pending.tempId,
+      clientId: pending.clientId,
+      peer,
+      text,
+      replyToId: pending.replyToId || "",
+      replyTo: pending.replyTo || null,
+      createdAt: pending.createdAt,
+      attempts: 0,
+      failed: false,
+      sendStatus: pending.sendStatus,
+      lastError: ""
+    });
+  }
   upsertConversation({
     username: peer,
     online: getConversation(peer)?.online || false,
     avatarSeed: peer,
     publicKey: state.peerKeys.get(peer) || "",
-    previewText: text,
+    previewText: conversationMessageLabel(pending),
     lastAt: pending.createdAt
   });
   rebuildConversationSearchIndex(peer);
@@ -3503,8 +3598,7 @@ async function ingestEncryptedMessage(message) {
 
   const previous = getConversation(peer);
   const muted = peerPrefs(peer).muted;
-  const unread =
-    !decrypted.mine && state.activePeer !== peer && !muted ? (previous?.unread || 0) + 1 : 0;
+  const unread = !decrypted.mine && state.activePeer !== peer ? (previous?.unread || 0) + 1 : 0;
 
   upsertConversation({
     username: peer,
@@ -3519,7 +3613,7 @@ async function ingestEncryptedMessage(message) {
       ciphertext: message.ciphertext,
       createdAt: message.createdAt
     },
-    previewText: decrypted.text,
+    previewText: conversationMessageLabel(decrypted),
     lastAt: message.createdAt,
     unread
   });
@@ -3539,7 +3633,10 @@ async function ingestEncryptedMessage(message) {
     renderSidebar();
   }
   if (!decrypted.mine) {
-    addNotification(peer, decrypted.text, decrypted.createdAt);
+    addNotification(peer, conversationMessageLabel(decrypted), decrypted.createdAt);
+    if (muted) {
+      showToast(`收到 ${contactDisplayName(peer)} 的新消息（免打扰）`);
+    }
   }
   updateNotificationBadge();
 }
@@ -3663,6 +3760,12 @@ async function openEventStream() {
   source.addEventListener("message-read", (event) => {
     const payload = JSON.parse(event.data);
     applyReceiptUpdate(payload.peer, payload.messageIds, "read", payload.readAt);
+  });
+
+  source.addEventListener("contact-blocked", () => {
+    void loadContacts()
+      .then(() => render())
+      .catch(() => {});
   });
 
   source.addEventListener("error", () => {
@@ -3823,7 +3926,7 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
   setPendingMessageState(tempId, "sending");
   try {
     const encrypted = await encryptOutboundMessage(peer, text);
-    const payload = await api("/api/messages", {
+    const payload = await api(parseAttachmentMessage(text) ? "/api/messages/attachment" : "/api/messages", {
       method: "POST",
       body: {
         to: peer,
@@ -3845,6 +3948,8 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     if (!existing) {
       await ingestEncryptedMessage(payload.message);
     }
+    syncConversationFromCache(peer);
+    renderSidebar();
     if (state.replyTarget?.id === replyToId) {
       clearReplyTarget();
     }
@@ -3867,8 +3972,9 @@ async function submitMessage(event) {
   if (!state.activePeer) {
     return;
   }
-  if (contactRecord(state.activePeer)?.blocked) {
-    showToast("已拉黑该联系人，无法继续发送消息", "error");
+  const contact = contactRecord(state.activePeer);
+  if (contact?.blocked || contact?.blockedByPeer) {
+    showToast(contact.blocked ? "您已拉黑对方，解除后才能继续互动" : "对方已将您拉黑，暂时无法发送消息", "error");
     return;
   }
   if (state.submitInFlight) {
@@ -3904,6 +4010,7 @@ async function submitMessage(event) {
     elements.sendButton.classList.add("is-sent-feedback");
   }
   renderThread({ scrollBehavior: "bottom" });
+  renderSidebar();
   if (state.previewMode) {
     const pending = findMessageById(peer, tempId);
     if (pending) {
@@ -4120,6 +4227,56 @@ async function copyMessageFromButton(copyButton) {
   }
 }
 
+function attachmentForMessageId(messageId) {
+  const message = findMessageById(state.activePeer, messageId);
+  return message ? parseAttachmentMessage(messagePlaintext(message)) : null;
+}
+
+function attachmentBlob(attachment) {
+  return new Blob([base64ToBytes(attachment.data)], { type: attachment.type || "application/octet-stream" });
+}
+
+function downloadAttachment(messageId) {
+  const attachment = attachmentForMessageId(messageId);
+  if (!attachment) {
+    showToast("附件已失效或无权访问", "error");
+    return;
+  }
+  try {
+    const url = URL.createObjectURL(attachmentBlob(attachment));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = attachment.name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    showToast("附件下载失败", "error");
+  }
+}
+
+function previewAttachment(messageId) {
+  const attachment = attachmentForMessageId(messageId);
+  if (!attachment?.isImage) {
+    showToast("图片已失效或无法预览", "error");
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "attachment-lightbox";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.innerHTML = `<button class="attachment-lightbox-close" type="button" aria-label="关闭预览">×</button><img src="data:${escapeHtml(attachment.type)};base64,${attachment.data}" alt="${escapeHtml(attachment.name)}" /><span>${escapeHtml(attachment.name)} · ${escapeHtml(formatBytes(attachment.size))}</span>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay || event.target.closest(".attachment-lightbox-close")) {
+      close();
+    }
+  });
+  document.body.append(overlay);
+  overlay.querySelector(".attachment-lightbox-close")?.focus();
+}
+
 function handleMessageListClick(event) {
   if (!isElementNode(event.target)) {
     return;
@@ -4131,9 +4288,14 @@ function handleMessageListClick(event) {
     void loadOlderMessages(peer);
     return;
   }
-  const downloadButton = event.target.closest("[data-detail-action='download']");
-  if (downloadButton) {
-    showToast("当前仅保存文件说明，可按需接入真实附件下载接口");
+  const attachmentPreviewButton = event.target.closest("[data-attachment-preview]");
+  if (attachmentPreviewButton) {
+    previewAttachment(attachmentPreviewButton.dataset.attachmentPreview || "");
+    return;
+  }
+  const attachmentDownloadButton = event.target.closest("[data-attachment-download]");
+  if (attachmentDownloadButton) {
+    downloadAttachment(attachmentDownloadButton.dataset.attachmentDownload || "");
     return;
   }
   const replyButton = event.target.closest(".message-reply-button");
@@ -4178,25 +4340,19 @@ function handleThreadActionsClick(action) {
     return;
   }
   if (action === "pin") {
-    togglePeerPref(peer, "pinned");
+    void togglePeerPref(peer, "pinned").catch((error) => showToast(error.message, "error"));
     return;
   }
   if (action === "mute") {
-    togglePeerPref(peer, "muted");
-    return;
-  }
-  if (action === "export") {
-    exportActiveConversation();
+    void togglePeerPref(peer, "muted").catch((error) => showToast(error.message, "error"));
   }
 }
 
-function setPeerMutedState(peer, muted) {
+async function setPeerMutedState(peer, muted) {
   if (!peer) {
     return;
   }
-  updatePeerPrefs(peer, { muted: Boolean(muted) });
-  sortConversations();
-  render();
+  await persistPeerPrefs(peer, { muted: Boolean(muted) });
 }
 
 function saveSettingsDialog() {
@@ -4318,10 +4474,6 @@ function handleDetailActionClick(event) {
     elements.messageInput.focus();
     return;
   }
-  if (action === "download") {
-    showToast("当前仅保存文件说明，可按需接入真实附件下载接口");
-    return;
-  }
   if (action === "call" || action === "video" || action === "more") {
     handlePresenceAction(action);
   }
@@ -4333,11 +4485,6 @@ function handleGlobalKeydown(event) {
     event.preventDefault();
     elements.globalSearchInput.focus();
     elements.globalSearchInput.select();
-    return;
-  }
-  if (isMeta && event.key.toLowerCase() === "e") {
-    event.preventDefault();
-    exportActiveConversation();
     return;
   }
   if (event.key === "Escape" && document.activeElement === elements.globalSearchInput) {
@@ -4482,7 +4629,18 @@ function bindEvents() {
   }, { passive: true });
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
-  elements.exportPeerButton.addEventListener("click", () => handleThreadActionsClick("export"));
+  elements.addContactButton?.addEventListener("click", async () => {
+    const username = window.prompt("输入要添加的用户 ID");
+    if (username === null || !username.trim()) {
+      return;
+    }
+    try {
+      await addContactRecord(username.trim());
+      showToast("好友已添加");
+    } catch (error) {
+      showToast(error.message || "添加好友失败", "error");
+    }
+  });
   elements.headerSearchButton?.addEventListener("click", focusThreadSearch);
   elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
   elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
@@ -4558,7 +4716,12 @@ function bindEvents() {
     if (!state.activePeer) {
       return;
     }
-    setPeerMutedState(state.activePeer, !elements.notificationsToggle.checked);
+    const peer = state.activePeer;
+    const nextMuted = !elements.notificationsToggle.checked;
+    void setPeerMutedState(peer, nextMuted).catch((error) => {
+      elements.notificationsToggle.checked = !peerPrefs(peer).muted;
+      showToast(error.message || "通知设置失败", "error");
+    });
   });
   elements.presenceVisibleToggle?.addEventListener("change", () => {
     void updateSecuritySettings({

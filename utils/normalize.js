@@ -53,6 +53,9 @@ function normalizeUserContacts(value) {
     const note = normalizeBoundedText(entry?.note || "", 32);
     normalized[normalizedUsername.value] = {
       note,
+      pinned: Boolean(entry?.pinned),
+      muted: Boolean(entry?.muted),
+      prefsVersion: Number.parseInt(String(entry?.prefsVersion || "0"), 10) || 0,
       createdAt: Number.parseInt(String(entry?.createdAt || "0"), 10) || 0,
       updatedAt: Number.parseInt(String(entry?.updatedAt || "0"), 10) || 0,
       removedAt: Number.parseInt(String(entry?.removedAt || "0"), 10) || 0

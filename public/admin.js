@@ -59,8 +59,6 @@ const elements = {
   applyMsgFilterButton: document.querySelector("#applyMsgFilterButton"),
   resetMsgFilterButton: document.querySelector("#resetMsgFilterButton"),
   loadMoreMessagesButton: document.querySelector("#loadMoreMessagesButton"),
-  exportReasonInput: document.querySelector("#exportReasonInput"),
-  exportMessagesButton: document.querySelector("#exportMessagesButton"),
   messagesList: document.querySelector("#messagesList"),
   refreshAuditButton: document.querySelector("#refreshAuditButton"),
   auditList: document.querySelector("#auditList"),
@@ -403,11 +401,12 @@ function renderStats() {
   const stats = state.stats;
   const items = [
     ["总用户", stats.users || 0],
+    ["今日注册", stats.usersToday || 0],
     ["封禁用户", stats.bannedUsers || 0],
     ["在线用户", stats.onlineUsers || 0],
-    ["会话数", stats.sessions || 0],
+    ["24h 活跃", stats.activeUsers || 0],
     ["消息总量", stats.messages || 0],
-    ["24h消息", stats.messages24h || 0]
+    ["今日消息", stats.messagesToday || 0]
   ];
   elements.statsGrid.textContent = "";
   for (const [label, value] of items) {
@@ -444,6 +443,7 @@ function renderDashboardPanel() {
   if (!dashboard) {
     renderDetailList(elements.recentLoginsList, [], "暂无登录记录");
     renderDetailList(elements.recentUsersList, [], "暂无注册记录");
+    renderDetailList(elements.abnormalLoginsList, [], "暂无异常登录");
     elements.systemStatusText.textContent = "系统状态 -";
     elements.currentIpText.textContent = "IP -";
     return;
@@ -468,7 +468,7 @@ function renderDashboardPanel() {
   renderDetailList(
     elements.recentLoginsList,
     (dashboard.recentLogins || []).map((item) => ({
-      title: `${item.username || "管理员"} · ${item.ip || "-"}`,
+      title: `${item.username || "管理员"} · ${item.role === "admin" ? "管理员" : "用户"} · ${item.ip || "-"}`,
       meta: formatDateTime(item.at)
     })),
     "暂无登录记录"
@@ -480,6 +480,14 @@ function renderDashboardPanel() {
       meta: `${formatDateTime(item.createdAt)}${item.banned ? " · 已封禁" : ""}`
     })),
     "暂无注册记录"
+  );
+  renderDetailList(
+    elements.abnormalLoginsList,
+    (dashboard.abnormalLogins || []).map((item) => ({
+      title: `${item.username || "未知账号"} · ${item.ip || "-"}`,
+      meta: formatDateTime(item.at)
+    })),
+    "暂无异常登录"
   );
 }
 
@@ -723,6 +731,8 @@ function renderUsers() {
       <td><input type="checkbox" data-select-user="${safeUsername}" ${checked} /></td>
       <td><div class="user-cell"><a class="user-link" href="${detailHref}">${safeUsername}</a><span class="user-subtle">${safeUsernameKey || "-"}</span></div></td>
       <td>${safeStatus}</td>
+      <td>${user.online ? "在线" : "离线"}</td>
+      <td>${formatDateTime(user.lastLoginAt)}</td>
       <td>${formatDateTime(user.createdAt)}</td>
       <td class="actions">
         <button class="tiny" data-action="detail" data-username="${safeUsername}">详情</button>
@@ -918,17 +928,6 @@ function messageFilterQuery(reset) {
   return `/api/admin/messages?limit=120&from=${from}&to=${to}${sinceParam}${untilParam}${before}`;
 }
 
-function buildMessageExportQuery(reasonValue) {
-  const from = encodeURIComponent(String(elements.msgFromInput.value || "").trim());
-  const to = encodeURIComponent(String(elements.msgToInput.value || "").trim());
-  const since = dateInputToStartMs(elements.msgSinceInput.value);
-  const until = dateInputToEndMs(elements.msgUntilInput.value);
-  const reason = encodeURIComponent(String(reasonValue || "").trim());
-  const sinceParam = since ? `&since=${since}` : "";
-  const untilParam = until ? `&until=${until}` : "";
-  return `/api/admin/messages/export?reason=${reason}&from=${from}&to=${to}${sinceParam}${untilParam}`;
-}
-
 function resetMessageFilters() {
   elements.msgFromInput.value = "";
   elements.msgToInput.value = "";
@@ -1084,38 +1083,6 @@ async function batchUsers(banned) {
   await Promise.all([loadUsers(), loadStats(), loadAuditLogs()]);
   markAdminRefreshed();
   showToast(`已更新 ${usernames.length} 个用户`);
-}
-
-async function exportMessages() {
-  if (!hasPermission("admin:messages:export")) {
-    return;
-  }
-  const reason = String(elements.exportReasonInput.value || "").trim();
-  if (!reason) {
-    showToast("请填写导出原因");
-    return;
-  }
-  const confirmed = await confirmDialog({
-    title: "导出消息密文",
-    message: "确认导出当前筛选条件下的消息密文记录？",
-    confirmLabel: "确认导出"
-  });
-  if (!confirmed) {
-    return;
-  }
-  const payload = await api(buildMessageExportQuery(reason));
-  const blob = new Blob([String(payload.content || "")], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = String(payload.filename || `admin-export-${Date.now()}.txt`);
-  document.body.append(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  showToast("导出完成");
-  await loadAuditLogs();
-  markAdminRefreshed();
 }
 
 async function handleUserAction(event) {
@@ -1404,14 +1371,6 @@ function bindEvents() {
     }
   });
 
-  elements.exportMessagesButton.addEventListener("click", async () => {
-    try {
-      await exportMessages();
-    } catch (error) {
-      showToast(error.message);
-    }
-  });
-
   elements.refreshAuditButton.addEventListener("click", async () => {
     try {
       await loadAuditLogs();
@@ -1458,10 +1417,6 @@ function syncPermissionUi() {
   if (!hasPermission("admin:user:update")) {
     elements.batchBanButton.disabled = true;
     elements.batchUnbanButton.disabled = true;
-  }
-  if (!hasPermission("admin:messages:export")) {
-    elements.exportMessagesButton.disabled = true;
-    elements.exportReasonInput.disabled = true;
   }
 }
 

@@ -839,6 +839,47 @@ test("message delete hides only the current viewer and updates conversation summ
   }
 });
 
+test("read receipts clear server unread counts and persist for both sides", async () => {
+  const server = await startServer();
+  try {
+    const left = await postJsonAndRead(server.port, "/api/register", {
+      username: "ReadLeft",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 111).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 112).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 113).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 114).toString("base64")
+    });
+    const right = await postJsonAndRead(server.port, "/api/register", {
+      username: "ReadRight",
+      password: "world123",
+      publicKey: Buffer.alloc(65, 115).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 116).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 117).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 118).toString("base64")
+    });
+    const leftToken = left.json.token;
+    const rightToken = right.json.token;
+    assert.equal((await postJson(server.port, "/api/messages", {
+      to: "ReadRight",
+      clientId: "read-receipt-1",
+      ...makeEncryptedPayload(119)
+    }, leftToken)).status, 201);
+
+    const unread = await getJson(server.port, "/api/conversations", rightToken);
+    assert.equal(unread.json.conversations[0].unread, 1);
+    const marked = await postJsonAndRead(server.port, "/api/messages/read", { peer: "ReadLeft" }, rightToken);
+    assert.equal(marked.response.status, 200);
+    assert.equal(marked.json.count, 1);
+    const cleared = await getJson(server.port, "/api/conversations", rightToken);
+    assert.equal(cleared.json.conversations[0].unread, 0);
+    const senderHistory = await getJson(server.port, "/api/messages?with=ReadRight", leftToken);
+    assert.ok(senderHistory.json.messages[0].readAt > 0);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("contacts endpoints enforce same-origin and support note, block and delete flows", async () => {
   const server = await startServer();
 
@@ -862,13 +903,20 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
     const aliceToken = (await aliceRegister.json()).token;
     const bobToken = (await bobRegister.json()).token;
 
+    const addContact = await postJson(server.port, "/api/contacts", { username: "ContactB" }, aliceToken);
+    assert.equal(addContact.status, 201);
+    const duplicateContact = await postJson(server.port, "/api/contacts", { username: "ContactB" }, aliceToken);
+    assert.equal(duplicateContact.status, 409);
+    assert.equal((await duplicateContact.json()).error, "already a contact");
+    assert.equal((await postJson(server.port, "/api/contacts", { username: "ContactA" }, bobToken)).status, 201);
+
     const noteUpdate = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${aliceToken}`
       },
-      body: JSON.stringify({ note: "同事" })
+      body: JSON.stringify({ note: "同事", pinned: true, muted: true })
     });
     assert.equal(noteUpdate.status, 200);
     const notePayload = await noteUpdate.json();
@@ -880,6 +928,8 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
     assert.equal(contactsAfterNote.json.contacts.length, 1);
     assert.equal(contactsAfterNote.json.contacts[0].note, "同事");
     assert.equal(contactsAfterNote.json.contacts[0].blocked, false);
+    assert.equal(contactsAfterNote.json.contacts[0].pinned, true);
+    assert.equal(contactsAfterNote.json.contacts[0].muted, true);
 
     const crossOriginPatch = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
       method: "PATCH",
@@ -919,7 +969,18 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
       aliceToken
     );
     assert.equal(blockedSend.status, 403);
-    assert.equal((await blockedSend.json()).error, "peer unavailable");
+    assert.equal((await blockedSend.json()).error, "you blocked peer");
+
+    const blockedPeerContacts = await getJson(server.port, "/api/contacts", bobToken);
+    assert.equal(blockedPeerContacts.json.contacts[0].blockedByPeer, true);
+    const blockedPeerSend = await postJson(
+      server.port,
+      "/api/messages",
+      { to: "ContactA", ...makeEncryptedPayload(110) },
+      bobToken
+    );
+    assert.equal(blockedPeerSend.status, 403);
+    assert.equal((await blockedPeerSend.json()).error, "blocked by peer");
 
     const crossOriginBlock = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB/block`, {
       method: "POST",
@@ -1512,14 +1573,12 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
     const ticketResponse = await postJson(server.port, "/api/events/token", {}, bannedToken);
     assert.ok([401, 403].includes(ticketResponse.status));
 
-    const exportResponse = await getJson(
+    const removedExportResponse = await getJson(
       server.port,
       "/api/admin/messages/export?reason=investigation&from=BatchA",
       adminToken
     );
-    assert.equal(exportResponse.response.status, 200);
-    assert.ok(String(exportResponse.json.content || "").includes("EXPORT WATERMARK"));
-    assert.ok(!String(exportResponse.json.content || "").includes("admin-visible-text"));
+    assert.equal(removedExportResponse.response.status, 404);
   } finally {
     await server.stop();
   }

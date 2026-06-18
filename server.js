@@ -34,7 +34,7 @@ const {
 const {
   HOST, PORT, SESSION_TTL_MS, PUBLIC_DIR, DATA_DIR,
   USERS_FILE, MESSAGES_FILE, MESSAGES_LOG_FILE, ADMIN_AUDIT_FILE,
-  MAX_BODY_BYTES, RATE_WINDOW_MS, MAX_AUTH_REQUESTS_PER_WINDOW,
+  MAX_BODY_BYTES, MAX_MESSAGE_BODY_BYTES, RATE_WINDOW_MS, MAX_AUTH_REQUESTS_PER_WINDOW,
   MAX_API_REQUESTS_PER_WINDOW, MAX_MESSAGES_PER_CONVERSATION_WINDOW,
   HEARTBEAT_MS, EVENT_TICKET_TTL_MS, MESSAGE_PERSIST_DEBOUNCE_MS,
   HSTS_MAX_AGE_SECONDS, COOKIE_SECURE, ENABLE_ACCESS_LOG,
@@ -596,18 +596,6 @@ function canSearchUser(viewerUsername, targetUser) {
   return true;
 }
 
-function canExchangeMessages(leftUsername, rightUsername) {
-  const leftUser = findUserByUsername(leftUsername);
-  const rightUser = findUserByUsername(rightUsername);
-  if (!leftUser || !rightUser) {
-    return false;
-  }
-  if (isUserBlocked(leftUser, rightUsername) || isUserBlocked(rightUser, leftUsername)) {
-    return false;
-  }
-  return true;
-}
-
 function contactEntryFor(user, username) {
   if (!user?.contacts || !username) {
     return null;
@@ -628,6 +616,11 @@ function upsertUserContact(user, username, patch = {}) {
     ...existing,
     ...patch,
     note: normalizeBoundedText(patch.note === undefined ? existing.note : patch.note, 32),
+    pinned: patch.pinned === undefined ? Boolean(existing.pinned) : Boolean(patch.pinned),
+    muted: patch.muted === undefined ? Boolean(existing.muted) : Boolean(patch.muted),
+    prefsVersion: patch.pinned === undefined && patch.muted === undefined
+      ? Number(existing.prefsVersion || 0)
+      : 1,
     removedAt: 0,
     updatedAt: Date.now()
   };
@@ -666,6 +659,10 @@ function publicContactView(ownerUsername, peerUser) {
     usernameKey: peerUser.usernameKey,
     note: entry?.note || "",
     blocked: Boolean(owner && isUserBlocked(owner, peerUser.username)),
+    blockedByPeer: isUserBlocked(peerUser, ownerUsername),
+    pinned: Boolean(entry?.pinned),
+    muted: Boolean(entry?.muted),
+    prefsVersion: Number(entry?.prefsVersion || 0),
     online: isPresenceVisibleTo(ownerUsername, peerUser.username),
     lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, ownerUsername)
       ? Number.parseInt(String(peerUser.lastSeenAt || "0"), 10) || 0
@@ -1388,7 +1385,8 @@ function buildConversationSummary(viewer, peer) {
     lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, viewer)
       ? Number.parseInt(String(peerUser.lastSeenAt || "0"), 10) || 0
       : 0,
-      latestMessage: latest
+    unread: conversationMessages.filter((message) => message.to === viewer && !message.readAt && !message.recalled).length,
+    latestMessage: latest
       ? {
           id: latest.id,
           from: latest.from,
@@ -1646,7 +1644,7 @@ function purgeUserEventTickets(username) {
   }
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0;
     let tooLarge = false;
@@ -1657,7 +1655,7 @@ function readJsonBody(req) {
         return;
       }
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         tooLarge = true;
         chunks.length = 0;
         req.resume();
@@ -2119,6 +2117,60 @@ function handleContacts(req, res, url) {
   });
 }
 
+async function handleContactCreate(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (rejectIfForbiddenOrLimited(
+    req,
+    res,
+    `api:contacts:create:${session.username}:${address}`,
+    MAX_API_REQUESTS_PER_WINDOW,
+    "too many requests"
+  )) {
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  const peer = findUserByUsername(readSubmittedUsername(body));
+  const owner = findUserByUsername(session.username);
+  if (!peer || peer.username === session.username) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  if (!owner) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "note") && typeof body.note !== "string") {
+    sendJson(res, 400, { error: "note must be a string" });
+    return;
+  }
+  if (isUserBlocked(owner, peer.username)) {
+    sendJson(res, 409, { error: "you blocked peer" });
+    return;
+  }
+  if (isUserBlocked(peer, owner.username)) {
+    sendJson(res, 403, { error: "blocked by peer" });
+    return;
+  }
+  const existing = contactEntryFor(owner, peer.username);
+  if (existing && !existing.removedAt) {
+    sendJson(res, 409, { error: "already a contact" });
+    return;
+  }
+  upsertUserContact(owner, peer.username, { note: body.note || "" });
+  persistUsers();
+  sendJson(res, 201, { contact: publicContactView(owner.username, peer) });
+}
+
 async function handleContactPatch(req, res, url, pathname) {
   const session = requireSession(req, res, url);
   if (!session) {
@@ -2158,7 +2210,19 @@ async function handleContactPatch(req, res, url, pathname) {
     sendJson(res, 400, { error: "note must be a string" });
     return;
   }
-  const entry = upsertUserContact(owner, peer.username, { note: body.note || "" });
+  if (Object.prototype.hasOwnProperty.call(body, "pinned") && typeof body.pinned !== "boolean") {
+    sendJson(res, 400, { error: "pinned must be a boolean" });
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "muted") && typeof body.muted !== "boolean") {
+    sendJson(res, 400, { error: "muted must be a boolean" });
+    return;
+  }
+  const entry = upsertUserContact(owner, peer.username, {
+    ...(Object.prototype.hasOwnProperty.call(body, "note") ? { note: body.note } : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, "pinned") ? { pinned: body.pinned } : {}),
+    ...(Object.prototype.hasOwnProperty.call(body, "muted") ? { muted: body.muted } : {})
+  });
   persistUsers();
   sendJson(res, 200, {
     contact: publicContactView(session.username, peer),
@@ -2248,6 +2312,10 @@ async function handleContactBlock(req, res, url, pathname) {
   upsertUserContact(owner, peer.username, {});
   persistUsers();
   pushPresence(owner.username, isUserOnline(owner.username));
+  pushEventToUser(peer.username, "contact-blocked", {
+    username: owner.username,
+    blocked: body.blocked
+  });
   sendJson(res, 200, {
     contact: publicContactView(session.username, peer),
     blockedUsers: owner.blockedUsers
@@ -2818,65 +2886,6 @@ function handleAdminAuditLogs(req, res, url) {
   });
 }
 
-function handleAdminExportMessages(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:messages:export:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const reason = normalizeBoundedText(url.searchParams.get("reason") || "", 120);
-  if (!reason) {
-    sendJson(res, 400, { error: "export reason is required" });
-    return;
-  }
-  const fromFilterResult = readOptionalUsernameFilter(url.searchParams.get("from"));
-  const toFilterResult = readOptionalUsernameFilter(url.searchParams.get("to"));
-  if (!fromFilterResult.ok || !toFilterResult.ok) {
-    sendJson(res, 400, { error: "invalid message filters" });
-    return;
-  }
-  const fromFilter = fromFilterResult.value;
-  const toFilter = toFilterResult.value;
-  const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
-  const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
-  const watermark = `EXPORT WATERMARK | admin=${session.username} | role=${session.role} | ip=${address} | at=${new Date().toISOString()} | reason=${reason}`;
-  const matchesFilters = (message) =>
-    (!fromFilter || message.from === fromFilter) &&
-    (!toFilter || message.to === toFilter) &&
-    (!since || Number(message.createdAt) >= since) &&
-    (!until || Number(message.createdAt) <= until);
-  const rows = collectPagedMessages(messages, 5000, null, matchesFilters).items;
-  const contentRows = rows.map((message) =>
-    [
-      `[${new Date(message.createdAt).toISOString()}]`,
-      `${message.from} -> ${message.to}`,
-      `nonce=${message.nonce}`,
-      `ciphertext=${message.ciphertext}`
-    ].join(" ")
-  );
-  recordAdminAction("admin_messages_export", session, req, {
-    reason,
-    count: rows.length,
-    filters: { fromFilter, toFilter, since, until }
-  });
-  sendJson(res, 200, {
-    filename: `admin-export-${Date.now()}.txt`,
-    watermark,
-    content: [watermark, ...contentRows].join("\n")
-  });
-}
-
 function handleAdminMessages(req, res, url) {
   const session = requireAdminSession(req, res, url);
   if (!session) {
@@ -3125,7 +3134,7 @@ async function handleSendMessage(req, res, url) {
 
   let body;
   try {
-    body = await readJsonBody(req);
+    body = await readJsonBody(req, url.pathname === "/api/messages/attachment" ? MAX_MESSAGE_BODY_BYTES : MAX_BODY_BYTES);
   } catch (error) {
     sendJsonBodyError(res, error);
     return;
@@ -3144,8 +3153,13 @@ async function handleSendMessage(req, res, url) {
     sendJson(res, 403, { error: "peer is banned" });
     return;
   }
-  if (!canExchangeMessages(session.username, peer.username)) {
-    sendJson(res, 403, { error: "peer unavailable" });
+  const senderUser = findUserByUsername(session.username);
+  if (isUserBlocked(senderUser, peer.username)) {
+    sendJson(res, 403, { error: "you blocked peer" });
+    return;
+  }
+  if (isUserBlocked(peer, session.username)) {
+    sendJson(res, 403, { error: "blocked by peer" });
     return;
   }
   if (clientId) {
@@ -3195,7 +3209,6 @@ async function handleSendMessage(req, res, url) {
     replyTo,
     deletedFor: []
   };
-  const senderUser = findUserByUsername(session.username);
   let contactsChanged = false;
   if (senderUser && !contactEntryFor(senderUser, peer.username)) {
     upsertUserContact(senderUser, peer.username, {});
@@ -3627,10 +3640,6 @@ const server = http.createServer((req, res) => {
     handleAdminMessages(req, res, url);
     return;
   }
-  if (req.method === "GET" && pathname === "/api/admin/messages/export") {
-    handleAdminExportMessages(req, res, url);
-    return;
-  }
   if (req.method === "GET" && pathname === "/api/admin/audit") {
     handleAdminAuditLogs(req, res, url);
     return;
@@ -3693,6 +3702,10 @@ const server = http.createServer((req, res) => {
     handleContacts(req, res, url);
     return;
   }
+  if (req.method === "POST" && pathname === "/api/contacts") {
+    void handleContactCreate(req, res, url);
+    return;
+  }
   if (contactPath && req.method === "PATCH" && !contactPath.action) {
     void handleContactPatch(req, res, url, pathname);
     return;
@@ -3718,6 +3731,10 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages") {
+    void handleSendMessage(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/messages/attachment") {
     void handleSendMessage(req, res, url);
     return;
   }
