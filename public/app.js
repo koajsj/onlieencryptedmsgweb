@@ -1736,10 +1736,6 @@ function setSession(token, user, identity) {
   resetLocalConversationState();
   elements.authScreen.hidden = true;
   elements.workspace.hidden = false;
-  elements.workspace.classList.add("is-entering");
-  elements.workspace.addEventListener("animationend", () => {
-    elements.workspace.classList.remove("is-entering");
-  }, { once: true });
   if (elements.meUsername) {
     elements.meUsername.textContent = accountDisplayName();
   }
@@ -3876,6 +3872,9 @@ async function afterLogin() {
   elements.workspace?.classList.remove("is-entering");
   void elements.workspace?.offsetWidth;
   elements.workspace?.classList.add("is-entering");
+  elements.workspace?.addEventListener("animationend", () => {
+    elements.workspace?.classList.remove("is-entering");
+  }, { once: true });
 }
 
 async function submitAuth(event) {
@@ -4859,7 +4858,7 @@ function bindEvents() {
     clearReplyTarget();
   });
   elements.messageInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       elements.composerForm.requestSubmit();
     }

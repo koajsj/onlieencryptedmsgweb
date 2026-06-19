@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "generatedAt": "2026-06-19T01:58:26.281Z",
+  "generatedAt": "2026-06-19T02:18:15.664Z",
   "files": [
     {
       "source": "public/app.js",
       "built": "public/app.min.js",
-      "sourceHash": "1c059195e22fa619d9ca2937e2a28f595051d1178f1429614e2dbddd56279957",
-      "builtHash": "6cecbd7b8307209ea541f5c41e0445435cc868412a2e9cb06e88d531909af3a5"
+      "sourceHash": "e61677bec630ef1bba62861e7ff147cd6cb904cffed9ce03902110f9d74ec1ce",
+      "builtHash": "bf6eeb402e9388f7ad92c195723f25c9fc8f897773fd4292f809161b0cc3b692"
     },
     {
       "source": "public/admin.js",
