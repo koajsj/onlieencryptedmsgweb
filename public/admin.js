@@ -73,7 +73,6 @@ const elements = {
   dialogConfirmButton: document.querySelector("#dialogConfirmButton")
 };
 
-const ADMIN_TOKEN_STORAGE_KEY = "secure_chat_admin_token";
 const CLIENT_META_SENT_STORAGE_KEY = "secure_chat_client_meta_sent_v1";
 
 const state = {
@@ -116,7 +115,7 @@ function isElementNode(value) {
 }
 
 function hasPermission(permission) {
-  return Boolean(state.token && permission);
+  return Boolean(permission && state.admin?.role === "admin");
 }
 
 function resetAdminState(showLogin = false) {
@@ -138,31 +137,10 @@ function resetAdminState(showLogin = false) {
   state.logs = [];
   state.admin = { username: "", role: "admin" };
   state.lastRefreshAt = 0;
-  persistAdminToken("");
   updateAdminHeader();
   if (showLogin) {
     setLoggedIn(false);
     elements.usernameInput.focus();
-  }
-}
-
-function readStoredAdminToken() {
-  try {
-    return String(window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "");
-  } catch (error) {
-    return "";
-  }
-}
-
-function persistAdminToken(token) {
-  try {
-    if (token) {
-      window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
-    } else {
-      window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-    }
-  } catch (error) {
-    // Ignore storage failures and continue with the in-memory token.
   }
 }
 
@@ -321,7 +299,7 @@ async function api(pathname, options = {}) {
   const bearerToken =
     options.auth === false
       ? ""
-      : String(options.token !== undefined ? options.token : state.token || "");
+      : String(options.token || "");
   if (bearerToken && !headers.Authorization) {
     headers.Authorization = `Bearer ${bearerToken}`;
   }
@@ -462,7 +440,7 @@ function renderDashboardPanel() {
     elements.overviewGrid.append(card);
   }
 
-  elements.systemStatusText.textContent = `系统状态 ${dashboard.systemStatus?.label || "-"}`;
+  elements.systemStatusText.textContent = `系统状态 ${dashboard.systemStatus?.ok === undefined ? "-" : (dashboard.systemStatus.ok ? "正常" : "异常")}`;
   elements.currentIpText.textContent = `IP ${dashboard.currentIp || "-"}`;
 
   renderDetailList(
@@ -1004,8 +982,6 @@ async function login(username, password) {
     body: { username, password },
     auth: false
   });
-  state.token = String(payload.token || "");
-  persistAdminToken(state.token);
   state.admin = {
     username: payload.admin?.username || "管理员",
     role: payload.admin?.role || "admin"
@@ -1424,7 +1400,6 @@ async function boot() {
   bindEvents();
   scheduleClientMetaReport();
   elements.resetUsernameInput.value = "admin";
-  state.token = readStoredAdminToken();
   try {
     const payload = await api("/api/admin/me");
     state.admin = {

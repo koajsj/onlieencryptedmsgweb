@@ -4,7 +4,9 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  ADMIN_CONFIG_ENV_FILE, DEFAULT_ADMIN_USERNAME_VALUE, DEFAULT_ADMIN_PASSWORD_VALUE,
+  ADMIN_CONFIG_ENV_FILE,
+  DEFAULT_ADMIN_USERNAME_VALUE,
+  DEFAULT_ADMIN_PASSWORD_VALUE,
   ALLOW_INSECURE_DEFAULT_ADMIN
 } = require("../config");
 const { normalizeUsername, normalizePassword } = require("../utils/normalize");
@@ -181,7 +183,7 @@ function entryBaseFromEntry(entry) {
 function persistAdminConfigToEnvFile(nextConfig, hmacKeyState) {
   const envFilePath = String(ADMIN_CONFIG_ENV_FILE || "").trim();
   if (!envFilePath || !path.isAbsolute(envFilePath)) {
-    throw new Error("管理员配置文件路径无效");
+    throw new Error("admin config env file path is invalid");
   }
   const existingContent = fs.existsSync(envFilePath) ? fs.readFileSync(envFilePath, "utf8") : "";
   let lines = String(existingContent || "").split(/\r?\n/).filter((line) => line.length > 0);

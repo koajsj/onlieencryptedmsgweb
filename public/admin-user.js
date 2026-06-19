@@ -1,7 +1,5 @@
 "use strict";
 
-const ADMIN_TOKEN_STORAGE_KEY = "secure_chat_admin_token";
-
 const elements = {
   title: document.querySelector("#detailTitle"),
   subtitle: document.querySelector("#detailSubtitle"),
@@ -35,7 +33,6 @@ const elements = {
 };
 
 const state = {
-  token: "",
   username: "",
   detail: null,
   loading: false,
@@ -55,26 +52,6 @@ function formatDateTime(value) {
     return "-";
   }
   return new Date(value).toLocaleString();
-}
-
-function readStoredAdminToken() {
-  try {
-    return String(window.sessionStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "");
-  } catch (error) {
-    return "";
-  }
-}
-
-function persistAdminToken(token) {
-  try {
-    if (token) {
-      window.sessionStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
-    } else {
-      window.sessionStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
-    }
-  } catch (error) {
-    // ignore storage failures
-  }
 }
 
 function showToast(message) {
@@ -98,10 +75,7 @@ function parseUsernameFromQuery() {
 
 async function api(pathname, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
-  const bearerToken =
-    options.auth === false
-      ? ""
-      : String(options.token !== undefined ? options.token : state.token || "");
+  const bearerToken = options.auth === false ? "" : String(options.token || "");
   if (bearerToken && !headers.Authorization) {
     headers.Authorization = `Bearer ${bearerToken}`;
   }
@@ -131,7 +105,6 @@ async function api(pathname, options = {}) {
 
   if (!response.ok) {
     if (response.status === 401) {
-      persistAdminToken("");
       window.location.href = adminUsersHref();
       throw new Error("管理员登录已过期，请重新登录");
     }
@@ -141,29 +114,29 @@ async function api(pathname, options = {}) {
 }
 
 function setRefreshMeta() {
-  elements.refreshMeta.textContent = state.lastRefreshAt ? `最后刷新 ${formatDateTime(state.lastRefreshAt)}` : "尚未刷新";
+  elements.refreshMeta.textContent = state.lastRefreshAt
+    ? `最后刷新：${formatDateTime(state.lastRefreshAt)}`
+    : "尚未刷新";
 }
 
 function renderOverview(detail) {
   const messageStats = detail.messageStats || {};
   const access = detail.access || {};
   const cards = [
-    { label: "账号状态", value: detail.user?.banned ? "封禁中" : detail.user?.online ? "在线" : "离线" },
-    { label: "会话数", value: `${(detail.sessions || []).length}` },
-    { label: "事件连接", value: `${detail.realtime?.eventConnections || 0}` },
-    { label: "总消息数", value: `${messageStats.total || 0}` },
-    { label: "对话对象", value: `${messageStats.peers || 0}` },
+    { label: "账号状态", value: detail.user?.banned ? "已封禁" : detail.user?.online ? "在线" : "离线" },
+    { label: "活跃会话", value: `${(detail.sessions || []).length}` },
+    { label: "实时连接", value: `${detail.realtime?.eventConnections || 0}` },
+    { label: "消息总数", value: `${messageStats.total || 0}` },
+    { label: "会话对象", value: `${messageStats.peers || 0}` },
     { label: "访问日志", value: `${access.totalLogs || 0}` }
   ];
   elements.overviewGrid.innerHTML = cards
-    .map(
-      (card) => `
-        <article class="overview-card">
-          <span>${escapeHtml(card.label)}</span>
-          <strong>${escapeHtml(card.value)}</strong>
-        </article>
-      `
-    )
+    .map((card) => `
+      <article class="overview-card">
+        <span>${escapeHtml(card.label)}</span>
+        <strong>${escapeHtml(card.value)}</strong>
+      </article>
+    `)
     .join("");
 }
 
@@ -172,19 +145,22 @@ function renderIdentity(detail) {
     { title: "用户名", meta: detail.user?.username || "-" },
     { title: "用户名索引", meta: detail.user?.usernameKey || "-" },
     { title: "注册时间", meta: formatDateTime(detail.user?.createdAt) },
-    { title: "封禁信息", meta: detail.user?.banned ? `${detail.user?.bannedReason || "无原因"} · ${formatDateTime(detail.user?.bannedAt)}` : "正常" },
+    {
+      title: "封禁信息",
+      meta: detail.user?.banned
+        ? `${detail.user?.bannedReason || "无原因"} · ${formatDateTime(detail.user?.bannedAt)}`
+        : "正常"
+    },
     { title: "首条消息时间", meta: formatDateTime(detail.messageStats?.firstMessageAt) },
     { title: "最后消息时间", meta: formatDateTime(detail.messageStats?.lastMessageAt) }
   ];
   elements.identityList.innerHTML = rows
-    .map(
-      (row) => `
-        <article class="detail-item">
-          <strong>${escapeHtml(row.title)}</strong>
-          <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
-        </article>
-      `
-    )
+    .map((row) => `
+      <article class="detail-item">
+        <strong>${escapeHtml(row.title)}</strong>
+        <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
+      </article>
+    `)
     .join("");
 }
 
@@ -211,21 +187,18 @@ function renderCrypto(detail) {
 
 function renderSessions(detail) {
   const sessions = detail.sessions || [];
-  const items = sessions.length > 0
+  elements.sessionList.innerHTML = sessions.length > 0
     ? sessions
-        .map(
-          (sessionItem) => `
-            <article class="detail-item">
-              <strong>活跃会话</strong>
-              <div class="detail-item-meta">创建 ${escapeHtml(formatDateTime(sessionItem.createdAt))}</div>
-              <div class="detail-item-meta">最近活动 ${escapeHtml(formatDateTime(sessionItem.lastSeenAt))}</div>
-              <div class="detail-item-meta">过期时间 ${escapeHtml(formatDateTime(sessionItem.expiresAt))}</div>
-            </article>
-          `
-        )
+        .map((sessionItem) => `
+          <article class="detail-item">
+            <strong>活跃会话</strong>
+            <div class="detail-item-meta">创建时间 ${escapeHtml(formatDateTime(sessionItem.createdAt))}</div>
+            <div class="detail-item-meta">最近活动 ${escapeHtml(formatDateTime(sessionItem.lastSeenAt))}</div>
+            <div class="detail-item-meta">过期时间 ${escapeHtml(formatDateTime(sessionItem.expiresAt))}</div>
+          </article>
+        `)
         .join("")
     : `<article class="empty-state">当前没有活跃会话</article>`;
-  elements.sessionList.innerHTML = items;
 }
 
 function renderAccess(detail) {
@@ -233,7 +206,7 @@ function renderAccess(detail) {
   const logs = detail.access?.recentLogs || [];
   elements.accessBadge.textContent = `最近 ${logs.length} 条日志`;
   if (!profile) {
-    elements.accessProfileList.innerHTML = `<article class="empty-state">没有该用户的访问日志，兼容老数据为空显示。</article>`;
+    elements.accessProfileList.innerHTML = `<article class="empty-state">没有该用户的访问日志，兼容老数据时这里会为空。</article>`;
   } else {
     const rows = [
       { title: "首次访问", meta: formatDateTime(profile.firstVisitAt) },
@@ -250,14 +223,12 @@ function renderAccess(detail) {
       }
     ];
     elements.accessProfileList.innerHTML = rows
-      .map(
-        (row) => `
-          <article class="detail-item">
-            <strong>${escapeHtml(row.title)}</strong>
-            <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
-          </article>
-        `
-      )
+      .map((row) => `
+        <article class="detail-item">
+          <strong>${escapeHtml(row.title)}</strong>
+          <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
+        </article>
+      `)
       .join("");
   }
 
@@ -266,15 +237,13 @@ function renderAccess(detail) {
     return;
   }
   elements.accessLogsList.innerHTML = logs
-    .map(
-      (row) => `
-        <article class="detail-item">
-          <strong>${escapeHtml(`${row.method || "GET"} ${row.path || "/"}`)}</strong>
-          <div class="detail-item-meta">${escapeHtml(formatDateTime(row.createdAt))}</div>
-          <div class="detail-item-meta">${escapeHtml(`${row.ip || "-"} · ${row.browser || "-"} · ${row.os || "-"}`)}</div>
-        </article>
-      `
-    )
+    .map((row) => `
+      <article class="detail-item">
+        <strong>${escapeHtml(`${row.method || "GET"} ${row.path || "/"}`)}</strong>
+        <div class="detail-item-meta">${escapeHtml(formatDateTime(row.createdAt))}</div>
+        <div class="detail-item-meta">${escapeHtml(`${row.ip || "-"} · ${row.browser || "-"} · ${row.os || "-"}`)}</div>
+      </article>
+    `)
     .join("");
 }
 
@@ -285,16 +254,14 @@ function renderConversations(detail) {
     return;
   }
   elements.conversationList.innerHTML = rows
-    .map(
-      (row) => `
-        <article class="detail-item">
-          <strong>${escapeHtml(row.username)}</strong>
-          <div class="detail-item-meta">${escapeHtml(`${row.online ? "在线" : "离线"} · 总消息 ${row.totalMessages || 0}`)}</div>
-          <div class="detail-item-meta">${escapeHtml(`发送 ${row.sentMessages || 0} / 接收 ${row.receivedMessages || 0}`)}</div>
-          <div class="detail-item-meta">${escapeHtml(`最后互动 ${formatDateTime(row.lastAt)}`)}</div>
-        </article>
-      `
-    )
+    .map((row) => `
+      <article class="detail-item">
+        <strong>${escapeHtml(row.username)}</strong>
+        <div class="detail-item-meta">${escapeHtml(`${row.online ? "在线" : "离线"} · 总消息 ${row.totalMessages || 0}`)}</div>
+        <div class="detail-item-meta">${escapeHtml(`发送 ${row.sentMessages || 0} / 接收 ${row.receivedMessages || 0}`)}</div>
+        <div class="detail-item-meta">${escapeHtml(`最后互动 ${formatDateTime(row.lastAt)}`)}</div>
+      </article>
+    `)
     .join("");
 }
 
@@ -312,9 +279,9 @@ function renderMessages(detail) {
           ? `历史明文：${message.text}`
           : `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
       return `
-<article class="msg-item">
-<div class="msg-meta">
-<span>${escapeHtml(`${message.direction === "sent" ? "发给" : "收到自"} ${message.peer}`)}</span>
+        <article class="msg-item">
+          <div class="msg-meta">
+            <span>${escapeHtml(`${message.direction === "sent" ? "发送给" : "收到自"} ${message.peer}`)}</span>
             <span>${escapeHtml(formatDateTime(message.createdAt))}</span>
           </div>
           <div class="msg-text">${escapeHtml(text)}</div>
@@ -331,17 +298,15 @@ function renderAudit(detail) {
     return;
   }
   elements.auditList.innerHTML = rows
-    .map(
-      (item) => `
-        <article class="msg-item">
-          <div class="msg-meta">
-            <span>${escapeHtml(item.action || "-")}</span>
-            <span>${escapeHtml(formatDateTime(item.at))}</span>
-          </div>
-          <div class="msg-text">${escapeHtml(JSON.stringify(item.details || {}, null, 2))}</div>
-        </article>
-      `
-    )
+    .map((item) => `
+      <article class="msg-item">
+        <div class="msg-meta">
+          <span>${escapeHtml(item.action || "-")}</span>
+          <span>${escapeHtml(formatDateTime(item.at))}</span>
+        </div>
+        <div class="msg-text">${escapeHtml(JSON.stringify(item.details || {}, null, 2))}</div>
+      </article>
+    `)
     .join("");
 }
 
@@ -350,15 +315,15 @@ function renderDetail(detail) {
   const subtitle = detail.user?.banned
     ? `该账号已封禁，原因：${detail.user?.bannedReason || "无原因"}`
     : detail.user?.online
-      ? "账号当前在线，可在此集中查看状态与历史。"
-      : "账号当前离线，可在此集中查看状态与历史。";
+      ? "账号当前在线，可在这里查看状态、设备和历史。"
+      : "账号当前离线，可在这里查看状态、设备和历史。";
   document.title = `${detail.user?.username || "用户"} · 用户详情`;
-  elements.title.textContent = `${detail.user?.username || "用户"} 的档案页`;
+  elements.title.textContent = `${detail.user?.username || "用户"} 的详情`;
   elements.subtitle.textContent = subtitle;
   elements.username.textContent = detail.user?.username || "-";
   elements.usernameKey.textContent = detail.user?.usernameKey || "-";
   elements.avatar.textContent = String(detail.user?.username || "?").slice(0, 1).toUpperCase();
-  elements.actionStatusBadge.textContent = detail.user?.banned ? "封禁中" : detail.user?.online ? "在线" : "离线";
+  elements.actionStatusBadge.textContent = detail.user?.banned ? "已封禁" : detail.user?.online ? "在线" : "离线";
   elements.banToggleButton.textContent = detail.user?.banned ? "解除封禁" : "执行封禁";
   elements.backToUsersLink.href = adminUsersHref();
   elements.renameInput.value = detail.user?.username || "";
@@ -407,9 +372,8 @@ async function logout() {
   try {
     await api("/api/admin/logout", { method: "POST" });
   } catch (error) {
-    // ignore
+    // Ignore logout errors and return to the admin list.
   }
-  persistAdminToken("");
   window.location.href = adminUsersHref();
 }
 
@@ -486,7 +450,6 @@ function bindEvents() {
 
 async function boot() {
   bindEvents();
-  state.token = readStoredAdminToken();
   state.username = parseUsernameFromQuery();
   if (!state.username) {
     elements.subtitle.textContent = "URL 中缺少 username 参数";

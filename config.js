@@ -1,7 +1,7 @@
 "use strict";
 
 // Centralized runtime configuration. All values are derived from environment
-// variables (or sensible defaults) at process start, exactly as before — this
+// variables (or sensible defaults) at process start, exactly as before; this
 // module only relocates the constants out of server.js without changing them.
 
 const path = require("node:path");

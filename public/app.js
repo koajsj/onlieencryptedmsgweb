@@ -3670,6 +3670,43 @@ function applyReceiptUpdate(peer, messageIds, kind, timestamp) {
   }
 }
 
+function applyConversationReadUpdate(peer, messageIds, timestamp) {
+  const cache = state.messageCache.get(peer);
+  const idSet = new Set(Array.isArray(messageIds) ? messageIds : []);
+  const stamp = Number(timestamp) || Date.now();
+  let changed = false;
+  if (cache) {
+    for (const message of cache) {
+      if (message.mine) {
+        continue;
+      }
+      if (idSet.size > 0 && !idSet.has(message.id)) {
+        continue;
+      }
+      if (!message.readAt) {
+        message.readAt = stamp;
+        changed = true;
+      }
+      if (!message.deliveredAt) {
+        message.deliveredAt = stamp;
+        changed = true;
+      }
+    }
+  }
+  const conversation = getConversation(peer);
+  if (conversation && conversation.unread !== 0) {
+    conversation.unread = 0;
+    changed = true;
+  }
+  if (!changed) {
+    return;
+  }
+  renderSidebar();
+  if (state.activePeer === peer) {
+    renderThread({ scrollBehavior: "preserve" });
+  }
+}
+
 async function markConversationRead(peer) {
   if (!peer || !state.token) {
     return;
@@ -3760,6 +3797,11 @@ async function openEventStream() {
   source.addEventListener("message-read", (event) => {
     const payload = JSON.parse(event.data);
     applyReceiptUpdate(payload.peer, payload.messageIds, "read", payload.readAt);
+  });
+
+  source.addEventListener("conversation-read", (event) => {
+    const payload = JSON.parse(event.data);
+    applyConversationReadUpdate(payload.peer, payload.messageIds, payload.readAt);
   });
 
   source.addEventListener("contact-blocked", () => {
@@ -4916,20 +4958,25 @@ function bindEvents() {
       return;
     }
     try {
-      await api("/api/me/password", {
+      const payload = await api("/api/me/password", {
         method: "POST",
         body: {
           currentPassword: currentPw,
           newPassword: newPw
         }
       });
+      if (payload?.token) {
+        persistSessionAuthToken(payload.token);
+      }
+      closeEventStream();
+      startEventStream(true);
       const currentPwInput = document.querySelector("#currentPasswordInput");
       const newPwInput = document.querySelector("#newPasswordInput");
       const confirmPwInput = document.querySelector("#confirmPasswordInput");
       if (currentPwInput) currentPwInput.value = "";
       if (newPwInput) newPwInput.value = "";
       if (confirmPwInput) confirmPwInput.value = "";
-      showToast("密码已更新");
+      showToast("密码已更新，其余设备已退出");
     } catch (error) {
       showToast(error.message || "密码修改失败", "error");
     }

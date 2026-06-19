@@ -399,6 +399,10 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.equal(keyBundle.response.status, 200);
     assert.equal(keyBundle.json.user.username, "Alice_1");
     assert.deepEqual(keyBundle.json.keyBundle, SAMPLE_BUNDLES.Alice_1);
+
+    const emptySearch = await getJson(server.port, "/api/users?q=", loginBody.token);
+    assert.equal(emptySearch.response.status, 200);
+    assert.deepEqual(emptySearch.json.users, []);
   } finally {
     await server.stop();
   }
@@ -680,6 +684,55 @@ test("session expires and is rejected after ttl", async () => {
   }
 });
 
+test("password change revokes old sessions, rotates the current token and refreshes the cookie", async () => {
+  const server = await startServer();
+  try {
+    const register = await postJsonAndRead(server.port, "/api/register", {
+      username: "RotateMe",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 91).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 92).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 93).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 94).toString("base64")
+    });
+    const oldToken = register.json.token;
+
+    const changed = await postJsonAndRead(server.port, "/api/me/password", {
+      currentPassword: "hello123",
+      newPassword: "hello456"
+    }, oldToken);
+    assert.equal(changed.response.status, 200);
+    assert.ok(changed.json.token);
+    assert.notEqual(changed.json.token, oldToken);
+    assert.match(String(changed.response.headers.get("set-cookie") || ""), /secure_chat_session=/);
+
+    const oldSession = await getJson(server.port, "/api/me", oldToken);
+    assert.equal(oldSession.response.status, 401);
+
+    const refreshedSession = await fetch(`http://127.0.0.1:${server.port}/api/me`, {
+      headers: {
+        Authorization: `Bearer ${changed.json.token}`
+      }
+    });
+    assert.equal(refreshedSession.status, 200);
+    assert.match(String(refreshedSession.headers.get("set-cookie") || ""), /secure_chat_session=/);
+
+    const oldPasswordLogin = await postJson(server.port, "/api/login", {
+      username: "RotateMe",
+      password: "hello123"
+    });
+    assert.equal(oldPasswordLogin.status, 401);
+
+    const newPasswordLogin = await postJson(server.port, "/api/login", {
+      username: "RotateMe",
+      password: "hello456"
+    });
+    assert.equal(newPasswordLogin.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("message recall persists across history reloads and rejects cross-origin requests", async () => {
   const server = await startServer();
 
@@ -860,6 +913,8 @@ test("read receipts clear server unread counts and persist for both sides", asyn
     });
     const leftToken = left.json.token;
     const rightToken = right.json.token;
+    const rightMirror = await openEvents(server.port, rightToken);
+    await rightMirror.ready;
     assert.equal((await postJson(server.port, "/api/messages", {
       to: "ReadRight",
       clientId: "read-receipt-1",
@@ -871,10 +926,17 @@ test("read receipts clear server unread counts and persist for both sides", asyn
     const marked = await postJsonAndRead(server.port, "/api/messages/read", { peer: "ReadLeft" }, rightToken);
     assert.equal(marked.response.status, 200);
     assert.equal(marked.json.count, 1);
+    const mirroredRead = await waitForEvent(
+      rightMirror,
+      "conversation-read",
+      (payload) => payload.peer === "ReadLeft" && Array.isArray(payload.messageIds) && payload.messageIds.length === 1
+    );
+    assert.ok(mirroredRead.readAt > 0);
     const cleared = await getJson(server.port, "/api/conversations", rightToken);
     assert.equal(cleared.json.conversations[0].unread, 0);
     const senderHistory = await getJson(server.port, "/api/messages?with=ReadRight", leftToken);
     assert.ok(senderHistory.json.messages[0].readAt > 0);
+    rightMirror.close();
   } finally {
     await server.stop();
   }

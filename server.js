@@ -686,8 +686,8 @@ function listContactsFor(ownerUsername) {
     .filter((peerUser) => Number(contactEntryFor(owner, peerUser.username)?.removedAt || 0) === 0)
     .map((peerUser) => publicContactView(ownerUsername, peerUser))
     .sort((left, right) => {
-      const leftPinned = Number(Boolean(left.note));
-      const rightPinned = Number(Boolean(right.note));
+      const leftPinned = Number(Boolean(left.pinned));
+      const rightPinned = Number(Boolean(right.pinned));
       if (rightPinned !== leftPinned) {
         return rightPinned - leftPinned;
       }
@@ -899,6 +899,7 @@ function requireSession(req, res, url) {
   }
   session.lastSeenAt = now;
   session.expiresAt = now + SESSION_TTL_MS;
+  req.pendingSessionCookie = sessionCookieHeader(sessionCookieNameForPath(url.pathname), session.token);
   return session;
 }
 
@@ -1242,6 +1243,7 @@ async function buildAdminUserDetail(user) {
 }
 
 function adminDashboardSnapshot(session, req) {
+  const basicStats = adminBasicStats();
   const auditEntries = readRecentAdminAuditEntries(200);
   const recentLogins = auditEntries
     .filter((entry) => entry.action === "admin_login" || entry.action === "user_login")
@@ -1273,8 +1275,8 @@ function adminDashboardSnapshot(session, req) {
     }));
   const health = adminHealthSnapshot();
   return {
-    userTotal: users.length,
-    activeUsers: listOnlineUsers().length,
+    userTotal: basicStats.users,
+    activeUsers: basicStats.activeUsers,
     currentAdmin: {
       username: session.username,
       role: session.role
@@ -2088,7 +2090,17 @@ async function handleMePassword(req, res, url) {
   }
   user.passwordHash = await hashPassword(nextPassword);
   persistUsers();
-  sendJson(res, 200, { ok: true });
+  const revoked = deleteSessionsForUsername(user.username, "user");
+  purgeUserEventTickets(user.username);
+  disconnectUserRealtime(user.username, "password updated");
+  const token = createSession(user.username, "user", req);
+  sendJson(res, 200, {
+    ok: true,
+    revoked,
+    token
+  }, {
+    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
+  });
 }
 
 function handleMeSessions(req, res, url) {
@@ -3043,6 +3055,10 @@ function handleUsers(req, res, url) {
     return;
   }
   const query = normalizeBoundedText(url.searchParams.get("q") || "", 64);
+  if (!query) {
+    sendJson(res, 200, { users: [] });
+    return;
+  }
   sendJson(res, 200, {
     users: listUsersForSearch(session.username, query)
   });
@@ -3392,6 +3408,7 @@ async function handleMarkRead(req, res, url) {
   if (messageIds.length > 0) {
     schedulePersistMessages();
     pushEventToUser(peer.username, "message-read", { peer: session.username, messageIds, readAt: now });
+    pushEventToUser(session.username, "conversation-read", { peer: peer.username, messageIds, readAt: now });
   }
 
   sendJson(res, 200, { ok: true, count: messageIds.length });
@@ -3558,6 +3575,24 @@ setInterval(cleanUserLoginFailures, USER_LOGIN_FAILURE_WINDOW_MS).unref();
 setInterval(purgeStoredMessagePlaintext, 60 * 60 * 1000).unref();
 
 const server = http.createServer((req, res) => {
+  const originalWriteHead = res.writeHead;
+  res.writeHead = function patchedWriteHead(statusCode, ...rest) {
+    const refreshCookie = req.pendingSessionCookie;
+    if (refreshCookie) {
+      const trailingHeaders = rest[rest.length - 1];
+      if (trailingHeaders && typeof trailingHeaders === "object" && !Array.isArray(trailingHeaders)) {
+        if (
+          !Object.prototype.hasOwnProperty.call(trailingHeaders, "Set-Cookie") &&
+          !Object.prototype.hasOwnProperty.call(trailingHeaders, "set-cookie")
+        ) {
+          trailingHeaders["Set-Cookie"] = refreshCookie;
+        }
+      } else if (!res.hasHeader("Set-Cookie")) {
+        res.setHeader("Set-Cookie", refreshCookie);
+      }
+    }
+    return originalWriteHead.call(this, statusCode, ...rest);
+  };
   if (String(req.url || "").length > 4096) {
     sendJson(res, 414, { error: "request url too long" });
     return;
