@@ -3801,4 +3801,9 @@ textarea::-webkit-scrollbar-thumb {
   .contact-panel-body {
     padding: 0 10px 10px;
   }
+
+  /* Lift the toast above the bottom nav bar and Safari's bottom toolbar/home indicator. */
+  .toast {
+    bottom: calc(84px + env(safe-area-inset-bottom));
+  }
 }

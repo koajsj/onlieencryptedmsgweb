@@ -70,9 +70,6 @@ const elements = {
   mobileBackButton: document.querySelector("#mobileBackButton"),
   pinPeerButton: document.querySelector("#pinPeerButton"),
   mutePeerButton: document.querySelector("#mutePeerButton"),
-  headerSearchButton: document.querySelector("#headerSearchButton"),
-  headerCallButton: document.querySelector("#headerCallButton"),
-  headerVideoButton: document.querySelector("#headerVideoButton"),
   headerDetailsButton: document.querySelector("#headerDetailsButton"),
   threadSearchInput: document.querySelector("#threadSearchInput"),
   threadSearchMeta: document.querySelector("#threadSearchMeta"),
@@ -198,7 +195,12 @@ const state = {
   settingsDialogSection: "account",
   contextMenuMessageId: "",
   previewMode: false,
-  workspaceLoading: false
+  workspaceLoading: false,
+  typingPeer: "",
+  typingHideTimer: 0,
+  typingSentAt: 0,
+  typingSelfPeer: "",
+  typingStopTimer: 0
 };
 
 if (elements.accountMenu && elements.accountMenu.parentElement !== document.body) {
@@ -592,9 +594,17 @@ function toggleAccountMenu(force, anchor = elements.accountMenuButton || element
 function setSettingsDialogSection(section) {
   const nextSection = section === "security" ? "security" : section === "other" ? "other" : "account";
   state.settingsDialogSection = nextSection;
-  elements.accountSettingsTab?.classList.toggle("is-active", nextSection === "account");
-  document.querySelector("#securitySettingsTab")?.classList.toggle("is-active", nextSection === "security");
-  document.querySelector("#otherSettingsTab")?.classList.toggle("is-active", nextSection === "other");
+  const settingsTabs = [
+    [elements.accountSettingsTab, "account"],
+    [document.querySelector("#securitySettingsTab"), "security"],
+    [document.querySelector("#otherSettingsTab"), "other"]
+  ];
+  for (const [tab, key] of settingsTabs) {
+    if (!tab) continue;
+    const active = nextSection === key;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
   if (elements.accountSettingsForm) {
     elements.accountSettingsForm.hidden = nextSection !== "account";
   }
@@ -921,6 +931,78 @@ function updateTypingIndicator(visible, peer) {
     }
   } else {
     elements.typingIndicator.hidden = true;
+  }
+}
+
+function sendTypingState(peer, typing) {
+  if (!peer || state.previewMode || state.connectionState !== "online") {
+    return;
+  }
+  void api("/api/messages/typing", { method: "POST", body: { to: peer, typing: Boolean(typing) } }).catch(() => {});
+}
+
+// Throttle "正在输入" pings to once per 3s and auto-send a stop after a 4s idle gap.
+function notifyTypingActivity() {
+  const peer = state.activePeer;
+  if (!peer) {
+    return;
+  }
+  const now = Date.now();
+  if (state.typingSelfPeer !== peer || now - state.typingSentAt > 3000) {
+    state.typingSelfPeer = peer;
+    state.typingSentAt = now;
+    sendTypingState(peer, true);
+  }
+  if (state.typingStopTimer) {
+    window.clearTimeout(state.typingStopTimer);
+  }
+  state.typingStopTimer = window.setTimeout(stopTypingSignal, 4000);
+}
+
+function stopTypingSignal() {
+  if (state.typingStopTimer) {
+    window.clearTimeout(state.typingStopTimer);
+    state.typingStopTimer = 0;
+  }
+  const peer = state.typingSelfPeer;
+  state.typingSelfPeer = "";
+  state.typingSentAt = 0;
+  if (peer) {
+    sendTypingState(peer, false);
+  }
+}
+
+function clearIncomingTyping() {
+  if (state.typingHideTimer) {
+    window.clearTimeout(state.typingHideTimer);
+    state.typingHideTimer = 0;
+  }
+  if (state.typingPeer) {
+    state.typingPeer = "";
+    updateTypingIndicator(false);
+  }
+}
+
+function handleIncomingTyping(payload) {
+  const peer = String(payload?.peer || "");
+  if (!peer || peer !== state.activePeer) {
+    return;
+  }
+  if (state.typingHideTimer) {
+    window.clearTimeout(state.typingHideTimer);
+    state.typingHideTimer = 0;
+  }
+  if (payload.typing) {
+    state.typingPeer = peer;
+    updateTypingIndicator(true, peer);
+    state.typingHideTimer = window.setTimeout(() => {
+      state.typingHideTimer = 0;
+      state.typingPeer = "";
+      updateTypingIndicator(false);
+    }, 6000);
+  } else {
+    state.typingPeer = "";
+    updateTypingIndicator(false);
   }
 }
 
@@ -1351,6 +1433,8 @@ function setAuthMode(mode) {
   localStorage.setItem(STORAGE.authMode, state.authMode);
   elements.loginTab.classList.toggle("is-active", state.authMode === "login");
   elements.registerTab.classList.toggle("is-active", state.authMode === "register");
+  elements.loginTab.setAttribute("aria-selected", state.authMode === "login" ? "true" : "false");
+  elements.registerTab.setAttribute("aria-selected", state.authMode === "register" ? "true" : "false");
   if (elements.authHeading) {
     elements.authHeading.textContent = state.authMode === "login" ? "登录私聊" : "创建加密账号";
   }
@@ -1660,6 +1744,13 @@ function closeEventStream() {
   state.manualEventSourceClose = false;
   state.reconnectAttempts = 0;
   state.connectionState = "offline";
+  if (state.typingStopTimer) {
+    window.clearTimeout(state.typingStopTimer);
+    state.typingStopTimer = 0;
+  }
+  state.typingSelfPeer = "";
+  state.typingSentAt = 0;
+  clearIncomingTyping();
 }
 
 function clearSession(showAuth = true, clearToken = true) {
@@ -2178,7 +2269,7 @@ function renderSidebar() {
     : [];
   elements.sidebarMeta.textContent = query
     ? `${mergedSearchRows.length} 条结果`
-    : `${visibleCount} 个会话`;
+    : `${visibleCount} ${contactsMode ? "位联系人" : "个会话"}`;
   elements.searchGroup.hidden = !query;
   if (elements.pinnedGroup) {
     elements.pinnedGroup.hidden = contactsMode || query || pinnedConversations.length === 0;
@@ -3282,6 +3373,10 @@ async function openConversation(username) {
   }
 
   const switchingPeer = Boolean(state.activePeer && state.activePeer !== username);
+  if (switchingPeer) {
+    stopTypingSignal();
+  }
+  clearIncomingTyping();
   closeEmojiPanel();
   hideMessageContextMenu();
   ensureConversationEntry(username);
@@ -3615,6 +3710,9 @@ async function ingestEncryptedMessage(message) {
   });
   rebuildConversationSearchIndex(peer);
 
+  if (!decrypted.mine && peer === state.activePeer) {
+    clearIncomingTyping();
+  }
   if (state.activePeer === peer) {
     const stickToBottom = message.mine || isNearBottom(elements.messageList);
     renderThread({ scrollBehavior: stickToBottom ? "bottom" : "preserve" });
@@ -3773,6 +3871,11 @@ async function openEventStream() {
   source.addEventListener("message", (event) => {
     const payload = JSON.parse(event.data);
     void ingestEncryptedMessage(payload);
+  });
+
+  source.addEventListener("typing", (event) => {
+    const payload = JSON.parse(event.data);
+    handleIncomingTyping(payload);
   });
 
   source.addEventListener("message-recalled", (event) => {
@@ -4043,6 +4146,7 @@ async function submitMessage(event) {
   const tempId = addPendingMessage(peer, text, replyTo);
   setDraftForPeer(peer, "");
   elements.messageInput.value = "";
+  stopTypingSignal();
   autoResizeComposer();
   closeEmojiPanel();
   if (elements.sendButton) {
@@ -4247,6 +4351,11 @@ function handleComposerInput() {
   autoResizeComposer();
   if (state.activePeer) {
     setDraftForPeer(state.activePeer, elements.messageInput.value);
+    if (elements.messageInput.value.trim()) {
+      notifyTypingActivity();
+    } else {
+      stopTypingSignal();
+    }
   }
 }
 
@@ -4447,15 +4556,9 @@ function setActiveNavSection(section) {
   state.activeNavSection = section === "contacts" ? "contacts" : "messages";
   elements.navMessagesButton?.classList.toggle("is-active", state.activeNavSection === "messages");
   elements.navContactsButton?.classList.toggle("is-active", state.activeNavSection === "contacts");
+  elements.navMessagesButton?.setAttribute("aria-selected", state.activeNavSection === "messages" ? "true" : "false");
+  elements.navContactsButton?.setAttribute("aria-selected", state.activeNavSection === "contacts" ? "true" : "false");
   renderSidebar();
-}
-
-function focusThreadSearch() {
-  if (!elements.threadSearchInput) {
-    return;
-  }
-  elements.threadSearchInput.focus();
-  elements.threadSearchInput.select();
 }
 
 function handlePresenceAction(kind) {
@@ -4682,7 +4785,6 @@ function bindEvents() {
       showToast(error.message || "添加好友失败", "error");
     }
   });
-  elements.headerSearchButton?.addEventListener("click", focusThreadSearch);
   elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
   elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
   elements.detailsCollapseButton?.addEventListener("click", () => {
@@ -4862,6 +4964,9 @@ function bindEvents() {
       event.preventDefault();
       elements.composerForm.requestSubmit();
     }
+  });
+  elements.messageInput.addEventListener("blur", () => {
+    stopTypingSignal();
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
