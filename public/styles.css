@@ -1289,7 +1289,6 @@ img {
 .nav-button,
 .list-item,
 .detail-action,
-.sidebar-profile-button,
 .send-button,
 .emoji-chip,
 .icon-button,
@@ -1312,7 +1311,6 @@ img {
 }
 
 .user-chip-button:hover,
-.sidebar-profile-button:hover,
 .send-button:hover,
 .detail-action:hover,
 .icon-button:hover,
@@ -1362,40 +1360,6 @@ img {
 
 .nav-button:hover {
   transform: translateY(-2px);
-}
-
-.sidebar-profile-button {
-  margin-top: auto;
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 12px;
-  border-radius: 20px;
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.78);
-  position: relative;
-  z-index: 9;
-}
-
-.sidebar-profile-avatar {
-  width: 42px;
-  height: 42px;
-}
-
-.sidebar-profile-copy {
-  display: grid;
-  justify-items: start;
-  gap: 2px;
-}
-
-.sidebar-profile-copy strong {
-  font-size: 14px;
-}
-
-.sidebar-profile-copy span {
-  font-size: 12px;
-  color: var(--text-muted);
 }
 
 .list-item {
@@ -1760,29 +1724,6 @@ img {
   z-index: 120;
 }
 
-.sidebar-profile-button {
-  grid-template-columns: 1fr;
-  justify-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 14px 10px 12px;
-  text-align: center;
-}
-
-.sidebar-profile-copy {
-  width: 100%;
-  justify-items: center;
-  min-width: 0;
-}
-
-.sidebar-profile-copy strong,
-.sidebar-profile-copy span {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .message-body {
   width: fit-content;
   max-width: min(78%, 620px);
@@ -1983,7 +1924,6 @@ body.is-dialog-open {
 .ghost-button,
 .icon-button,
 .send-button,
-.sidebar-profile-button,
 .detail-action {
   min-height: var(--touch-target);
 }
@@ -2286,25 +2226,6 @@ body.is-dialog-open {
   .nav-button.is-active span,
   .nav-button.is-active svg {
     color: #ffffff;
-  }
-
-  .sidebar-profile-button {
-    width: 36px;
-    min-width: 36px;
-    height: 36px;
-    padding: 0;
-    border-radius: 12px;
-    grid-template-columns: 1fr;
-    justify-items: center;
-  }
-
-  .sidebar-profile-copy {
-    display: none;
-  }
-
-  .sidebar-profile-avatar {
-    width: 28px;
-    height: 28px;
   }
 
   .sidebar,
@@ -2885,17 +2806,6 @@ body.is-dialog-open {
     padding: 14px 10px;
   }
 
-  .sidebar-profile-button {
-    width: 100%;
-    min-width: 0;
-    height: auto;
-    padding: 12px 10px 10px;
-  }
-
-  .sidebar-profile-copy {
-    display: grid;
-  }
-
   .contact-panel {
     position: fixed;
     top: 112px;
@@ -3361,7 +3271,6 @@ body {
 .avatar-tone-3,
 .avatar-tone-4,
 .avatar-tone-5,
-.sidebar-profile-avatar,
 .avatar-pick {
   border: 1px solid rgba(17, 17, 17, 0.08);
   background: linear-gradient(180deg, #fafaf8, #e8e8e4) !important;

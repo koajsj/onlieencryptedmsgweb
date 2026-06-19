@@ -41,10 +41,6 @@ const elements = {
   settingsButton: document.querySelector("#settingsButton"),
   navMessagesButton: document.querySelector("#navMessagesButton"),
   navContactsButton: document.querySelector("#navContactsButton"),
-  sidebarProfileButton: document.querySelector("#sidebarProfileButton"),
-  sidebarProfileAvatar: document.querySelector("#sidebarProfileAvatar"),
-  sidebarProfileName: document.querySelector("#sidebarProfileName"),
-  sidebarProfileStatus: document.querySelector("#sidebarProfileStatus"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
   accountMenu: document.querySelector("#accountMenu"),
   editAccountButton: document.querySelector("#editAccountButton"),
@@ -520,7 +516,6 @@ function clearNotificationBadge() {
 function setAccountMenuExpanded(expanded) {
   const value = expanded ? "true" : "false";
   elements.accountMenuButton?.setAttribute("aria-expanded", value);
-  elements.sidebarProfileButton?.setAttribute("aria-expanded", value);
 }
 
 function isElementNode(value) {
@@ -533,7 +528,6 @@ function isAccountMenuEventTarget(target) {
   }
   return Boolean(
     target.closest(".account-menu-wrap") ||
-    target.closest("#sidebarProfileButton") ||
     target.closest("#accountMenu")
   );
 }
@@ -549,10 +543,6 @@ function positionFloatingMenu(menu, anchor) {
   const viewportGap = 12;
   let left = rect.right - menuWidth;
   let top = rect.bottom + gap;
-
-  if (anchor === elements.sidebarProfileButton) {
-    left = rect.left;
-  }
 
   if (left < viewportGap) {
     left = rect.left;
@@ -579,9 +569,9 @@ function closeAccountMenu() {
   }
 }
 
-function toggleAccountMenu(force, anchor = elements.accountMenuButton || elements.sidebarProfileButton) {
+function toggleAccountMenu(force, anchor = elements.accountMenuButton) {
   state.accountMenuOpen = typeof force === "boolean" ? force : !state.accountMenuOpen;
-  state.accountMenuAnchor = state.accountMenuOpen ? (anchor || elements.accountMenuButton || elements.sidebarProfileButton) : null;
+  state.accountMenuAnchor = state.accountMenuOpen ? (anchor || elements.accountMenuButton) : null;
   setAccountMenuExpanded(state.accountMenuOpen);
   if (elements.accountMenu) {
     elements.accountMenu.hidden = !state.accountMenuOpen;
@@ -872,15 +862,6 @@ function updateWorkspaceStatus() {
       elements.meUsername.textContent = "未登录";
     }
     elements.meStatus.textContent = "\u7b49\u5f85\u767b\u5f55";
-    if (elements.sidebarProfileAvatar) {
-      setAvatar(elements.sidebarProfileAvatar, "Echo");
-    }
-    if (elements.sidebarProfileName) {
-      elements.sidebarProfileName.textContent = "Echo";
-    }
-    if (elements.sidebarProfileStatus) {
-      elements.sidebarProfileStatus.textContent = "\u70b9\u51fb\u767b\u5f55";
-    }
     updateMeStatusDot("offline");
     return;
   }
@@ -892,15 +873,6 @@ function updateWorkspaceStatus() {
     elements.meUsername.textContent = displayName;
   }
   elements.meStatus.textContent = `${profileStatus || connectionStatusLabel()} \u00b7 \u5df2\u52a0\u5bc6${pendingSuffix}`;
-  if (elements.sidebarProfileAvatar) {
-    setAvatar(elements.sidebarProfileAvatar, state.me.username);
-  }
-  if (elements.sidebarProfileName) {
-    elements.sidebarProfileName.textContent = displayName;
-  }
-  if (elements.sidebarProfileStatus) {
-    elements.sidebarProfileStatus.textContent = profileStatus || connectionStatusLabel();
-  }
   updateMeStatusDot(state.connectionState);
 }
 
@@ -4708,9 +4680,6 @@ function bindEvents() {
   elements.logoutMenuButton?.addEventListener("click", () => {
     closeAccountMenu();
     void logout();
-  });
-  elements.sidebarProfileButton?.addEventListener("click", () => {
-    toggleAccountMenu(undefined, elements.sidebarProfileButton);
   });
   elements.navMessagesButton?.addEventListener("click", () => setActiveNavSection("messages"));
   elements.navContactsButton?.addEventListener("click", () => setActiveNavSection("contacts"));
