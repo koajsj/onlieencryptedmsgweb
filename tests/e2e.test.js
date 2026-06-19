@@ -1906,3 +1906,112 @@ test("admin audit log uses HMAC and the chain verifies on startup", async () => 
     await verifyServer.stop();
   }
 });
+
+test("typing signal relays to the peer over SSE and is gated by blocks", async () => {
+  const server = await startServer();
+
+  try {
+    const aliceToken = (await postJsonAndRead(server.port, "/api/register", {
+      username: "TypeA",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 71).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 72).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 73).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 74).toString("base64")
+    })).json.token;
+    const bobToken = (await postJsonAndRead(server.port, "/api/register", {
+      username: "TypeB",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 75).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 76).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 77).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 78).toString("base64")
+    })).json.token;
+
+    const bobEvents = await openEvents(server.port, bobToken);
+    await bobEvents.ready;
+
+    const typing = await postJson(server.port, "/api/messages/typing", { to: "TypeB", typing: true }, aliceToken);
+    assert.equal(typing.status, 200);
+    const typingEvent = await waitForEvent(bobEvents, "typing", (data) => data.peer === "TypeA");
+    assert.equal(typingEvent.typing, true);
+
+    const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/TypeA/block`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bobToken}` },
+      body: JSON.stringify({ blocked: true })
+    });
+    assert.equal(block.status, 200);
+
+    const baselineTypingEvents = bobEvents.events.filter((event) => event.event === "typing").length;
+    const blockedTyping = await postJson(server.port, "/api/messages/typing", { to: "TypeB", typing: true }, aliceToken);
+    assert.equal(blockedTyping.status, 200);
+    await delay(200);
+    const afterTypingEvents = bobEvents.events.filter((event) => event.event === "typing").length;
+    assert.equal(afterTypingEvents, baselineTypingEvents);
+
+    bobEvents.close();
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin rename keeps an existing block from being bypassed", async () => {
+  const server = await startServer();
+
+  try {
+    const blockerToken = (await postJsonAndRead(server.port, "/api/register", {
+      username: "BlockOwner",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 81).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 82).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 83).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 84).toString("base64")
+    })).json.token;
+    const targetToken = (await postJsonAndRead(server.port, "/api/register", {
+      username: "BlockTarget",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 85).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 86).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 87).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 88).toString("base64")
+    })).json.token;
+
+    const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/BlockTarget/block`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${blockerToken}` },
+      body: JSON.stringify({ blocked: true })
+    });
+    assert.equal(block.status, 200);
+
+    const adminToken = (await postJsonAndRead(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    })).json.token;
+
+    const rename = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/BlockTarget`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ username: "BlockTargetRenamed" })
+    });
+    assert.equal(rename.status, 200);
+
+    // After the rename the block list must reference the new name, so the renamed
+    // user still cannot message the person who blocked them.
+    const blockedSend = await postJson(
+      server.port,
+      "/api/messages",
+      { to: "BlockOwner", ...makeEncryptedPayload(89) },
+      targetToken
+    );
+    assert.equal(blockedSend.status, 403);
+    assert.equal((await blockedSend.json()).error, "blocked by peer");
+
+    const ownerContacts = await getJson(server.port, "/api/contacts", blockerToken);
+    const renamedContact = ownerContacts.json.contacts.find((contact) => contact.username === "BlockTargetRenamed");
+    assert.ok(renamedContact);
+    assert.equal(renamedContact.blocked, true);
+  } finally {
+    await server.stop();
+  }
+});

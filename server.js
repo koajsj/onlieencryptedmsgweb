@@ -2752,6 +2752,23 @@ async function handleAdminUserPatch(req, res, url, pathname) {
       }
     }
     rebuildMessageBuckets();
+    // Re-point other users' block lists and contact entries at the new username so a
+    // rename can't be used to slip past an existing block or orphan saved contacts.
+    for (const otherUser of users) {
+      if (otherUser === user) {
+        continue;
+      }
+      if (Array.isArray(otherUser.blockedUsers) && otherUser.blockedUsers.includes(previousUsername)) {
+        otherUser.blockedUsers = [
+          ...new Set(otherUser.blockedUsers.map((name) => (name === previousUsername ? user.username : name)))
+        ];
+      }
+      if (otherUser.contacts && typeof otherUser.contacts === "object" && otherUser.contacts[previousUsername]) {
+        const movedEntry = otherUser.contacts[previousUsername];
+        delete otherUser.contacts[previousUsername];
+        otherUser.contacts[user.username] = otherUser.contacts[user.username] || movedEntry;
+      }
+    }
     for (const sessionRecord of sessions.values()) {
       if (sessionRecord.role === "user" && sessionRecord.username === previousUsername) {
         sessionRecord.username = user.username;
@@ -3414,6 +3431,45 @@ async function handleMarkRead(req, res, url) {
   sendJson(res, 200, { ok: true, count: messageIds.length });
 }
 
+async function handleTypingSignal(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:typing:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  const peer = findUserByUsername(body.to);
+  // Typing is best-effort and ephemeral; always answer 200 so a caller can't probe
+  // block/online state, but only forward the signal when neither side is blocked.
+  if (peer && peer.username !== session.username && !peer.banned) {
+    const senderUser = findUserByUsername(session.username);
+    if (!isUserBlocked(senderUser, peer.username) && !isUserBlocked(peer, session.username)) {
+      pushEventToUser(peer.username, "typing", {
+        peer: session.username,
+        typing: Boolean(body.typing)
+      });
+    }
+  }
+  sendJson(res, 200, { ok: true });
+}
+
 function handleCreateEventTicket(req, res, url) {
   const session = requireSession(req, res, url);
   if (!session) {
@@ -3783,6 +3839,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && pathname === "/api/messages/read") {
     void handleMarkRead(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/messages/typing") {
+    void handleTypingSignal(req, res, url);
     return;
   }
   if (req.method === "POST" && pathname === "/api/events/token") {
