@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#e6ece6" />
+    <meta name="theme-color" content="#f4f5f2" />
     <meta name="color-scheme" content="light" />
     <title>用户详情</title>
-    <link rel="stylesheet" href="./admin.min.css?v=23825d963f" />
-    <link rel="stylesheet" href="./admin-user.min.css?v=eae4b6bc67" />
+    <link rel="stylesheet" href="./admin.min.css?v=dde5e85326" />
+    <link rel="stylesheet" href="./admin-user.min.css?v=3dc7781179" />
   </head>
   <body>
     <main class="admin-root user-detail-root">
@@ -37,7 +37,7 @@
         <div class="main-stage">
           <header class="topbar user-hero">
             <div class="topbar-copy">
-              <div class="user-hero-kicker">Focused Profile</div>
+              <div class="user-hero-kicker">用户档案</div>
               <h1 id="detailTitle">用户详情</h1>
               <p id="detailSubtitle">读取用户档案中...</p>
             </div>
@@ -136,7 +136,7 @@
       </section>
     </main>
 
-    <div class="toast" id="detailToast"></div>
+    <div class="toast" id="detailToast" role="status" aria-live="polite"></div>
     <script src="./admin-user.min.js?v=7ab422b9e4" defer></script>
   </body>
 </html>

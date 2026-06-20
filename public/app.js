@@ -27,11 +27,13 @@ const elements = {
   authScreen: document.querySelector("#authScreen"),
   workspace: document.querySelector("#workspace"),
   authHeading: document.querySelector("#authHeading"),
+  authModeDescription: document.querySelector("#authModeDescription"),
   loginTab: document.querySelector("#loginTab"),
   registerTab: document.querySelector("#registerTab"),
   authForm: document.querySelector("#authForm"),
   authUsernameInput: document.querySelector("#authUsernameInput"),
   authPasswordInput: document.querySelector("#authPasswordInput"),
+  passwordVisibilityButton: document.querySelector("#passwordVisibilityButton"),
   authSubmitButton: document.querySelector("#authSubmitButton"),
   authTip: document.querySelector("#authTip"),
   emptySearchButton: document.querySelector("#emptySearchButton"),
@@ -1407,8 +1409,16 @@ function setAuthMode(mode) {
   elements.registerTab.classList.toggle("is-active", state.authMode === "register");
   elements.loginTab.setAttribute("aria-selected", state.authMode === "login" ? "true" : "false");
   elements.registerTab.setAttribute("aria-selected", state.authMode === "register" ? "true" : "false");
+  elements.loginTab.tabIndex = state.authMode === "login" ? 0 : -1;
+  elements.registerTab.tabIndex = state.authMode === "register" ? 0 : -1;
+  elements.authForm.setAttribute("aria-labelledby", state.authMode === "login" ? "loginTab" : "registerTab");
   if (elements.authHeading) {
     elements.authHeading.textContent = state.authMode === "login" ? "登录私聊" : "创建加密账号";
+  }
+  if (elements.authModeDescription) {
+    elements.authModeDescription.textContent = state.authMode === "login"
+      ? "使用你的 Echo 账号继续会话。"
+      : "创建账号后即可开始端到端加密会话。";
   }
   elements.authSubmitButton.textContent = state.authMode === "login" ? "登录" : "注册";
   setAuthFeedback(
@@ -1417,6 +1427,25 @@ function setAuthMode(mode) {
       : "注册后自动生成本地密钥，服务端只保存必要的账号资料。"
   );
   elements.authPasswordInput.autocomplete = state.authMode === "login" ? "current-password" : "new-password";
+  setPasswordVisibility(false);
+}
+
+function setPasswordVisibility(visible) {
+  elements.authPasswordInput.type = visible ? "text" : "password";
+  elements.passwordVisibilityButton?.setAttribute("aria-pressed", visible ? "true" : "false");
+  if (elements.passwordVisibilityButton) {
+    elements.passwordVisibilityButton.textContent = visible ? "隐藏" : "显示";
+  }
+}
+
+function handleAuthTabKeydown(event) {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+    return;
+  }
+  event.preventDefault();
+  const nextMode = event.key === "Home" || event.key === "ArrowLeft" ? "login" : "register";
+  setAuthMode(nextMode);
+  (nextMode === "login" ? elements.loginTab : elements.registerTab).focus();
 }
 
 function setAuthFeedback(message, isError = false) {
@@ -1528,9 +1557,19 @@ function isNearBottom(node, threshold = 120) {
 
 function estimateMessageHeight(message) {
   const text = String(message?.text || "");
+  const attachment = message?.recalled ? null : parseAttachmentMessage(text);
   const charactersPerLine = message?.mine ? 38 : 34;
   const lineCount = Math.max(1, Math.ceil(Math.max(text.length, 1) / charactersPerLine));
   let height = message?.mine ? 88 : 106;
+  if (message?.replyTo) {
+    height += 44;
+  }
+  if (message?.recalled) {
+    height -= 12;
+  }
+  if (attachment) {
+    height += attachment.isImage ? 180 : 72;
+  }
   height += (lineCount - 1) * 18;
   if (message?.pending || message?.failed) {
     height += 10;
@@ -1593,6 +1632,7 @@ function scheduleResponsiveRender() {
   }
   state.resizeRenderRaf = window.requestAnimationFrame(() => {
     state.resizeRenderRaf = 0;
+    syncViewportHeight();
     render();
   });
 }
@@ -1974,6 +2014,14 @@ function setDetailsPanelOpen(force) {
     state.detailsPanelCollapsed = false;
   }
   syncLayoutState();
+}
+
+function syncViewportHeight() {
+  const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+  if (!viewportHeight) {
+    return;
+  }
+  document.documentElement.style.setProperty("--app-vh", `${Math.round(viewportHeight)}px`);
 }
 
 function renderSimpleDetailRow(title, meta, actionLabel = "", action = "") {
@@ -3464,6 +3512,11 @@ function closeConversationOnMobile() {
   if (!isMobile()) {
     return;
   }
+  stopTypingSignal();
+  clearIncomingTyping();
+  closeEmojiPanel();
+  hideMessageContextMenu();
+  clearReplyTarget();
   state.activePeer = "";
   state.detailsPanelOpen = false;
   localStorage.removeItem(STORAGE.activePeer);
@@ -4389,12 +4442,23 @@ function previewAttachment(messageId) {
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
   overlay.innerHTML = `<button class="attachment-lightbox-close" type="button" aria-label="关闭预览">×</button><img src="data:${escapeHtml(attachment.type)};base64,${attachment.data}" alt="${escapeHtml(attachment.name)}" /><span>${escapeHtml(attachment.name)} · ${escapeHtml(formatBytes(attachment.size))}</span>`;
-  const close = () => overlay.remove();
+  const close = () => {
+    document.body.classList.remove("is-lightbox-open");
+    document.removeEventListener("keydown", handleKeydown);
+    overlay.remove();
+  };
+  const handleKeydown = (event) => {
+    if (event.key === "Escape") {
+      close();
+    }
+  };
   overlay.addEventListener("click", (event) => {
     if (event.target === overlay || event.target.closest(".attachment-lightbox-close")) {
       close();
     }
   });
+  document.body.classList.add("is-lightbox-open");
+  document.addEventListener("keydown", handleKeydown);
   document.body.append(overlay);
   overlay.querySelector(".attachment-lightbox-close")?.focus();
 }
@@ -4658,6 +4722,12 @@ function handleGlobalKeydown(event) {
 function bindEvents() {
   elements.loginTab.addEventListener("click", () => setAuthMode("login"));
   elements.registerTab.addEventListener("click", () => setAuthMode("register"));
+  elements.loginTab.addEventListener("keydown", handleAuthTabKeydown);
+  elements.registerTab.addEventListener("keydown", handleAuthTabKeydown);
+  elements.passwordVisibilityButton?.addEventListener("click", () => {
+    setPasswordVisibility(elements.authPasswordInput.type === "password");
+    elements.authPasswordInput.focus();
+  });
   elements.authForm.addEventListener("submit", (event) => {
     void submitAuth(event);
   });
@@ -4939,6 +5009,8 @@ function bindEvents() {
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
+  window.visualViewport?.addEventListener("resize", scheduleResponsiveRender);
+  window.visualViewport?.addEventListener("scroll", scheduleResponsiveRender);
   document.addEventListener("click", (event) => {
     if (!isAccountMenuEventTarget(event.target)) {
       closeAccountMenu();
@@ -5093,6 +5165,7 @@ async function restoreAuthenticatedWorkspace() {
 }
 
 async function boot() {
+  syncViewportHeight();
   setAuthMode(state.authMode);
   bindEvents();
   scheduleClientMetaReport();

@@ -33,6 +33,18 @@ const SAMPLE_BUNDLES = {
     privateKeySalt: Buffer.alloc(16, 7).toString("base64"),
     privateKeyIv: Buffer.alloc(12, 8).toString("base64"),
     encryptedPrivateKey: Buffer.alloc(160, 9).toString("base64")
+  },
+  LogoutAllUser: {
+    publicKey: Buffer.alloc(65, 31).toString("base64"),
+    privateKeySalt: Buffer.alloc(16, 32).toString("base64"),
+    privateKeyIv: Buffer.alloc(12, 33).toString("base64"),
+    encryptedPrivateKey: Buffer.alloc(160, 34).toString("base64")
+  },
+  ResetByAdmin: {
+    publicKey: Buffer.alloc(65, 35).toString("base64"),
+    privateKeySalt: Buffer.alloc(16, 36).toString("base64"),
+    privateKeyIv: Buffer.alloc(12, 37).toString("base64"),
+    encryptedPrivateKey: Buffer.alloc(160, 38).toString("base64")
   }
 };
 
@@ -733,6 +745,38 @@ test("password change revokes old sessions, rotates the current token and refres
   }
 });
 
+test("logout all revokes outstanding event tickets and active user sessions", async () => {
+  const server = await startServer();
+  try {
+    const register = await postJsonAndRead(server.port, "/api/register", {
+      username: "LogoutAllUser",
+      password: "hello123",
+      ...SAMPLE_BUNDLES.LogoutAllUser
+    });
+    assert.equal(register.response.status, 201);
+    const userToken = register.json.token;
+
+    const ticketResponse = await postJsonAndRead(server.port, "/api/events/token", {}, userToken);
+    assert.equal(ticketResponse.response.status, 200);
+    const ticket = String(ticketResponse.json.ticket || "");
+    assert.ok(ticket);
+
+    const logoutAll = await postJsonAndRead(server.port, "/api/logout-all", {}, userToken);
+    assert.equal(logoutAll.response.status, 200);
+    assert.ok(logoutAll.json.revoked >= 1);
+
+    const expiredSession = await getJson(server.port, "/api/me", userToken);
+    assert.equal(expiredSession.response.status, 401);
+
+    const blockedTicket = await fetch(
+      `http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(ticket)}`
+    );
+    assert.equal(blockedTicket.status, 401);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("message recall persists across history reloads and rejects cross-origin requests", async () => {
   const server = await startServer();
 
@@ -1255,6 +1299,63 @@ test("admin can login, view stats/messages and ban users", async () => {
     });
     assert.equal(blockedLogin.status, 403);
     assert.equal((await blockedLogin.json()).error, "account banned");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("admin password reset revokes the user's active sessions and event tickets", async () => {
+  const server = await startServer();
+  try {
+    const userRegister = await postJsonAndRead(server.port, "/api/register", {
+      username: "ResetByAdmin",
+      password: "pass1234",
+      ...SAMPLE_BUNDLES.ResetByAdmin
+    });
+    assert.equal(userRegister.response.status, 201);
+    const userToken = userRegister.json.token;
+
+    const userTicketResponse = await postJsonAndRead(server.port, "/api/events/token", {}, userToken);
+    assert.equal(userTicketResponse.response.status, 200);
+    const userTicket = String(userTicketResponse.json.ticket || "");
+    assert.ok(userTicket);
+
+    const adminLogin = await postJsonAndRead(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    });
+    assert.equal(adminLogin.response.status, 200);
+    const adminToken = adminLogin.json.token;
+
+    const resetResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/ResetByAdmin`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({ password: "pass5678" })
+    });
+    assert.equal(resetResponse.status, 200);
+
+    const expiredSession = await getJson(server.port, "/api/me", userToken);
+    assert.equal(expiredSession.response.status, 401);
+
+    const blockedTicket = await fetch(
+      `http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(userTicket)}`
+    );
+    assert.equal(blockedTicket.status, 401);
+
+    const oldLogin = await postJson(server.port, "/api/login", {
+      username: "ResetByAdmin",
+      password: "pass1234"
+    });
+    assert.equal(oldLogin.status, 401);
+
+    const newLogin = await postJson(server.port, "/api/login", {
+      username: "ResetByAdmin",
+      password: "pass5678"
+    });
+    assert.equal(newLogin.status, 200);
   } finally {
     await server.stop();
   }

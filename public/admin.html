@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#e6ece6" />
+    <meta name="theme-color" content="#f4f5f2" />
     <meta name="color-scheme" content="light" />
     <title>管理后台</title>
-    <link rel="stylesheet" href="./admin.min.css?v=23825d963f" />
+    <link rel="stylesheet" href="./admin.min.css?v=dde5e85326" />
   </head>
   <body>
     <main class="admin-root">
@@ -24,21 +24,24 @@
           <label><span>密码</span><input id="passwordInput" type="password" autocomplete="current-password" required /></label>
           <button type="submit">进入后台</button>
         </form>
-        <section class="admin-reset-card" aria-labelledby="adminResetTitle">
-          <div class="admin-reset-head">
-            <div>
-              <h2 id="adminResetTitle">修改管理员账号密码</h2>
-              <p>输入身份验证口令后，可直接重置管理员账号和密码。</p>
+        <details class="admin-reset-card">
+          <summary>重置管理员账号</summary>
+          <div class="admin-reset-content">
+            <div class="admin-reset-head">
+              <div>
+                <h2 id="adminResetTitle">修改管理员账号密码</h2>
+                <p>输入身份验证口令后，可直接重置管理员账号和密码。</p>
+              </div>
             </div>
+            <form id="adminResetForm" class="admin-reset-form">
+              <label><span>身份验证口令</span><input id="resetPassphraseInput" type="password" autocomplete="off" required /></label>
+              <label><span>新管理员账号</span><input id="resetUsernameInput" autocomplete="username" required /></label>
+              <label><span>新管理员密码</span><input id="resetPasswordInput" type="password" autocomplete="new-password" required /></label>
+              <label><span>确认新密码</span><input id="resetPasswordConfirmInput" type="password" autocomplete="new-password" required /></label>
+              <button type="submit" class="button secondary">确认修改</button>
+            </form>
           </div>
-          <form id="adminResetForm" class="admin-reset-form">
-            <label><span>身份验证口令</span><input id="resetPassphraseInput" type="password" autocomplete="off" required /></label>
-            <label><span>新管理员账号</span><input id="resetUsernameInput" autocomplete="username" required /></label>
-            <label><span>新管理员密码</span><input id="resetPasswordInput" type="password" autocomplete="new-password" required /></label>
-            <label><span>确认新密码</span><input id="resetPasswordConfirmInput" type="password" autocomplete="new-password" required /></label>
-            <button type="submit" class="button secondary">确认修改</button>
-          </form>
-        </section>
+        </details>
       </section>
 
       <section class="dashboard" id="dashboard" hidden>
@@ -190,9 +193,9 @@
               <div class="panel-head">
                 <h3><span class="sec-icon" aria-hidden="true">▤</span>访问日志</h3>
                 <div class="filters">
-                  <input id="accessIpInput" placeholder="搜索 IP" />
-                  <input id="accessUserIdInput" placeholder="搜索用户ID" />
-                  <input id="accessSessionInput" placeholder="搜索会话ID" />
+                  <input id="accessIpInput" placeholder="搜索 IP" aria-label="按 IP 搜索访问日志" />
+                  <input id="accessUserIdInput" placeholder="搜索用户ID" aria-label="按用户 ID 搜索访问日志" />
+                  <input id="accessSessionInput" placeholder="搜索会话ID" aria-label="按会话 ID 搜索访问日志" />
                   <input id="accessSinceInput" type="date" aria-label="访问日志开始日期" />
                   <input id="accessUntilInput" type="date" aria-label="访问日志结束日期" />
                   <button id="applyAccessFilterButton" type="button" class="button secondary">筛选</button>
@@ -240,13 +243,13 @@
               <div class="panel-head">
                 <h3><span class="sec-icon" aria-hidden="true">▦</span>用户管理</h3>
                 <div class="filters">
-                  <input id="userSearchInput" placeholder="搜索用户名" />
-                  <select id="userStatusSelect">
+                  <input id="userSearchInput" placeholder="搜索用户名" aria-label="搜索用户名" />
+                  <select id="userStatusSelect" aria-label="筛选用户状态">
                     <option value="all">全部</option>
                     <option value="active">正常</option>
                     <option value="banned">封禁</option>
                   </select>
-                  <select id="userSortSelect">
+                  <select id="userSortSelect" aria-label="用户排序方式">
                     <option value="username:asc">用户名升序</option>
                     <option value="username:desc">用户名降序</option>
                     <option value="createdAt:desc">最新注册</option>
@@ -287,9 +290,9 @@
               <div class="panel-head">
                 <h3><span class="sec-icon" aria-hidden="true">◈</span>全站聊天审计</h3>
                 <div class="filters">
-                  <input id="msgFromInput" placeholder="发送者" />
-                  <input id="msgToInput" placeholder="接收者" />
-                  <input id="msgKeywordInput" placeholder="关键词" />
+                  <input id="msgFromInput" placeholder="发送者" aria-label="按发送者筛选消息" />
+                  <input id="msgToInput" placeholder="接收者" aria-label="按接收者筛选消息" />
+                  <input id="msgKeywordInput" placeholder="关键词" aria-label="按关键词筛选消息" />
                   <input id="msgSinceInput" type="date" aria-label="开始日期" />
                   <input id="msgUntilInput" type="date" aria-label="结束日期" />
                   <label class="mask-toggle"><input id="msgMaskCheckbox" type="checkbox" checked /> 脱敏显示</label>
@@ -315,7 +318,7 @@
       </section>
     </main>
 
-    <div class="toast" id="toast"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="dialog-backdrop" id="dialogBackdrop" hidden>
       <section
         class="dialog-card"

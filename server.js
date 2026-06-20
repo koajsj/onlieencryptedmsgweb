@@ -937,6 +937,8 @@ function createEventTicketForSession(session) {
   const ticket = crypto.randomBytes(24).toString("base64url");
   eventTickets.set(ticket, {
     username: session.username,
+    role: session.role,
+    token: session.token,
     issuedAt: Date.now(),
     expiresAt: Date.now() + EVENT_TICKET_TTL_MS
   });
@@ -1921,6 +1923,8 @@ function handleLogoutAll(req, res, url) {
     return;
   }
   const revoked = deleteSessionsForUsername(session.username, session.role);
+  purgeUserEventTickets(session.username);
+  disconnectUserRealtime(session.username, "logged out from all devices");
   sendJson(res, 200, {
     ok: true,
     revoked
@@ -2723,6 +2727,8 @@ async function handleAdminUserPatch(req, res, url, pathname) {
 
   const requestedName = normalizeBoundedText(body.username || "", 24);
   const oldState = adminPublicUser(user);
+  let shouldRevokeUserSessions = false;
+  let disconnectReason = "";
   if (requestedName) {
     const normalizedUsername = normalizeUsername(requestedName);
     if (!normalizedUsername) {
@@ -2794,13 +2800,8 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     user.bannedReason = banned ? normalizeAuditReason(body.bannedReason, "admin action") : "";
     user.bannedAt = banned ? Date.now() : 0;
     if (banned) {
-      for (const [token, sessionRecord] of sessions) {
-        if (sessionRecord.role === "user" && sessionRecord.username === user.username) {
-          sessions.delete(token);
-        }
-      }
-      disconnectUserRealtime(user.username, "account banned by admin");
-      purgeUserEventTickets(user.username);
+      shouldRevokeUserSessions = true;
+      disconnectReason = "account banned by admin";
     }
   }
 
@@ -2811,9 +2812,18 @@ async function handleAdminUserPatch(req, res, url, pathname) {
       return;
     }
     user.passwordHash = await hashPassword(nextPassword);
+    shouldRevokeUserSessions = true;
+    if (!disconnectReason) {
+      disconnectReason = "password reset by admin";
+    }
   }
 
   persistUsers();
+  if (shouldRevokeUserSessions) {
+    deleteSessionsForUsername(user.username, "user");
+    purgeUserEventTickets(user.username);
+    disconnectUserRealtime(user.username, disconnectReason || "account updated by admin");
+  }
   schedulePersistMessages();
   recordAdminAction("admin_user_patch", session, req, {
     target: targetUsername,
@@ -3506,6 +3516,15 @@ function handleEvents(req, res, url) {
   }
   const ticketRecord = consumeEventTicket(ticket);
   if (!ticketRecord) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  const sessionRecord = ticketRecord.token ? sessions.get(ticketRecord.token) : null;
+  if (
+    !sessionRecord ||
+    sessionRecord.username !== ticketRecord.username ||
+    sessionRecord.role !== ticketRecord.role
+  ) {
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
