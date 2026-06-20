@@ -1,5 +1,7 @@
 "use strict";
 
+const { escapeHtml, formatDateTime } = window.EchoUi;
+
 const elements = {
   title: document.querySelector("#detailTitle"),
   subtitle: document.querySelector("#detailSubtitle"),
@@ -38,21 +40,6 @@ const state = {
   loading: false,
   lastRefreshAt: 0
 };
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function formatDateTime(value) {
-  if (!value) {
-    return "-";
-  }
-  return new Date(value).toLocaleString();
-}
 
 function showToast(message) {
   elements.toast.textContent = String(message || "");

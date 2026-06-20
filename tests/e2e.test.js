@@ -48,6 +48,13 @@ const SAMPLE_BUNDLES = {
   }
 };
 
+test("browser client keeps authentication tokens out of web storage", () => {
+  const appSource = fs.readFileSync(path.join(ROOT_DIR, "public", "app.js"), "utf8");
+  assert.doesNotMatch(appSource, /sessionStorage\.setItem\([^\n]*session-token/);
+  assert.doesNotMatch(appSource, /Authorization\s*=\s*`Bearer/);
+  assert.match(appSource, /sessionStorage\.removeItem\("private-chat-session-token"\)/);
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

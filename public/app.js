@@ -8,7 +8,6 @@ const STORAGE = {
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
   pendingOutbox: "private-chat-pending-outbox",
-  sessionToken: "private-chat-session-token",
   sessionIdentity: "private-chat-session-identity"
 };
 
@@ -19,9 +18,9 @@ const MESSAGE_VIRTUAL_THRESHOLD = 140;
 const MESSAGE_VIRTUAL_OVERSCAN = 480;
 const ATTACHMENT_MARKER = "[[echo-attachment-v1]]";
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
-const CLIENT_META_SENT_STORAGE_KEY = "secure_chat_client_meta_sent_v1";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const { escapeHtml, isElementNode, scheduleClientMetaReport } = window.EchoUi;
 
 const elements = {
   authScreen: document.querySelector("#authScreen"),
@@ -134,7 +133,7 @@ const elements = {
 };
 
 const state = {
-  token: "",
+  authenticated: false,
   me: null,
   identity: null,
   authMode: localStorage.getItem(STORAGE.authMode) || "login",
@@ -239,67 +238,11 @@ function writeJsonSessionStorage(key, value) {
   sessionStorage.setItem(key, JSON.stringify(value));
 }
 
-function readSessionAuthToken() {
+function clearLegacySessionToken() {
   try {
-    return String(sessionStorage.getItem(STORAGE.sessionToken) || "");
+    sessionStorage.removeItem("private-chat-session-token");
   } catch (error) {
-    return "";
-  }
-}
-
-function persistSessionAuthToken(token) {
-  try {
-    if (token) {
-      sessionStorage.setItem(STORAGE.sessionToken, String(token));
-    } else {
-      sessionStorage.removeItem(STORAGE.sessionToken);
-    }
-  } catch (error) {
-    // Ignore sessionStorage failures and continue with cookie auth.
-  }
-}
-
-function scheduleClientMetaReport() {
-  const run = () => {
-    void reportClientMetaOnce();
-  };
-  if (typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(run, { timeout: 1200 });
-    return;
-  }
-  window.setTimeout(run, 60);
-}
-
-async function reportClientMetaOnce() {
-  try {
-    if (window.localStorage.getItem(CLIENT_META_SENT_STORAGE_KEY) === "1") {
-      return;
-    }
-  } catch (error) {
-    return;
-  }
-  const payload = {
-    language: navigator.language || "",
-    screenResolution:
-      window.screen && Number(window.screen.width) > 0 && Number(window.screen.height) > 0
-        ? `${window.screen.width}x${window.screen.height}`
-        : "",
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-    platform: navigator.userAgentData?.platform || navigator.platform || ""
-  };
-  try {
-    await fetch("/api/client-meta", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      keepalive: true,
-      body: JSON.stringify(payload)
-    });
-    window.localStorage.setItem(CLIENT_META_SENT_STORAGE_KEY, "1");
-  } catch (error) {
-    // Ignore silent telemetry errors.
+    // Ignore storage failures. Authentication uses the HttpOnly cookie only.
   }
 }
 
@@ -425,14 +368,6 @@ function formatLastSeen(timestamp) {
   });
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
 function avatarTone(username) {
   let total = 0;
   for (const char of String(username || "")) {
@@ -518,10 +453,6 @@ function clearNotificationBadge() {
 function setAccountMenuExpanded(expanded) {
   const value = expanded ? "true" : "false";
   elements.accountMenuButton?.setAttribute("aria-expanded", value);
-}
-
-function isElementNode(value) {
-  return value instanceof Element;
 }
 
 function isAccountMenuEventTarget(target) {
@@ -610,7 +541,7 @@ function setSettingsDialogSection(section) {
   if (elements.settingsResetButton) {
     elements.settingsResetButton.hidden = nextSection === "other";
   }
-  if ((nextSection === "security" || nextSection === "other") && state.token) {
+  if ((nextSection === "security" || nextSection === "other") && state.authenticated) {
     void refreshSecuritySettingsPanel().catch(() => {});
   }
 }
@@ -1645,15 +1576,14 @@ function createSpacer(height) {
   return spacer;
 }
 
-function clearStoredSessionArtifacts(clearToken = true, clearActivePeer = true, clearPending = true) {
+function clearStoredSessionArtifacts(clearIdentity = true, clearActivePeer = true, clearPending = true) {
   if (clearActivePeer) {
     localStorage.removeItem(STORAGE.activePeer);
   }
   if (clearPending) {
     localStorage.removeItem(STORAGE.pendingOutbox);
   }
-  if (clearToken) {
-    persistSessionAuthToken("");
+  if (clearIdentity) {
     clearSessionIdentityCache();
   }
 }
@@ -1701,11 +1631,6 @@ async function api(pathname, options = {}) {
     Accept: "application/json",
     ...(options.headers || {})
   };
-  const sessionToken = options.auth === false ? "" : readSessionAuthToken();
-  if (sessionToken && !headers.Authorization) {
-    headers.Authorization = `Bearer ${sessionToken}`;
-  }
-
   let body = options.body;
   if (body && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -1735,7 +1660,7 @@ async function api(pathname, options = {}) {
   }
 
   if (!response.ok) {
-    if (response.status === 401 && state.token && !options.skipAuthReset) {
+    if (response.status === 401 && state.authenticated && !options.skipAuthReset) {
       clearSession(true);
     }
     throw new Error(translateApiError(pathname, response.status, payload));
@@ -1765,14 +1690,14 @@ function closeEventStream() {
   clearIncomingTyping();
 }
 
-function clearSession(showAuth = true, clearToken = true) {
+function clearSession(showAuth = true, clearIdentity = true) {
   closeEventStream();
   if (state.messageListRenderRaf) {
     window.cancelAnimationFrame(state.messageListRenderRaf);
     state.messageListRenderRaf = 0;
   }
 
-  state.token = "";
+  state.authenticated = false;
   state.me = null;
   state.identity = null;
   state.searchQuery = "";
@@ -1811,7 +1736,7 @@ function clearSession(showAuth = true, clearToken = true) {
   state.detailsPanelCollapsed = false;
   state.workspaceLoading = false;
 
-  clearStoredSessionArtifacts(clearToken, true);
+  clearStoredSessionArtifacts(clearIdentity, true);
   elements.globalSearchInput.value = "";
   elements.threadSearchInput.value = "";
   elements.messageInput.value = "";
@@ -1828,11 +1753,8 @@ function clearSession(showAuth = true, clearToken = true) {
   }
 }
 
-function setSession(token, user, identity) {
-  if (token && token !== "cookie") {
-    persistSessionAuthToken(token);
-  }
-  state.token = token ? "cookie" : "";
+function setSession(user, identity) {
+  state.authenticated = true;
   state.me = user;
   state.identity = identity;
   state.previewMode = false;
@@ -3827,7 +3749,7 @@ function applyConversationReadUpdate(peer, messageIds, timestamp) {
 }
 
 async function markConversationRead(peer) {
-  if (!peer || !state.token) {
+  if (!peer || !state.authenticated) {
     return;
   }
   try {
@@ -3861,7 +3783,7 @@ async function openEventStream() {
   renderThread();
 
   const ticket = await createEventTicket();
-  if (!state.token) {
+  if (!state.authenticated) {
     return;
   }
 
@@ -3935,7 +3857,7 @@ async function openEventStream() {
   });
 
   source.addEventListener("error", () => {
-    if (state.manualEventSourceClose || !state.token) {
+    if (state.manualEventSourceClose || !state.authenticated) {
       return;
     }
     if (state.eventSource) {
@@ -3955,13 +3877,13 @@ async function openEventStream() {
     const delay = backoff + jitter;
     state.reconnectTimer = window.setTimeout(async () => {
       state.reconnectTimer = 0;
-      if (!state.token) {
+      if (!state.authenticated) {
         return;
       }
       try {
         await api("/api/me");
       } catch (error) {
-        if (!state.token) {
+        if (!state.authenticated) {
           return;
         }
       }
@@ -4050,7 +3972,7 @@ async function submitAuth(event) {
       identity = await restoreIdentity(payload.user.username, password, payload.keyBundle);
     }
 
-    setSession(payload.token, payload.user, identity);
+    setSession(payload.user, identity);
     await persistSessionIdentity(identity, payload.user.username);
     elements.authPasswordInput.value = "";
     await afterLogin();
@@ -5028,7 +4950,7 @@ function bindEvents() {
     }
   });
   window.addEventListener("online", () => {
-    if (!state.token) {
+    if (!state.authenticated) {
       return;
     }
     startEventStream(true);
@@ -5041,7 +4963,7 @@ function bindEvents() {
     }
   });
   document.addEventListener("visibilitychange", () => {
-    if (!state.token || document.visibilityState !== "visible") {
+    if (!state.authenticated || document.visibilityState !== "visible") {
       return;
     }
     void flushPendingOutbox();
@@ -5103,16 +5025,13 @@ function bindEvents() {
       return;
     }
     try {
-      const payload = await api("/api/me/password", {
+      await api("/api/me/password", {
         method: "POST",
         body: {
           currentPassword: currentPw,
           newPassword: newPw
         }
       });
-      if (payload?.token) {
-        persistSessionAuthToken(payload.token);
-      }
       closeEventStream();
       startEventStream(true);
       const currentPwInput = document.querySelector("#currentPasswordInput");
@@ -5158,13 +5077,14 @@ async function restoreAuthenticatedWorkspace() {
     return false;
   }
 
-  setSession("cookie", user, identity);
+  setSession(user, identity);
   await persistSessionIdentity(identity, user.username);
   await afterLogin();
   return true;
 }
 
 async function boot() {
+  clearLegacySessionToken();
   syncViewportHeight();
   setAuthMode(state.authMode);
   bindEvents();

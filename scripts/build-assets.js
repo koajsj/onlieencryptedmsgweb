@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const BUILD_ASSETS = [
+  { source: "public/ui-utils.js", built: "public/ui-utils.min.js" },
   { source: "public/app.js", built: "public/app.min.js" },
   { source: "public/admin.js", built: "public/admin.min.js" },
   { source: "public/admin-user.js", built: "public/admin-user.min.js" },
