@@ -23,9 +23,6 @@ const elements = {
   auditList: document.querySelector("#auditList"),
   renameForm: document.querySelector("#renameForm"),
   renameInput: document.querySelector("#renameInput"),
-  passwordForm: document.querySelector("#passwordForm"),
-  passwordInput: document.querySelector("#passwordInput"),
-  passwordConfirmInput: document.querySelector("#passwordConfirmInput"),
   banForm: document.querySelector("#banForm"),
   banReasonInput: document.querySelector("#banReasonInput"),
   banToggleButton: document.querySelector("#banToggleButton"),
@@ -392,28 +389,6 @@ function bindEvents() {
     try {
       await patchUser({ username: nextUsername });
       showToast("用户名已更新");
-    } catch (error) {
-      showToast(error.message);
-    }
-  });
-
-  elements.passwordForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const password = String(elements.passwordInput.value || "");
-    const confirm = String(elements.passwordConfirmInput.value || "");
-    if (!password) {
-      showToast("请输入新密码");
-      return;
-    }
-    if (password !== confirm) {
-      showToast("两次输入的密码不一致");
-      return;
-    }
-    try {
-      await patchUser({ password });
-      elements.passwordInput.value = "";
-      elements.passwordConfirmInput.value = "";
-      showToast("密码已更新");
     } catch (error) {
       showToast(error.message);
     }

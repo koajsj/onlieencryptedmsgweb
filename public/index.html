@@ -240,11 +240,11 @@
                 </button>
 
                 <label class="composer-field">
-                  <textarea id="messageInput" rows="1" maxlength="4000" placeholder="输入消息..." required></textarea>
+                  <textarea id="messageInput" rows="1" maxlength="4000" placeholder="输入消息..." aria-label="输入消息" required></textarea>
                   <span class="composer-hint" aria-hidden="true">回车发送，Shift + 回车换行</span>
                 </label>
 
-                <button class="primary-button send-button" id="sendButton" type="submit">
+                <button class="primary-button send-button" id="sendButton" type="submit" aria-label="发送消息">
                   <span class="send-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg></span>
                   <span class="send-label">发送</span>
                 </button>
@@ -304,7 +304,9 @@
                   <div class="detail-info-row"><span>备注</span><strong id="detailsNote">未设置</strong></div>
                   <div class="detail-info-row"><span>账号 ID</span><span class="detail-id-value"><strong id="detailsAccountId">@user</strong><button class="icon-button compact-copy" id="copyContactIdButton" type="button" aria-label="复制账号 ID" title="复制账号 ID"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></span></div>
                   <div class="detail-info-row"><span>最后在线</span><strong id="detailsLastSeen">刚刚</strong></div>
+                  <div class="detail-info-row"><span>安全码</span><strong id="detailsSafetyCode">计算中</strong></div>
                 </div>
+                <button class="ghost-button compact" id="detailsTrustKeyButton" type="button" hidden>确认新密钥</button>
               </section>
               <section class="detail-block"><div class="detail-block-head"><h3>联系人简介</h3></div><p id="detailsAbout"></p></section>
               <section class="detail-block">
@@ -449,6 +451,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="./ui-utils.min.js?v=cd59756d46" defer></script>
-    <script src="./app.min.js?v=3c58e8b356" defer></script>
+    <script src="./app.min.js?v=a9440894b0" defer></script>
   </body>
 </html>

@@ -730,7 +730,7 @@ test("session expires and is rejected after ttl", async () => {
   }
 });
 
-test("password change revokes old sessions, rotates the current token and refreshes the cookie", async () => {
+test("password change rotates the encrypted private key bundle and active session", async () => {
   const server = await startServer();
   try {
     const register = await postJsonAndRead(server.port, "/api/register", {
@@ -742,10 +742,17 @@ test("password change revokes old sessions, rotates the current token and refres
       encryptedPrivateKey: Buffer.alloc(160, 94).toString("base64")
     });
     const oldToken = register.json.token;
+    const replacementBundle = {
+      publicKey: Buffer.alloc(65, 91).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 95).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 96).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 97).toString("base64")
+    };
 
     const changed = await postJsonAndRead(server.port, "/api/me/password", {
       currentPassword: "hello123",
-      newPassword: "hello456"
+      newPassword: "hello456",
+      ...replacementBundle
     }, oldToken);
     assert.equal(changed.response.status, 200);
     assert.ok(changed.json.token);
@@ -769,11 +776,12 @@ test("password change revokes old sessions, rotates the current token and refres
     });
     assert.equal(oldPasswordLogin.status, 401);
 
-    const newPasswordLogin = await postJson(server.port, "/api/login", {
+    const newPasswordLogin = await postJsonAndRead(server.port, "/api/login", {
       username: "RotateMe",
       password: "hello456"
     });
-    assert.equal(newPasswordLogin.status, 200);
+    assert.equal(newPasswordLogin.response.status, 200);
+    assert.deepEqual(newPasswordLogin.json.keyBundle, replacementBundle);
   } finally {
     await server.stop();
   }
@@ -1338,7 +1346,7 @@ test("admin can login, view stats/messages and ban users", async () => {
   }
 });
 
-test("admin password reset revokes the user's active sessions and event tickets", async () => {
+test("admin cannot reset an encrypted user's password without the private key", async () => {
   const server = await startServer();
   try {
     const userRegister = await postJsonAndRead(server.port, "/api/register", {
@@ -1348,11 +1356,6 @@ test("admin password reset revokes the user's active sessions and event tickets"
     });
     assert.equal(userRegister.response.status, 201);
     const userToken = userRegister.json.token;
-
-    const userTicketResponse = await postJsonAndRead(server.port, "/api/events/token", {}, userToken);
-    assert.equal(userTicketResponse.response.status, 200);
-    const userTicket = String(userTicketResponse.json.ticket || "");
-    assert.ok(userTicket);
 
     const adminLogin = await postJsonAndRead(server.port, "/api/admin/login", {
       username: TEST_ADMIN_USERNAME,
@@ -1369,27 +1372,23 @@ test("admin password reset revokes the user's active sessions and event tickets"
       },
       body: JSON.stringify({ password: "pass5678" })
     });
-    assert.equal(resetResponse.status, 200);
+    assert.equal(resetResponse.status, 409);
+    assert.equal((await resetResponse.json()).error, "encrypted account password must be changed by the user");
 
-    const expiredSession = await getJson(server.port, "/api/me", userToken);
-    assert.equal(expiredSession.response.status, 401);
-
-    const blockedTicket = await fetch(
-      `http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(userTicket)}`
-    );
-    assert.equal(blockedTicket.status, 401);
+    const activeSession = await getJson(server.port, "/api/me", userToken);
+    assert.equal(activeSession.response.status, 200);
 
     const oldLogin = await postJson(server.port, "/api/login", {
       username: "ResetByAdmin",
       password: "pass1234"
     });
-    assert.equal(oldLogin.status, 401);
+    assert.equal(oldLogin.status, 200);
 
     const newLogin = await postJson(server.port, "/api/login", {
       username: "ResetByAdmin",
       password: "pass5678"
     });
-    assert.equal(newLogin.status, 200);
+    assert.equal(newLogin.status, 401);
   } finally {
     await server.stop();
   }
@@ -1583,6 +1582,9 @@ test("server fails fast when admin credentials are missing", async () => {
       password: "qwer@1234"
     });
     assert.equal(defaultLogin.status, 200);
+    const defaultPayload = await defaultLogin.json();
+    const previousAdminToken = String(defaultPayload.token || "");
+    assert.ok(previousAdminToken);
     const payload = await defaultLogin.json();
     assert.equal(payload.admin.username, "admin");
 
@@ -1628,6 +1630,8 @@ test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD
       password: TEST_ADMIN_PLAIN_PASSWORD
     });
     assert.equal(defaultLogin.status, 200);
+    const previousAdminToken = String((await defaultLogin.json()).token || "");
+    assert.ok(previousAdminToken);
 
     const reset = await postJson(server.port, "/api/admin/account/reset", {
       passphrase: "test-passphrase",
@@ -1636,6 +1640,9 @@ test("admin account reset updates runtime credentials and prefers ADMIN_PASSWORD
     });
     assert.equal(reset.status, 200);
     assert.equal((await reset.json()).admin.username, "root_admin");
+
+    const previousSession = await getJson(server.port, "/api/admin/me", previousAdminToken);
+    assert.equal(previousSession.response.status, 401);
 
     const oldLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",

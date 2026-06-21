@@ -490,9 +490,17 @@ label span {
   background: var(--surface-muted);
 }
 
+.sidebar-nav a.is-active,
+.sidebar-nav a[aria-current="page"] {
+  border-color: var(--color-line-strong);
+  color: var(--color-text);
+  font-weight: 700;
+  background: var(--surface-muted);
+}
+
 .main-stage {
   display: grid;
-  gap: var(--space-4);
+  gap: 12px;
   overflow: visible;
 }
 
@@ -501,7 +509,7 @@ label span {
   justify-content: space-between;
   gap: var(--space-4);
   align-items: flex-start;
-  padding: 18px 20px;
+  padding: 14px 16px;
   background: var(--surface);
 }
 
@@ -516,7 +524,7 @@ label span {
   align-items: center;
   gap: 8px;
   font-family: var(--font-display);
-  font-size: clamp(25px, 3vw, 32px);
+  font-size: clamp(22px, 2.4vw, 28px);
 }
 
 .topbar p {
@@ -561,12 +569,12 @@ label span {
 
 .content-stack {
   display: grid;
-  gap: var(--space-4);
+  gap: 12px;
   overflow: visible;
 }
 
 .panel {
-  padding: 18px;
+  padding: 14px;
   overflow: hidden;
   background: var(--surface);
 }
@@ -577,7 +585,7 @@ label span {
   gap: var(--space-3);
   align-items: flex-end;
   flex-wrap: wrap;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .panel-head h3 {
@@ -586,7 +594,7 @@ label span {
   align-items: center;
   gap: 8px;
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 20px;
 }
 
 .overview-grid,
@@ -598,7 +606,7 @@ label span {
 
 .overview-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: var(--space-4);
+  margin-bottom: 12px;
 }
 
 .access-overview-grid {
@@ -621,7 +629,7 @@ label span {
 .stat-card,
 .health-card,
 .overview-card {
-  padding: 14px;
+  padding: 10px 12px;
   background: var(--surface-strong);
 }
 
@@ -660,7 +668,7 @@ label span {
 .health-card strong,
 .stat-card strong {
   display: block;
-  margin-top: 10px;
+  margin-top: 6px;
   color: var(--color-text);
 }
 
@@ -670,18 +678,18 @@ label span {
 }
 
 .overview-card strong {
-  font-size: 24px;
+  font-size: 20px;
   line-height: 1.1;
 }
 
 .stat-card strong {
-  font-size: 28px;
+  font-size: 23px;
   line-height: 1;
   color: var(--color-text);
 }
 
 .health-card {
-  min-height: 78px;
+  min-height: 62px;
 }
 
 .health-card strong {
@@ -692,15 +700,15 @@ label span {
 .detail-columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
+  gap: 12px;
 }
 
 .access-columns {
-  margin-top: var(--space-4);
+  margin-top: 12px;
 }
 
 .detail-card {
-  padding: 16px;
+  padding: 12px;
   background: var(--surface-strong);
   box-shadow: none;
 }
@@ -710,7 +718,7 @@ label span {
   justify-content: space-between;
   gap: var(--space-2);
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 
@@ -721,7 +729,7 @@ label span {
 
 .detail-list {
   display: grid;
-  gap: 10px;
+  gap: 7px;
 }
 
 .rank-list,
@@ -782,7 +790,7 @@ label span {
 .msg-item {
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
-  padding: 12px;
+  padding: 9px 10px;
   background: var(--surface-soft);
 }
 
@@ -884,6 +892,7 @@ label span {
 }
 
 .table-wrap {
+  max-height: min(620px, 62vh);
   overflow: auto;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
@@ -907,7 +916,7 @@ thead th {
 
 th,
 td {
-  padding: 12px 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--color-line);
   text-align: left;
   font-size: 13px;
@@ -1393,5 +1402,192 @@ td.actions {
   .pager-actions > *,
   .dialog-actions > * {
     width: 100%;
+  }
+}
+
+@media (max-width: 820px) {
+  .sidebar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .sidebar-brand {
+    min-width: 0;
+    flex-wrap: nowrap;
+  }
+
+  .sidebar-brand .brand-logo {
+    width: 42px;
+    height: 42px;
+    flex-basis: 42px;
+    border-radius: 13px;
+  }
+
+  .sidebar-brand p {
+    margin-top: 2px;
+  }
+
+  .sidebar-nav {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 2px 0;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .sidebar-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sidebar-nav a {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 0 12px;
+    white-space: nowrap;
+    scroll-snap-align: start;
+  }
+
+  .sidebar-footer {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .profile-button {
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 3px;
+    justify-content: center;
+  }
+
+  .profile-copy {
+    display: none;
+  }
+
+  .user-detail-sidebar .sidebar-footer .button {
+    width: auto;
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
+  .main-stage,
+  .content-stack {
+    gap: 8px;
+  }
+
+  .topbar {
+    flex-direction: row;
+    align-items: center;
+    padding: 10px 12px;
+  }
+
+  .topbar h2 {
+    font-size: 20px;
+  }
+
+  .topbar .toolbar {
+    margin-left: auto;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .topbar .status-pill {
+    display: none;
+  }
+
+  .topbar .toolbar > .button {
+    width: auto;
+    min-width: 56px;
+    min-height: 40px;
+    flex: 0 0 auto;
+    padding-inline: 10px;
+  }
+
+  .panel,
+  .detail-card {
+    padding: 10px;
+  }
+
+  .panel-head {
+    margin-bottom: 8px;
+  }
+
+  .panel-head h3 {
+    font-size: 18px;
+  }
+
+  .overview-grid,
+  .stats-grid,
+  .health-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stats-grid {
+    gap: 0;
+  }
+
+  .stats-grid .stat-card,
+  .stats-grid .stat-card:nth-child(3n),
+  .stats-grid .stat-card:nth-last-child(-n + 3) {
+    border-right: 1px solid var(--color-line);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .stats-grid .stat-card:nth-child(even) {
+    border-right: 0;
+  }
+
+  .stats-grid .stat-card:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .overview-card,
+  .health-card,
+  .stat-card {
+    min-height: 58px;
+    padding: 9px 10px;
+  }
+
+  .overview-card strong,
+  .stat-card strong {
+    font-size: 19px;
+  }
+
+  .overview-panel .detail-columns,
+  .access-panel .detail-columns {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .overview-panel .detail-columns::-webkit-scrollbar,
+  .access-panel .detail-columns::-webkit-scrollbar {
+    display: none;
+  }
+
+  .overview-panel .detail-card,
+  .access-panel .detail-card {
+    flex: 0 0 min(78vw, 290px);
+    scroll-snap-align: start;
+  }
+
+  .table-wrap,
+  .messages-list {
+    max-height: calc(100dvh - 250px);
+  }
+
+  th,
+  td {
+    padding: 7px 8px;
+    font-size: 12px;
   }
 }

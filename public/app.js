@@ -8,6 +8,7 @@ const STORAGE = {
   conversationPrefs: "private-chat-conversation-prefs",
   drafts: "private-chat-drafts",
   pendingOutbox: "private-chat-pending-outbox",
+  peerKeyPins: "private-chat-peer-key-pins",
   sessionIdentity: "private-chat-session-identity"
 };
 
@@ -109,6 +110,8 @@ const elements = {
   detailsNote: document.querySelector("#detailsNote"),
   detailsAccountId: document.querySelector("#detailsAccountId"),
   detailsLastSeen: document.querySelector("#detailsLastSeen"),
+  detailsSafetyCode: document.querySelector("#detailsSafetyCode"),
+  detailsTrustKeyButton: document.querySelector("#detailsTrustKeyButton"),
   detailsAbout: document.querySelector("#detailsAbout"),
   notificationsToggle: document.querySelector("#notificationsToggle"),
   copyContactIdButton: document.querySelector("#copyContactIdButton"),
@@ -147,6 +150,9 @@ const state = {
   activePeer: "",
   messageCache: new Map(),
   peerKeys: new Map(),
+  peerKeyPins: {},
+  peerObservedKeys: new Map(),
+  peerKeyMismatches: new Set(),
   importedPeerKeys: new Map(),
   conversationKeys: new Map(),
   previewCache: new Map(),
@@ -278,7 +284,8 @@ function writeScopedStorageRecord(key, owner, value) {
   if (!owner) {
     return;
   }
-  const store = readJsonStorage(key, {});
+  const storedValue = readJsonStorage(key, {});
+  const store = Array.isArray(storedValue) ? {} : storedValue;
   store[owner] = value;
   writeJsonStorage(key, store);
 }
@@ -772,6 +779,10 @@ async function sendAttachmentFiles(fileList) {
   if (!state.activePeer) {
     return;
   }
+  if (state.peerKeyMismatches.has(state.activePeer)) {
+    showToast("联系人密钥已变化，请先在联系人详情中确认", "error");
+    return;
+  }
   if (state.connectionState !== "online") {
     showToast("附件需联网发送，避免大文件占满本地存储", "error");
     return;
@@ -1122,7 +1133,19 @@ function base64ToBytes(value) {
 }
 
 function resetLocalConversationState() {
-  const rawPrefs = readJsonStorage(STORAGE.conversationPrefs, {});
+  const owner = currentStorageOwner();
+  const legacyPrefs = readJsonStorage(STORAGE.conversationPrefs, {});
+  if (Object.values(legacyPrefs).some((value) => value && typeof value === "object" && ("pinned" in value || "muted" in value))) {
+    writeJsonStorage(STORAGE.conversationPrefs, {});
+  }
+  const legacyDrafts = readJsonStorage(STORAGE.drafts, {});
+  if (Object.values(legacyDrafts).some((value) => typeof value === "string")) {
+    writeJsonStorage(STORAGE.drafts, {});
+  }
+  if (Array.isArray(readJsonStorage(STORAGE.pendingOutbox, {}))) {
+    writeJsonStorage(STORAGE.pendingOutbox, {});
+  }
+  const rawPrefs = readScopedStorageRecord(STORAGE.conversationPrefs, owner);
   const normalizedPrefs = {};
   for (const [username, prefs] of Object.entries(rawPrefs)) {
     if (!username) {
@@ -1134,17 +1157,32 @@ function resetLocalConversationState() {
     };
   }
   state.conversationPrefs = normalizedPrefs;
-  state.drafts = readJsonStorage(STORAGE.drafts, {});
+  state.drafts = readScopedStorageRecord(STORAGE.drafts, owner);
+  state.peerKeyPins = readScopedStorageRecord(STORAGE.peerKeyPins, owner);
+  state.peerObservedKeys.clear();
+  state.peerKeyMismatches.clear();
   loadEditableProfiles();
   loadPendingOutbox();
 }
 
 function saveConversationPrefs() {
-  writeJsonStorage(STORAGE.conversationPrefs, state.conversationPrefs);
+  writeScopedStorageRecord(STORAGE.conversationPrefs, currentStorageOwner(), state.conversationPrefs);
 }
 
 function saveDrafts() {
-  writeJsonStorage(STORAGE.drafts, state.drafts);
+  writeScopedStorageRecord(STORAGE.drafts, currentStorageOwner(), state.drafts);
+}
+
+function savePeerKeyPins() {
+  writeScopedStorageRecord(STORAGE.peerKeyPins, currentStorageOwner(), state.peerKeyPins);
+}
+
+function readActivePeer() {
+  return String(readScopedStorageRecord(STORAGE.activePeer, currentStorageOwner()).username || "");
+}
+
+function saveActivePeer(username) {
+  writeScopedStorageRecord(STORAGE.activePeer, currentStorageOwner(), username ? { username } : {});
 }
 
 function clearSessionIdentityCache() {
@@ -1244,7 +1282,7 @@ function normalizePendingOutboxEntry(entry) {
 }
 
 function savePendingOutbox() {
-  writeJsonStorage(STORAGE.pendingOutbox, state.pendingOutbox);
+  writeScopedStorageRecord(STORAGE.pendingOutbox, currentStorageOwner(), state.pendingOutbox);
 }
 
 function syncPendingMessagesFromOutbox() {
@@ -1269,7 +1307,7 @@ function syncPendingMessagesFromOutbox() {
 }
 
 function loadPendingOutbox() {
-  const rawEntries = readJsonStorage(STORAGE.pendingOutbox, []);
+  const rawEntries = readScopedStorageRecord(STORAGE.pendingOutbox, currentStorageOwner());
   state.pendingOutbox = Array.isArray(rawEntries)
     ? rawEntries.map(normalizePendingOutboxEntry).filter(Boolean)
     : [];
@@ -1443,6 +1481,10 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     return;
   }
   const parts = [];
+  if (state.peerKeyMismatches.has(peer.username)) {
+    elements.securityStatus.textContent = "安全警告：联系人密钥已变化，发送已暂停，请核对安全码后确认新密钥。";
+    return;
+  }
   parts.push(state.identity?.privateKey ? "\u5bc6\u94a5\u5df2\u5c31\u7eea" : "\u5bc6\u94a5\u5df2\u9501\u5b9a");
   parts.push(state.peerKeys.has(peer.username) ? "\u5bf9\u7aef\u5bc6\u94a5\u5df2\u540c\u6b65" : "\u7b49\u5f85\u5bf9\u7aef\u5bc6\u94a5");
   if (state.connectionState === "online") {
@@ -1482,7 +1524,11 @@ function setAuthBusy(busy) {
 function setComposerBusy(busy) {
   state.composerBusy = busy;
   const activeContact = state.activePeer ? contactRecord(state.activePeer) : null;
-  const blocked = Boolean(activeContact?.blocked || activeContact?.blockedByPeer);
+  const blocked = Boolean(
+    activeContact?.blocked ||
+    activeContact?.blockedByPeer ||
+    state.peerKeyMismatches.has(state.activePeer)
+  );
   elements.sendButton.disabled = busy || !state.activePeer || blocked;
   elements.messageInput.disabled = busy || !state.activePeer || blocked;
 }
@@ -1615,12 +1661,12 @@ function createSpacer(height) {
   return spacer;
 }
 
-function clearStoredSessionArtifacts(clearIdentity = true, clearActivePeer = true, clearPending = true) {
+function clearStoredSessionArtifacts(owner, clearIdentity = true, clearActivePeer = true, clearPending = true) {
   if (clearActivePeer) {
-    localStorage.removeItem(STORAGE.activePeer);
+    writeScopedStorageRecord(STORAGE.activePeer, owner, {});
   }
   if (clearPending) {
-    localStorage.removeItem(STORAGE.pendingOutbox);
+    writeScopedStorageRecord(STORAGE.pendingOutbox, owner, []);
   }
   if (clearIdentity) {
     clearSessionIdentityCache();
@@ -1641,6 +1687,9 @@ function translateApiError(pathname, status, payload) {
     "account key material is missing": "账号密钥异常，请重新登录或重新注册",
     "too many auth requests": "请求过于频繁，请稍后再试",
     "current password invalid": "当前密码不正确",
+    "invalid private key bundle": "本地密钥更新失败，请重新登录后再试",
+    "public key cannot be changed with password": "账号公钥不匹配，请重新登录后再试",
+    "encrypted account password must be changed by the user": "加密账号只能由用户本人修改密码",
     "peer unavailable": "对方当前不可接收消息",
     "you blocked peer": "您已拉黑对方，解除后才能继续互动",
     "blocked by peer": "对方已将您拉黑，暂时无法发送消息",
@@ -1730,6 +1779,7 @@ function closeEventStream() {
 }
 
 function clearSession(showAuth = true, clearIdentity = true) {
+  const storageOwner = currentStorageOwner();
   closeEventStream();
   if (state.messageListRenderRaf) {
     window.cancelAnimationFrame(state.messageListRenderRaf);
@@ -1747,6 +1797,9 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.activePeer = "";
   state.messageCache.clear();
   state.peerKeys.clear();
+  state.peerKeyPins = {};
+  state.peerObservedKeys.clear();
+  state.peerKeyMismatches.clear();
   state.importedPeerKeys.clear();
   state.conversationKeys.clear();
   state.previewCache.clear();
@@ -1776,7 +1829,7 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.detailsPanelCollapsed = false;
   state.workspaceLoading = false;
 
-  clearStoredSessionArtifacts(clearIdentity, true);
+  clearStoredSessionArtifacts(storageOwner, clearIdentity, true);
   elements.globalSearchInput.value = "";
   elements.threadSearchInput.value = "";
   elements.messageInput.value = "";
@@ -1829,9 +1882,36 @@ function pageStateForPeer(username) {
 }
 
 function cachePeerInfo(item) {
-  if (item?.username && item?.publicKey) {
-    state.peerKeys.set(item.username, item.publicKey);
+  const username = String(item?.username || "");
+  const observedKey = String(item?.publicKey || "");
+  if (!username || !observedKey || username === state.me?.username) {
+    return;
   }
+  state.peerObservedKeys.set(username, observedKey);
+  const pinnedKey = String(state.peerKeyPins[username] || "");
+  if (!pinnedKey) {
+    state.peerKeyPins[username] = observedKey;
+    state.peerKeys.set(username, observedKey);
+    savePeerKeyPins();
+    return;
+  }
+  state.peerKeys.set(username, pinnedKey);
+  if (pinnedKey === observedKey) {
+    state.peerKeyMismatches.delete(username);
+  } else {
+    state.peerKeyMismatches.add(username);
+  }
+}
+
+async function safetyCodeForPeer(username) {
+  const peerKey = state.peerKeys.get(username);
+  if (!peerKey || !state.identity?.publicKeyBase64) {
+    return "不可用";
+  }
+  const keys = [state.identity.publicKeyBase64, peerKey].sort().join(":");
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", textEncoder.encode(keys)));
+  const digits = Array.from(digest.slice(0, 10), (value) => String(value).padStart(3, "0")).join("");
+  return digits.match(/.{1,5}/g).join(" ");
 }
 
 function getConversation(username) {
@@ -2145,6 +2225,18 @@ function renderContactDetails(peer) {
   }
   if (elements.detailsLastSeen) {
     elements.detailsLastSeen.textContent = peer.online ? "当前在线" : formatLastSeen(contact?.lastSeenAt || 0);
+  }
+  if (elements.detailsSafetyCode) {
+    const requestedPeer = peer.username;
+    elements.detailsSafetyCode.textContent = "计算中";
+    void safetyCodeForPeer(requestedPeer).then((code) => {
+      if (state.activePeer === requestedPeer) {
+        elements.detailsSafetyCode.textContent = code;
+      }
+    });
+  }
+  if (elements.detailsTrustKeyButton) {
+    elements.detailsTrustKeyButton.hidden = !state.peerKeyMismatches.has(peer.username);
   }
   elements.detailsAbout.textContent = contactAboutText(peer.username);
   elements.notificationsToggle.checked = !prefs.muted;
@@ -2819,7 +2911,14 @@ async function getConversationKey(peerUsername, peerPublicKeyBase64) {
   if (!state.identity || !state.me) {
     throw new Error("本地密钥未就绪");
   }
-  const rawPeerKey = peerPublicKeyBase64 || state.peerKeys.get(peerUsername);
+  const observedKey = peerPublicKeyBase64 || state.peerObservedKeys.get(peerUsername) || state.peerKeys.get(peerUsername);
+  if (observedKey) {
+    cachePeerInfo({ username: peerUsername, publicKey: observedKey });
+  }
+  if (state.peerKeyMismatches.has(peerUsername)) {
+    throw new Error("联系人安全密钥已改变，请确认后再继续聊天");
+  }
+  const rawPeerKey = state.peerKeys.get(peerUsername);
   if (!rawPeerKey) {
     throw new Error("缺少对端公钥");
   }
@@ -3365,7 +3464,7 @@ async function openConversation(username) {
   ensureConversationEntry(username);
   state.activePeer = username;
   state.detailsPanelOpen = false;
-  localStorage.setItem(STORAGE.activePeer, username);
+  saveActivePeer(username);
   clearReplyTarget();
   state.threadSearchQuery = "";
   elements.threadSearchInput.value = "";
@@ -3419,6 +3518,9 @@ async function openConversation(username) {
     renderThread({ scrollBehavior: "bottom" });
     void markConversationRead(username);
   } catch (error) {
+    if (state.peerKeyMismatches.has(username)) {
+      render();
+    }
     showToast(error.message);
   }
 }
@@ -3482,7 +3584,7 @@ function closeConversationOnMobile() {
   clearReplyTarget();
   state.activePeer = "";
   state.detailsPanelOpen = false;
-  localStorage.removeItem(STORAGE.activePeer);
+  saveActivePeer("");
   render();
 }
 
@@ -3490,7 +3592,7 @@ function focusGlobalSearch() {
   if (isMobile() && state.activePeer) {
     state.activePeer = "";
     state.detailsPanelOpen = false;
-    localStorage.removeItem(STORAGE.activePeer);
+    saveActivePeer("");
     render();
   }
   window.setTimeout(() => {
@@ -3507,7 +3609,7 @@ function focusSidebarSearch() {
   if (isMobile() && state.activePeer) {
     state.activePeer = "";
     state.detailsPanelOpen = false;
-    localStorage.removeItem(STORAGE.activePeer);
+    saveActivePeer("");
     render();
   }
   window.setTimeout(() => {
@@ -3538,8 +3640,17 @@ async function handleUserRenamed(payload) {
   }
 
   if (state.me?.username === previousUsername) {
-    renameScopedStorageOwner(STORAGE.accountProfile, previousUsername, nextUsername);
-    renameScopedStorageOwner(STORAGE.contactProfiles, previousUsername, nextUsername);
+    for (const key of [
+      STORAGE.accountProfile,
+      STORAGE.contactProfiles,
+      STORAGE.conversationPrefs,
+      STORAGE.drafts,
+      STORAGE.pendingOutbox,
+      STORAGE.activePeer,
+      STORAGE.peerKeyPins
+    ]) {
+      renameScopedStorageOwner(key, previousUsername, nextUsername);
+    }
     state.me = {
       ...state.me,
       username: nextUsername
@@ -3552,13 +3663,25 @@ async function handleUserRenamed(payload) {
 
   if (state.activePeer === previousUsername) {
     state.activePeer = nextUsername;
-    localStorage.setItem(STORAGE.activePeer, nextUsername);
+    saveActivePeer(nextUsername);
   }
 
   if (Object.prototype.hasOwnProperty.call(state.drafts, previousUsername)) {
     state.drafts[nextUsername] = state.drafts[previousUsername];
     delete state.drafts[previousUsername];
     saveDrafts();
+  }
+  if (Object.prototype.hasOwnProperty.call(state.peerKeyPins, previousUsername)) {
+    state.peerKeyPins[nextUsername] = state.peerKeyPins[previousUsername];
+    delete state.peerKeyPins[previousUsername];
+    savePeerKeyPins();
+  }
+  if (state.peerObservedKeys.has(previousUsername)) {
+    state.peerObservedKeys.set(nextUsername, state.peerObservedKeys.get(previousUsername));
+    state.peerObservedKeys.delete(previousUsername);
+  }
+  if (state.peerKeyMismatches.delete(previousUsername)) {
+    state.peerKeyMismatches.add(nextUsername);
   }
   if (Object.prototype.hasOwnProperty.call(state.contactProfiles, previousUsername)) {
     state.contactProfiles[nextUsername] = state.contactProfiles[previousUsername];
@@ -3951,7 +4074,7 @@ async function afterLogin() {
     startEventStream();
     void flushPendingOutbox();
 
-    const savedPeer = localStorage.getItem(STORAGE.activePeer) || "";
+    const savedPeer = readActivePeer();
     render();
     if (savedPeer && state.peerKeys.has(savedPeer)) {
       await openConversation(savedPeer);
@@ -4102,6 +4225,10 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
 async function submitMessage(event) {
   event.preventDefault();
   if (!state.activePeer) {
+    return;
+  }
+  if (state.peerKeyMismatches.has(state.activePeer)) {
+    showToast("联系人密钥已变化，请先在联系人详情中确认", "error");
     return;
   }
   const contact = contactRecord(state.activePeer);
@@ -4831,6 +4958,25 @@ function bindEvents() {
       showToast("复制失败", "error");
     }
   });
+  elements.detailsTrustKeyButton?.addEventListener("click", async () => {
+    const peer = state.activePeer;
+    const observedKey = state.peerObservedKeys.get(peer);
+    if (!peer || !observedKey || !state.peerKeyMismatches.has(peer)) {
+      return;
+    }
+    if (!window.confirm("仅在你已通过其他渠道确认对方身份后继续。是否信任这把新密钥？")) {
+      return;
+    }
+    state.peerKeyPins[peer] = observedKey;
+    state.peerKeys.set(peer, observedKey);
+    state.peerKeyMismatches.delete(peer);
+    state.conversationKeys.clear();
+    state.importedPeerKeys.clear();
+    savePeerKeyPins();
+    render();
+    showToast("已信任新密钥");
+    await openConversation(peer);
+  });
   elements.deleteContactButton?.addEventListener("click", async () => {
     if (!state.activePeer) {
       return;
@@ -5071,11 +5217,20 @@ function bindEvents() {
       return;
     }
     try {
+      if (!state.identity?.privateKeyPkcs8Base64 || !state.identity?.publicKeyBase64) {
+        throw new Error("本地密钥未就绪，请重新登录后再试");
+      }
+      const keyBundle = await encryptPrivateKeyBundle(
+        base64ToBytes(state.identity.privateKeyPkcs8Base64),
+        newPw
+      );
       await api("/api/me/password", {
         method: "POST",
         body: {
           currentPassword: currentPw,
-          newPassword: newPw
+          newPassword: newPw,
+          publicKey: state.identity.publicKeyBase64,
+          ...keyBundle
         }
       });
       closeEventStream();

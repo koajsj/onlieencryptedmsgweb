@@ -75,6 +75,22 @@ const elements = {
   dialogConfirmButton: document.querySelector("#dialogConfirmButton")
 };
 
+const ADMIN_PANEL_IDS = [
+  "overviewPanel",
+  "healthPanel",
+  "accessPanel",
+  "accessLogsPanel",
+  "usersPanel",
+  "messagesPanel",
+  "auditPanel"
+];
+
+const adminNavigation = document.querySelector(".sidebar-nav");
+const adminProfileButton = document.querySelector("#adminProfileButton");
+const adminProfileMenu = document.querySelector("#adminProfileMenu");
+const adminMenuRefreshButton = document.querySelector("#adminMenuRefreshButton");
+const adminMenuLogoutButton = document.querySelector("#adminMenuLogoutButton");
+
 const state = {
   token: "",
   admin: { username: "", role: "admin" },
@@ -167,6 +183,18 @@ function updateAdminHeader() {
     elements.refreshMeta.textContent = state.lastRefreshAt
       ? `最后刷新 ${formatDateTime(state.lastRefreshAt)}`
       : "尚未刷新";
+  }
+  const username = state.admin.username || "管理员";
+  const role = state.admin.role || "admin";
+  for (const element of document.querySelectorAll("#adminProfileName, #adminMenuName")) {
+    element.textContent = username;
+  }
+  for (const element of document.querySelectorAll("#adminProfileRole, #adminMenuRole")) {
+    element.textContent = role;
+  }
+  const avatar = document.querySelector("#adminAvatarText");
+  if (avatar) {
+    avatar.textContent = Array.from(username)[0] || "管";
   }
 }
 
@@ -278,7 +306,44 @@ function setLoggedIn(loggedIn) {
   elements.dashboard.hidden = !loggedIn;
   if (loggedIn) {
     syncMessageAuditControls();
+    syncActiveAdminPanel();
   }
+}
+
+function activeAdminPanelId() {
+  const requested = String(window.location.hash || "").slice(1);
+  return ADMIN_PANEL_IDS.includes(requested) ? requested : "overviewPanel";
+}
+
+function syncActiveAdminPanel(panelId = activeAdminPanelId()) {
+  const activeId = ADMIN_PANEL_IDS.includes(panelId) ? panelId : "overviewPanel";
+  for (const id of ADMIN_PANEL_IDS) {
+    const panel = document.getElementById(id);
+    if (panel) {
+      panel.hidden = id !== activeId;
+    }
+  }
+  if (elements.statsGrid) {
+    elements.statsGrid.hidden = activeId !== "overviewPanel";
+  }
+  for (const link of adminNavigation?.querySelectorAll("a[href^='#']") || []) {
+    const selected = link.getAttribute("href") === `#${activeId}`;
+    link.classList.toggle("is-active", selected);
+    if (selected) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
+  }
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
+
+function closeAdminProfileMenu() {
+  if (!adminProfileMenu || !adminProfileButton) {
+    return;
+  }
+  adminProfileMenu.hidden = true;
+  adminProfileButton.setAttribute("aria-expanded", "false");
 }
 
 function parseSortValue() {
@@ -695,10 +760,9 @@ function renderMessages() {
 
 function renderAuditLogs() {
   if (!hasPermission("admin:audit:read")) {
-    elements.auditList.parentElement.hidden = true;
+    elements.auditList.textContent = "";
     return;
   }
-  elements.auditList.parentElement.hidden = false;
   elements.auditList.textContent = "";
   if (state.logs.length === 0) {
     const empty = document.createElement("article");
@@ -899,6 +963,7 @@ async function refreshAll(resetMessages = true) {
   ]);
   await loadMessages(resetMessages);
   markAdminRefreshed();
+  syncActiveAdminPanel();
 }
 
 function syncMessageAuditControls() {
@@ -1065,6 +1130,48 @@ async function handleUserAction(event) {
 
 function bindEvents() {
   const close = () => closeDialog({ confirmed: false, value: "" });
+  adminNavigation?.addEventListener("click", (event) => {
+    if (!isElementNode(event.target)) {
+      return;
+    }
+    const link = event.target.closest("a[href^='#']");
+    if (!link) {
+      return;
+    }
+    const panelId = String(link.getAttribute("href") || "").slice(1);
+    if (!ADMIN_PANEL_IDS.includes(panelId)) {
+      return;
+    }
+    event.preventDefault();
+    window.history.pushState(null, "", `#${panelId}`);
+    syncActiveAdminPanel(panelId);
+    closeAdminProfileMenu();
+  });
+  window.addEventListener("popstate", () => syncActiveAdminPanel());
+  adminProfileButton?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const open = adminProfileMenu?.hidden !== false;
+    if (adminProfileMenu) {
+      adminProfileMenu.hidden = !open;
+    }
+    adminProfileButton.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  adminProfileMenu?.addEventListener("click", (event) => event.stopPropagation());
+  document.addEventListener("click", closeAdminProfileMenu);
+  adminMenuRefreshButton?.addEventListener("click", async () => {
+    closeAdminProfileMenu();
+    try {
+      await refreshAll(true);
+      showToast("已刷新");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  adminMenuLogoutButton?.addEventListener("click", async () => {
+    closeAdminProfileMenu();
+    await logout();
+    showToast("已退出");
+  });
   elements.dialogCancelButton.addEventListener("click", close);
   elements.dialogBackdrop.addEventListener("click", (event) => {
     if (event.target === elements.dialogBackdrop) {

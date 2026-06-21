@@ -2094,6 +2094,10 @@ async function handleMePassword(req, res, url) {
   }
   const currentPassword = normalizePassword(body.currentPassword);
   const nextPassword = normalizePassword(body.newPassword);
+  const publicKey = String(body.publicKey || "").trim();
+  const privateKeySalt = String(body.privateKeySalt || "").trim();
+  const privateKeyIv = String(body.privateKeyIv || "").trim();
+  const encryptedPrivateKey = String(body.encryptedPrivateKey || "").trim();
   if (!currentPassword || !nextPassword) {
     sendJson(res, 400, { error: "currentPassword and newPassword are required" });
     return;
@@ -2102,12 +2106,27 @@ async function handleMePassword(req, res, url) {
     sendJson(res, 400, { error: "password must be 4-72 characters" });
     return;
   }
+  if (publicKey !== user.publicKey) {
+    sendJson(res, 409, { error: "public key cannot be changed with password" });
+    return;
+  }
+  if (
+    !isBase64Blob(privateKeySalt, PRIVATE_KEY_SALT_BYTES.min, PRIVATE_KEY_SALT_BYTES.max) ||
+    !isBase64Blob(privateKeyIv, PRIVATE_KEY_IV_BYTES.min, PRIVATE_KEY_IV_BYTES.max) ||
+    !isBase64Blob(encryptedPrivateKey, ENCRYPTED_PRIVATE_KEY_BYTES.min, ENCRYPTED_PRIVATE_KEY_BYTES.max)
+  ) {
+    sendJson(res, 400, { error: "invalid private key bundle" });
+    return;
+  }
   const currentOk = await verifyPassword(currentPassword, user.passwordHash || DUMMY_PASSWORD_HASH);
   if (!currentOk) {
     sendJson(res, 403, { error: "current password invalid" });
     return;
   }
   user.passwordHash = await hashPassword(nextPassword);
+  user.privateKeySalt = privateKeySalt;
+  user.privateKeyIv = privateKeyIv;
+  user.encryptedPrivateKey = encryptedPrivateKey;
   persistUsers();
   const revoked = deleteSessionsForUsername(user.username, "user");
   purgeUserEventTickets(user.username);
@@ -2495,9 +2514,9 @@ async function handleAdminAccountReset(req, res) {
   updateRuntimeAdminConfig(nextConfig);
   clearAdminLoginFailures(previousUsername);
   clearAdminLoginFailures(nextConfig.username);
-  for (const sessionRecord of sessions.values()) {
+  for (const [token, sessionRecord] of sessions.entries()) {
     if (sessionRecord.role === "admin") {
-      sessionRecord.username = nextConfig.username;
+      sessions.delete(token);
     }
   }
   recordAdminAction("admin_account_reset", { username: nextConfig.username, role: "admin" }, req, {
@@ -2510,6 +2529,8 @@ async function handleAdminAccountReset(req, res) {
       username: nextConfig.username,
       role: "admin"
     }
+  }, {
+    "Set-Cookie": clearSessionCookieHeader(ADMIN_SESSION_COOKIE)
   });
 }
 
@@ -2740,6 +2761,11 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     return;
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, "password")) {
+    sendJson(res, 409, { error: "encrypted account password must be changed by the user" });
+    return;
+  }
+
   const requestedName = normalizeBoundedText(body.username || "", 24);
   const oldState = adminPublicUser(user);
   let shouldRevokeUserSessions = false;
@@ -2817,19 +2843,6 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     if (banned) {
       shouldRevokeUserSessions = true;
       disconnectReason = "account banned by admin";
-    }
-  }
-
-  if (typeof body.password === "string" && body.password.trim()) {
-    const nextPassword = normalizePassword(body.password);
-    if (nextPassword.length < 4 || nextPassword.length > 72) {
-      sendJson(res, 400, { error: "password must be 4-72 characters" });
-      return;
-    }
-    user.passwordHash = await hashPassword(nextPassword);
-    shouldRevokeUserSessions = true;
-    if (!disconnectReason) {
-      disconnectReason = "password reset by admin";
     }
   }
 
