@@ -190,6 +190,7 @@ const state = {
   accountMenuAnchor: null,
   settingsDialogOpen: false,
   settingsDialogSection: "account",
+  settingsDialogReturnFocus: null,
   contextMenuMessageId: "",
   previewMode: false,
   workspaceLoading: false,
@@ -389,7 +390,7 @@ function setAvatar(node, username) {
 }
 
 function isDetailsDrawerLayout() {
-  return window.innerWidth <= 1420;
+  return window.innerWidth < 1280;
 }
 
 function showToast(message, kind = "info") {
@@ -580,6 +581,7 @@ function populateSettingsDialog() {
 
 function openSettingsDialog(section = "account") {
   const nextSection = section === "security" ? "security" : "account";
+  state.settingsDialogReturnFocus = isElementNode(document.activeElement) ? document.activeElement : null;
   state.settingsDialogOpen = true;
   if (elements.settingsDialog) {
     elements.settingsDialog.hidden = false;
@@ -587,14 +589,42 @@ function openSettingsDialog(section = "account") {
   setSettingsDialogSection(nextSection);
   populateSettingsDialog();
   syncLayoutState();
+  window.requestAnimationFrame(() => elements.settingsDialogCloseButton?.focus());
 }
 
 function closeSettingsDialog() {
+  const returnFocus = state.settingsDialogReturnFocus;
+  state.settingsDialogReturnFocus = null;
   state.settingsDialogOpen = false;
   if (elements.settingsDialog) {
     elements.settingsDialog.hidden = true;
   }
   syncLayoutState();
+  if (returnFocus?.isConnected) {
+    returnFocus.focus();
+  }
+}
+
+function trapSettingsDialogFocus(event) {
+  if (event.key !== "Tab" || !elements.settingsDialog) {
+    return;
+  }
+  const focusable = [...elements.settingsDialog.querySelectorAll(
+    "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])"
+  )].filter((element) => !element.hidden && element.offsetParent !== null);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function closeEmojiPanel() {
@@ -1465,11 +1495,20 @@ function syncLayoutState() {
   if (!isDetailsDrawerLayout()) {
     state.detailsPanelOpen = false;
   }
+  const detailsDrawerClosed = isDetailsDrawerLayout() && !state.detailsPanelOpen;
   document.body.classList.toggle("is-mobile", isMobile());
   document.body.classList.toggle("is-chat-open", isMobile() && Boolean(state.activePeer));
   document.body.classList.toggle("is-details-open", isDetailsDrawerLayout() && state.detailsPanelOpen);
   document.body.classList.toggle("is-details-collapsed", !isDetailsDrawerLayout() && state.detailsPanelCollapsed);
   document.body.classList.toggle("is-dialog-open", state.settingsDialogOpen);
+  if (elements.workspace) {
+    elements.workspace.inert = state.settingsDialogOpen;
+    elements.workspace.setAttribute("aria-hidden", state.settingsDialogOpen ? "true" : "false");
+  }
+  if (elements.contactPanel) {
+    elements.contactPanel.inert = detailsDrawerClosed;
+    elements.contactPanel.setAttribute("aria-hidden", detailsDrawerClosed ? "true" : "false");
+  }
   if (state.accountMenuOpen && state.accountMenuAnchor && state.accountMenuAnchor.offsetParent === null) {
     closeAccountMenu();
     return;
@@ -1732,6 +1771,7 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.activeNavSection = "messages";
   state.settingsDialogOpen = false;
   state.settingsDialogSection = "account";
+  state.settingsDialogReturnFocus = null;
   state.previewMode = false;
   state.detailsPanelCollapsed = false;
   state.workspaceLoading = false;
@@ -1750,6 +1790,7 @@ function clearSession(showAuth = true, clearIdentity = true) {
   if (showAuth) {
     elements.workspace.hidden = true;
     elements.authScreen.hidden = false;
+    setAuthMode("login");
   }
 }
 
@@ -4582,6 +4623,15 @@ function handleDetailActionClick(event) {
 }
 
 function handleGlobalKeydown(event) {
+  if (state.settingsDialogOpen) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSettingsDialog();
+      return;
+    }
+    trapSettingsDialogFocus(event);
+    return;
+  }
   const isMeta = event.ctrlKey || event.metaKey;
   if (isMeta && event.key.toLowerCase() === "k") {
     event.preventDefault();
@@ -4613,10 +4663,6 @@ function handleGlobalKeydown(event) {
   }
   if (event.key === "Escape" && state.emojiPanelOpen) {
     closeEmojiPanel();
-    return;
-  }
-  if (event.key === "Escape" && state.settingsDialogOpen) {
-    closeSettingsDialog();
     return;
   }
   if (event.key === "Escape" && state.accountMenuOpen) {
