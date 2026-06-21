@@ -1,7 +1,12 @@
 "use strict";
 
 const path = require("node:path");
-const { HSTS_MAX_AGE_SECONDS, TRUST_PROXY, TRUSTED_ORIGINS } = require("../config");
+const {
+  HSTS_MAX_AGE_SECONDS,
+  TRUST_PROXY,
+  TRUSTED_ORIGINS,
+  TRUSTED_PROXY_ADDRESSES
+} = require("../config");
 
 function securityHeaders(extra = {}) {
   const headers = {
@@ -39,7 +44,7 @@ function sendJson(res, status, payload, extraHeaders = {}) {
 }
 
 function getClientAddress(req) {
-  if (TRUST_PROXY) {
+  if (isTrustedProxyRequest(req)) {
     const forwardedFor = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
     if (forwardedFor) {
       return forwardedFor;
@@ -48,8 +53,16 @@ function getClientAddress(req) {
   return req.socket.remoteAddress || "unknown";
 }
 
+function isTrustedProxyRequest(req) {
+  if (!TRUST_PROXY) {
+    return false;
+  }
+  const remoteAddress = String(req.socket.remoteAddress || "").trim().toLowerCase();
+  return TRUSTED_PROXY_ADDRESSES.has(remoteAddress);
+}
+
 function normalizedRequestHost(req) {
-  const forwardedHost = TRUST_PROXY ? String(req.headers["x-forwarded-host"] || "") : "";
+  const forwardedHost = isTrustedProxyRequest(req) ? String(req.headers["x-forwarded-host"] || "") : "";
   const rawHost = forwardedHost || String(req.headers.host || "");
   const primaryHost = rawHost.split(",")[0].trim().replace(/^https?:\/\//i, "");
   if (!primaryHost) {
@@ -60,6 +73,18 @@ function normalizedRequestHost(req) {
   } catch (error) {
     return "localhost";
   }
+}
+
+function normalizedRequestOrigin(req) {
+  const forwardedProto = isTrustedProxyRequest(req)
+    ? String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase()
+    : "";
+  const protocol = forwardedProto === "https" || forwardedProto === "http"
+    ? forwardedProto
+    : req.socket.encrypted
+      ? "https"
+      : "http";
+  return `${protocol}://${normalizedRequestHost(req)}`;
 }
 
 function parseRequestUrl(req) {
@@ -82,13 +107,13 @@ function isSameOriginRequest(req) {
       if (TRUSTED_ORIGINS.has(origin)) {
         return true;
       }
-      return new URL(origin).host === normalizedRequestHost(req);
+      return new URL(origin).origin === normalizedRequestOrigin(req);
     }
     const refererUrl = new URL(referer);
     if (TRUSTED_ORIGINS.has(refererUrl.origin)) {
       return true;
     }
-    return refererUrl.host === normalizedRequestHost(req);
+    return refererUrl.origin === normalizedRequestOrigin(req);
   } catch (error) {
     return false;
   }
@@ -114,6 +139,7 @@ module.exports = {
   sendJson,
   getClientAddress,
   normalizedRequestHost,
+  normalizedRequestOrigin,
   parseRequestUrl,
   isSameOriginRequest,
   cacheControlForStaticFile,

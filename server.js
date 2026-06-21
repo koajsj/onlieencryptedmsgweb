@@ -38,6 +38,7 @@ const {
   MAX_API_REQUESTS_PER_WINDOW, MAX_MESSAGES_PER_CONVERSATION_WINDOW,
   HEARTBEAT_MS, EVENT_TICKET_TTL_MS, MESSAGE_PERSIST_DEBOUNCE_MS,
   HSTS_MAX_AGE_SECONDS, COOKIE_SECURE, ENABLE_ACCESS_LOG,
+  ACCESS_LOG_RETENTION_DAYS, ACCESS_LOG_MAX_QUEUE, ALLOW_BEARER_AUTH,
   USER_SESSION_COOKIE, ADMIN_SESSION_COOKIE,
   DEFAULT_ADMIN_USERNAME_VALUE,
   AUDIT_TEXT_RETENTION_DAYS, TRUST_PROXY, TRUSTED_ORIGINS,
@@ -116,6 +117,8 @@ const adminAuditHmacKeyState = readAuditHmacKeyState(adminConfig.credential);
 const accessLogStore = createAccessLogStore({
   dataDir: DATA_DIR,
   enabled: ENABLE_ACCESS_LOG,
+  retentionDays: ACCESS_LOG_RETENTION_DAYS,
+  maxQueueSize: ACCESS_LOG_MAX_QUEUE,
   logger: (error) => {
     console.error(`[access-log] ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -828,7 +831,7 @@ function cookieAttributes(maxAgeSeconds, pathValue = "/") {
     `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
     `Path=${pathValue}`,
     "HttpOnly",
-    "SameSite=Lax",
+    "SameSite=Strict",
     COOKIE_SECURE ? "Secure" : ""
   ]
     .filter(Boolean)
@@ -848,6 +851,9 @@ function sessionCookieNameForPath(pathname) {
 }
 
 function parseBearerToken(req) {
+  if (!ALLOW_BEARER_AUTH) {
+    return "";
+  }
   const auth = String(req.headers.authorization || "");
   if (!auth.startsWith("Bearer ")) {
     return "";
@@ -943,6 +949,10 @@ function createEventTicketForSession(session) {
     expiresAt: Date.now() + EVENT_TICKET_TTL_MS
   });
   return ticket;
+}
+
+function authResponseToken(token) {
+  return ALLOW_BEARER_AUTH ? { token } : {};
 }
 
 function consumeEventTicket(ticket) {
@@ -1818,7 +1828,7 @@ async function handleRegister(req, res) {
   const token = createSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 201, {
-    token,
+    ...authResponseToken(token),
     user: publicUser(user),
     keyBundle: keyBundleForUser(user)
   }, {
@@ -1889,7 +1899,7 @@ async function handleLogin(req, res) {
   const token = createSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 200, {
-    token,
+    ...authResponseToken(token),
     user: publicUser(user),
     keyBundle: keyBundleForUser(user)
   }, {
@@ -2135,7 +2145,7 @@ async function handleMePassword(req, res, url) {
   sendJson(res, 200, {
     ok: true,
     revoked,
-    token
+    ...authResponseToken(token)
   }, {
     "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
   });
@@ -2421,7 +2431,7 @@ async function handleAdminLogin(req, res) {
   accessLogMiddleware.setUserId(req, account.username);
   recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
-    token,
+    ...authResponseToken(token),
     admin: {
       username: account.username,
       role: "admin"
@@ -3844,8 +3854,10 @@ const server = http.createServer((req, res) => {
 });
 
 server.requestTimeout = 30000;
-server.headersTimeout = 31000;
+server.headersTimeout = 10000;
 server.keepAliveTimeout = 65000;
+server.maxHeadersCount = 64;
+server.maxRequestsPerSocket = 1000;
 
 process.on("beforeExit", flushPendingMessagePersist);
 process.on("exit", flushPendingMessagePersist);

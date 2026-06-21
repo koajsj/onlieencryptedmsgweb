@@ -38,6 +38,15 @@ const HSTS_MAX_AGE_SECONDS = Math.max(0, Number.parseInt(process.env.HSTS_MAX_AG
 const COOKIE_SECURE =
   process.env.COOKIE_SECURE === "1" || (process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "0");
 const ENABLE_ACCESS_LOG = process.env.ENABLE_ACCESS_LOG !== "0";
+const ACCESS_LOG_RETENTION_DAYS = Math.max(
+  1,
+  Number.parseInt(process.env.ACCESS_LOG_RETENTION_DAYS || "30", 10) || 30
+);
+const ACCESS_LOG_MAX_QUEUE = Math.max(
+  100,
+  Number.parseInt(process.env.ACCESS_LOG_MAX_QUEUE || "10000", 10) || 10000
+);
+const ALLOW_BEARER_AUTH = process.env.ALLOW_BEARER_AUTH === "1";
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const DEFAULT_ADMIN_USERNAME_VALUE = "admin";
@@ -46,6 +55,12 @@ const ALLOW_INSECURE_DEFAULT_ADMIN = process.env.ALLOW_INSECURE_DEFAULT_ADMIN ==
 const ADMIN_CONFIG_ENV_FILE = process.env.ADMIN_CONFIG_ENV_FILE || "/etc/default/secure-chat";
 const AUDIT_TEXT_RETENTION_DAYS = Math.max(1, Number.parseInt(process.env.AUDIT_TEXT_RETENTION_DAYS || "30", 10) || 30);
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+const TRUSTED_PROXY_ADDRESSES = new Set(
+  (process.env.TRUSTED_PROXY_ADDRESSES || "127.0.0.1,::1,::ffff:127.0.0.1")
+    .split(",")
+    .map((address) => address.trim().toLowerCase())
+    .filter(Boolean)
+);
 const TRUSTED_ORIGINS = new Set(
   (process.env.TRUSTED_ORIGINS || "")
     .split(",")
@@ -132,6 +147,9 @@ module.exports = {
   HSTS_MAX_AGE_SECONDS,
   COOKIE_SECURE,
   ENABLE_ACCESS_LOG,
+  ACCESS_LOG_RETENTION_DAYS,
+  ACCESS_LOG_MAX_QUEUE,
+  ALLOW_BEARER_AUTH,
   USER_SESSION_COOKIE,
   ADMIN_SESSION_COOKIE,
   DEFAULT_ADMIN_USERNAME_VALUE,
@@ -140,6 +158,7 @@ module.exports = {
   ADMIN_CONFIG_ENV_FILE,
   AUDIT_TEXT_RETENTION_DAYS,
   TRUST_PROXY,
+  TRUSTED_PROXY_ADDRESSES,
   TRUSTED_ORIGINS,
   PUBLIC_KEY_BYTES,
   PRIVATE_KEY_SALT_BYTES,

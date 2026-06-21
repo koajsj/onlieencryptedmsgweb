@@ -8,6 +8,7 @@ const { UAParser } = require("ua-parser-js");
 const ACCESS_DB_FILE = "access_logs.sqlite";
 const DEFAULT_BATCH_SIZE = 80;
 const CLIENT_META_CACHE_LIMIT = 2000;
+const RETENTION_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function normalizeText(value, maxLength = 255) {
   return String(value || "").trim().slice(0, maxLength);
@@ -104,6 +105,10 @@ class AccessLogStore {
     this.dataDir = options.dataDir || process.cwd();
     this.dbFile = path.join(this.dataDir, ACCESS_DB_FILE);
     this.logger = typeof options.logger === "function" ? options.logger : () => {};
+    this.retentionDays = Math.max(1, Number(options.retentionDays) || 30);
+    this.maxQueueSize = Math.max(100, Number(options.maxQueueSize) || 10000);
+    this.droppedRows = 0;
+    this.lastPrunedAt = 0;
     this.db = null;
     this.ready = this.enabled ? this.initialize() : Promise.resolve();
     this.queue = [];
@@ -155,6 +160,7 @@ class AccessLogStore {
     await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_ip ON access_logs(ip);");
     await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_created_at ON access_logs(created_at);");
     await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_session_id ON access_logs(session_id);");
+    await this.pruneExpiredLogs(true);
   }
 
   async exec(sql) {
@@ -244,6 +250,10 @@ class AccessLogStore {
     if (!this.enabled || this.closing) {
       return;
     }
+    if (this.queue.length >= this.maxQueueSize) {
+      this.droppedRows += 1;
+      return;
+    }
     const sessionMeta = this.clientMetaBySession.get(String(record.sessionId || "")) || {};
     this.queue.push({
       type: "log",
@@ -257,6 +267,10 @@ class AccessLogStore {
 
   enqueueClientMeta(sessionId, meta) {
     if (!this.enabled || this.closing || !sessionId) {
+      return;
+    }
+    if (this.queue.length >= this.maxQueueSize) {
+      this.droppedRows += 1;
       return;
     }
     const normalizedMeta = this.normalizeClientMeta(meta);
@@ -304,6 +318,7 @@ class AccessLogStore {
           await this.applyClientMeta(item.sessionId, item.meta);
         }
       }
+      await this.pruneExpiredLogs();
     } catch (error) {
       this.logger(error);
     } finally {
@@ -312,6 +327,17 @@ class AccessLogStore {
         this.scheduleQueue();
       }
     }
+  }
+
+  async pruneExpiredLogs(force = false) {
+    const now = Date.now();
+    if (!this.db || (!force && now - this.lastPrunedAt < RETENTION_PRUNE_INTERVAL_MS)) {
+      return 0;
+    }
+    this.lastPrunedAt = now;
+    const cutoff = now - this.retentionDays * 24 * 60 * 60 * 1000;
+    const result = await this.runImmediate("DELETE FROM access_logs WHERE created_at < ?", [cutoff]);
+    return Number(result?.changes || 0);
   }
 
   normalizeClientMeta(meta) {
@@ -665,7 +691,9 @@ class AccessLogStore {
       enabled: this.enabled,
       dbFile: this.dbFile,
       dbBytes: this.enabled && fs.existsSync(this.dbFile) ? fs.statSync(this.dbFile).size : 0,
-      pendingQueue: this.queue.length
+      pendingQueue: this.queue.length,
+      droppedRows: this.droppedRows,
+      retentionDays: this.retentionDays
     };
   }
 

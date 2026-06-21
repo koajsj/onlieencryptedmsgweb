@@ -50,6 +50,14 @@ ensure_line() {
   fi
 }
 
+ensure_line_if_missing() {
+  local key="$1"
+  local value="$2"
+  if ! grep -qE "^${key}=" "${ENV_FILE}" 2>/dev/null; then
+    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}"
+  fi
+}
+
 remove_line() {
   local key="$1"
   if [ -f "${ENV_FILE}" ]; then
@@ -72,6 +80,10 @@ normalize_environment_file() {
     ADMIN_USERNAME="${existing_username}"
   fi
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
+  ensure_line_if_missing "TRUSTED_PROXY_ADDRESSES" "127.0.0.1,::1,::ffff:127.0.0.1"
+  ensure_line_if_missing "ALLOW_BEARER_AUTH" "0"
+  ensure_line_if_missing "ACCESS_LOG_RETENTION_DAYS" "30"
+  ensure_line_if_missing "ACCESS_LOG_MAX_QUEUE" "10000"
 
   if [ -n "${existing_hash}" ]; then
     ensure_line "ADMIN_PASSWORD_HASH" "${existing_hash}"

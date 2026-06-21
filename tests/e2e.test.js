@@ -97,6 +97,7 @@ async function startServer(envOverrides = {}) {
       DATA_DIR: dataDir,
       ADMIN_USERNAME: TEST_ADMIN_USERNAME,
       ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
+      ALLOW_BEARER_AUTH: "1",
       ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -138,6 +139,7 @@ async function startServerAndWaitForExit(envOverrides = {}) {
       DATA_DIR: dataDir,
       ADMIN_USERNAME: TEST_ADMIN_USERNAME,
       ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
+      ALLOW_BEARER_AUTH: "1",
       ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -178,6 +180,51 @@ test("static assets keep security headers and conditional caching", async () => 
       headers: { "If-None-Match": etag }
     });
     assert.equal(cached.status, 304);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("cookie-only auth is secure by default and rejects bearer fallback", async () => {
+  const server = await startServer({ ALLOW_BEARER_AUTH: "0" });
+  try {
+    const register = await postJson(server.port, "/api/register", {
+      username: "CookieOnly",
+      password: "pass1234",
+      ...SAMPLE_BUNDLES.Alice
+    });
+    assert.equal(register.status, 201);
+    const payload = await register.json();
+    assert.equal(payload.token, undefined);
+
+    const setCookie = String(register.headers.get("set-cookie") || "");
+    assert.match(setCookie, /HttpOnly/i);
+    assert.match(setCookie, /SameSite=Strict/i);
+    const sessionCookie = setCookie.split(";")[0];
+
+    const cookieMe = await getJsonWithOptions(server.port, "/api/me", { cookie: sessionCookie });
+    assert.equal(cookieMe.response.status, 200);
+
+    const bearerMe = await getJsonWithOptions(server.port, "/api/me", { token: "not-a-cookie-session" });
+    assert.equal(bearerMe.response.status, 401);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("same-origin checks reject protocol downgrade", async () => {
+  const server = await startServer();
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: `https://127.0.0.1:${server.port}`
+      },
+      body: JSON.stringify({ username: "Nobody", password: "invalid" })
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error, "forbidden origin");
   } finally {
     await server.stop();
   }
@@ -406,7 +453,7 @@ test("register and login require unique usernames and return encrypted key bundl
     const registerCookie = register.headers.get("set-cookie") || "";
     assert.match(registerCookie, /secure_chat_session=/);
     assert.match(registerCookie, /HttpOnly/);
-    assert.match(registerCookie, /SameSite=Lax/);
+    assert.match(registerCookie, /SameSite=Strict/);
 
     const duplicate = await postJson(server.port, "/api/register", {
       username: "alice_1",

@@ -200,6 +200,10 @@ write_environment_file() {
     printf 'NODE_ENV=production\n'
     printf 'COOKIE_SECURE=1\n'
     printf 'TRUST_PROXY=1\n'
+    printf 'TRUSTED_PROXY_ADDRESSES=127.0.0.1,::1,::ffff:127.0.0.1\n'
+    printf 'ALLOW_BEARER_AUTH=0\n'
+    printf 'ACCESS_LOG_RETENTION_DAYS=30\n'
+    printf 'ACCESS_LOG_MAX_QUEUE=10000\n'
     printf 'HSTS_MAX_AGE_SECONDS=31536000\n'
     printf 'TRUSTED_ORIGINS=%s,%s\n' "https://${DOMAIN}" "https://${WWW_DOMAIN}"
     printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME}"
