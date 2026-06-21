@@ -12,7 +12,7 @@
 - 管理员登录、用户管理、消息审查、系统状态与统计面板
 - 基于本地 JSON/JSONL 文件的数据持久化与审计记录
 
-适用环境：Debian 12、个人域名、Cloudflare 托管 DNS、Caddy 自动 HTTPS、Node.js 20。
+适用环境：Debian 12、个人域名、Cloudflare 托管 DNS、Caddy 自动 HTTPS、Node.js 20.17 或更高版本。
 
 ## 管理员账号
 
@@ -99,7 +99,7 @@ DOMAIN=example.com WWW_DOMAIN=www.example.com sudo -E bash scripts/deploy-debian
 
 脚本会自动完成：
 
-- 安装 Node.js 20、Git、Caddy
+- 安装 Node.js 20（最低 20.17）、Git、Caddy
 - 更新仓库到 `main`
 - 安装依赖并构建前端压缩文件
 - 写入 `/etc/systemd/system/secure-chat.service`
@@ -191,6 +191,8 @@ ss -lntp | grep -E ':80|:443|:3000'
 curl -s http://127.0.0.1:3000/health
 ```
 
+公开健康接口只返回存活状态。用户数、消息数、会话数和存储状态等详细指标仅在管理员后台提供。
+
 ## 6. 数据文件
 
 生产数据目录：
@@ -245,6 +247,8 @@ ss -lntp | grep ':443'
 如果有 Nginx、Apache、宝塔面板站点或其他 Web 服务占用了 `443`，先停掉它，再重新执行部署脚本。
 
 ## 8. 本地开发
+
+本地需要 Node.js 20.17 或更高版本。
 
 本地启动必须提供管理员凭据，否则服务会报错退出：
 

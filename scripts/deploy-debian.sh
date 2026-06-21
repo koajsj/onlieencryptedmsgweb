@@ -226,6 +226,21 @@ EnvironmentFile=${ENV_FILE}
 ExecStart=/usr/bin/node ${APP_DIR}/server.js
 Restart=on-failure
 RestartSec=2
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=${DATA_DIR} ${ENV_FILE}
 
 [Install]
 WantedBy=multi-user.target

@@ -108,8 +108,16 @@ async function startServer(envOverrides = {}) {
     port,
     stop: async () => {
       if (serverProcess.exitCode === null) {
-        serverProcess.kill();
-        await delay(80);
+        const exited = new Promise((resolve) => serverProcess.once("exit", resolve));
+        serverProcess.kill("SIGTERM");
+        const stoppedGracefully = await Promise.race([
+          exited.then(() => true),
+          delay(2000).then(() => false)
+        ]);
+        if (!stoppedGracefully && serverProcess.exitCode === null) {
+          serverProcess.kill("SIGKILL");
+          await exited;
+        }
       }
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
@@ -155,6 +163,25 @@ async function startServerAndWaitForExit(envOverrides = {}) {
   }
   return { exitCode, stderr: stderrText };
 }
+
+test("static assets keep security headers and conditional caching", async () => {
+  const server = await startServer();
+  try {
+    const page = await fetch(`http://127.0.0.1:${server.port}/`);
+    assert.equal(page.status, 200);
+    assert.match(String(page.headers.get("content-type") || ""), /^text\/html/);
+    assert.equal(page.headers.get("x-content-type-options"), "nosniff");
+    const etag = page.headers.get("etag");
+    assert.ok(etag);
+
+    const cached = await fetch(`http://127.0.0.1:${server.port}/`, {
+      headers: { "If-None-Match": etag }
+    });
+    assert.equal(cached.status, 304);
+  } finally {
+    await server.stop();
+  }
+});
 
 test("server fails fast on malformed data files", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-site-bad-data-"));
@@ -1581,6 +1608,7 @@ test("server accepts the explicitly configured legacy admin password", async () 
   try {
     const health = await getJson(server.port, "/health", "");
     assert.equal(health.response.status, 200);
+    assert.deepEqual(health.json, { ok: true });
   } finally {
     await server.stop();
   }

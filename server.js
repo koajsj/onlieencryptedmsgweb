@@ -3,10 +3,10 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
-const path = require("node:path");
 const UAParser = require("ua-parser-js");
 const { createAccessLogMiddleware } = require("./middleware/access-log");
 const { createAccessLogStore } = require("./services/access-log-store");
+const { createStaticFileServer } = require("./services/static-file-server");
 const {
   ADMIN_AUDIT_HMAC_ALGO, ADMIN_AUDIT_SHA_ALGO,
   readConfiguredAdminConfig, validateConfiguredAdminConfig, warnIfWeakAdminCredential,
@@ -15,7 +15,7 @@ const {
 } = require("./services/admin-config");
 const {
   securityHeaders, sendJson, getClientAddress, normalizedRequestHost,
-  parseRequestUrl, isSameOriginRequest, cacheControlForStaticFile, weakEtagForStat
+  parseRequestUrl, isSameOriginRequest
 } = require("./utils/http");
 const { readJsonFile, readJsonLinesFile, writeJsonFile, rewriteJsonLinesFile } = require("./utils/data");
 const {
@@ -43,7 +43,6 @@ const {
   AUDIT_TEXT_RETENTION_DAYS, TRUST_PROXY, TRUSTED_ORIGINS,
   PUBLIC_KEY_BYTES, PRIVATE_KEY_SALT_BYTES, PRIVATE_KEY_IV_BYTES,
   ENCRYPTED_PRIVATE_KEY_BYTES, MESSAGE_NONCE_BYTES, MESSAGE_CIPHERTEXT_BYTES,
-  contentTypes,
   ADMIN_LOGIN_FAILURE_WINDOW_MS, ADMIN_LOGIN_LOCKOUT_MS, ADMIN_LOGIN_MAX_FAILURES,
   USER_LOGIN_FAILURE_WINDOW_MS, USER_LOGIN_LOCKOUT_MS, USER_LOGIN_MAX_FAILURES,
   MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER, DUMMY_PASSWORD_HASH
@@ -71,6 +70,7 @@ let messagesDirty = false;
 let messagesRequireFullPersist = false;
 const pendingMessageAppends = [];
 const serverStartedAt = Date.now();
+const serveStatic = createStaticFileServer(PUBLIC_DIR);
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -1638,6 +1638,21 @@ function disconnectUserRealtime(username, reason = "admin action") {
   }
   onlineConnections.delete(username);
   pushPresence(username, false);
+}
+
+function disconnectAllRealtime(reason = "server shutting down") {
+  for (const connections of onlineConnections.values()) {
+    for (const connection of connections) {
+      clearInterval(connection.heartbeat);
+      try {
+        writeSse(connection.res, "system", { reason, at: Date.now() });
+        connection.res.end();
+      } catch (error) {
+        // Ignore sockets that have already closed.
+      }
+    }
+  }
+  onlineConnections.clear();
 }
 
 function purgeUserEventTickets(username) {
@@ -3569,59 +3584,6 @@ function handleEvents(req, res, url) {
   });
 }
 
-function serveStatic(req, res, url) {
-  let requestPath;
-  try {
-    requestPath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
-  } catch (error) {
-    sendJson(res, 400, { error: "invalid path" });
-    return;
-  }
-
-  const filePath = path.normalize(path.join(PUBLIC_DIR, requestPath));
-  const relativePath = path.relative(PUBLIC_DIR, filePath);
-  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-    sendJson(res, 403, { error: "forbidden" });
-    return;
-  }
-
-  fs.stat(filePath, (statError, stat) => {
-    if (statError || !stat.isFile()) {
-      sendJson(res, 404, { error: "not found" });
-      return;
-    }
-
-    const ext = path.extname(filePath).toLowerCase();
-    const etag = weakEtagForStat(stat);
-    const cacheControl = cacheControlForStaticFile(filePath);
-    if (req.headers["if-none-match"] === etag) {
-      res.writeHead(
-        304,
-        securityHeaders({
-          "Cache-Control": cacheControl,
-          ETag: etag
-        })
-      );
-      res.end();
-      return;
-    }
-    res.writeHead(
-      200,
-      securityHeaders({
-        "Content-Type": contentTypes[ext] || "application/octet-stream",
-        "Content-Length": stat.size,
-        "Cache-Control": cacheControl,
-        ETag: etag
-      })
-    );
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-    fs.createReadStream(filePath).pipe(res);
-  });
-}
-
 try {
   loadData();
   purgeStoredMessagePlaintext();
@@ -3681,19 +3643,7 @@ const server = http.createServer((req, res) => {
   const pathname = url.pathname;
 
   if (req.method === "GET" && pathname === "/health") {
-    const accessLogHealth = accessLogStore.healthSnapshot();
-    sendJson(res, 200, {
-      ok: true,
-      users: users.length,
-      messages: messages.length,
-      onlineUsers: listOnlineUsers().length,
-      sessions: sessions.size,
-      accessLogs: {
-        enabled: accessLogHealth.enabled,
-        dbBytes: accessLogHealth.dbBytes,
-        pendingQueue: accessLogHealth.pendingQueue
-      }
-    });
+    sendJson(res, 200, { ok: true });
     return;
   }
 
@@ -3886,13 +3836,48 @@ server.keepAliveTimeout = 65000;
 
 process.on("beforeExit", flushPendingMessagePersist);
 process.on("exit", flushPendingMessagePersist);
-process.on("SIGINT", () => {
-  flushPendingMessagePersist();
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  flushPendingMessagePersist();
-  process.exit(0);
-});
+let shutdownPromise = null;
+
+function closeHttpServer() {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function shutdown(signal) {
+  if (shutdownPromise) {
+    return shutdownPromise;
+  }
+  shutdownPromise = (async () => {
+    console.log(`[shutdown] ${signal} received`);
+    disconnectAllRealtime();
+    const forceCloseTimer = setTimeout(() => {
+      if (typeof server.closeAllConnections === "function") {
+        server.closeAllConnections();
+      }
+    }, 10000);
+    forceCloseTimer.unref();
+    try {
+      await closeHttpServer();
+      flushPendingMessagePersist();
+      await accessLogStore.close();
+    } finally {
+      clearTimeout(forceCloseTimer);
+    }
+  })().catch((error) => {
+    console.error(`[shutdown] ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+  return shutdownPromise;
+}
+
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 server.listen(PORT, HOST, () => {});

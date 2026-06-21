@@ -108,6 +108,7 @@ class AccessLogStore {
     this.ready = this.enabled ? this.initialize() : Promise.resolve();
     this.queue = [];
     this.processing = false;
+    this.closing = false;
     this.clientMetaBySession = new Map();
   }
 
@@ -240,7 +241,7 @@ class AccessLogStore {
   }
 
   enqueueAccessLog(record) {
-    if (!this.enabled) {
+    if (!this.enabled || this.closing) {
       return;
     }
     const sessionMeta = this.clientMetaBySession.get(String(record.sessionId || "")) || {};
@@ -255,7 +256,7 @@ class AccessLogStore {
   }
 
   enqueueClientMeta(sessionId, meta) {
-    if (!this.enabled || !sessionId) {
+    if (!this.enabled || this.closing || !sessionId) {
       return;
     }
     const normalizedMeta = this.normalizeClientMeta(meta);
@@ -666,6 +667,34 @@ class AccessLogStore {
       dbBytes: this.enabled && fs.existsSync(this.dbFile) ? fs.statSync(this.dbFile).size : 0,
       pendingQueue: this.queue.length
     };
+  }
+
+  async close() {
+    if (!this.enabled || this.closing) {
+      return;
+    }
+    this.closing = true;
+    await this.ready;
+    while (this.processing) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    if (this.queue.length > 0) {
+      await this.flushQueue();
+    }
+    if (!this.db) {
+      return;
+    }
+    const db = this.db;
+    this.db = null;
+    await new Promise((resolve, reject) => {
+      db.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 }
 
