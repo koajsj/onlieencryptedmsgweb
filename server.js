@@ -391,9 +391,26 @@ function cleanRateBuckets() {
 
 function cleanSessions() {
   const now = Date.now();
+  const expiredTokens = [];
   for (const [token, session] of sessions) {
     if (!session || session.expiresAt <= now) {
       sessions.delete(token);
+      expiredTokens.push(token);
+    }
+  }
+  for (const token of expiredTokens) {
+    disconnectSessionRealtime(token, "session expired");
+    purgeSessionEventTickets(token);
+  }
+}
+
+function purgeSessionEventTickets(token) {
+  if (!token) {
+    return;
+  }
+  for (const [ticket, record] of eventTickets) {
+    if (record?.token === token) {
+      eventTickets.delete(ticket);
     }
   }
 }
@@ -1603,12 +1620,12 @@ function broadcastUserRename(previousUsername, nextUsername) {
   }
 }
 
-function attachConnection(username, res) {
+function attachConnection(username, res, token = "") {
   const heartbeat = setInterval(() => {
     writeSse(res, "heartbeat", { at: Date.now() });
   }, HEARTBEAT_MS);
 
-  const connection = { res, heartbeat, username };
+  const connection = { res, heartbeat, username, token: String(token || "") };
   const bucket = onlineConnections.get(username) || new Set();
   const wasOnline = bucket.size > 0;
   bucket.add(connection);
@@ -1663,6 +1680,42 @@ function disconnectAllRealtime(reason = "server shutting down") {
     }
   }
   onlineConnections.clear();
+}
+
+function disconnectSessionRealtime(token, reason = "session ended") {
+  const normalizedToken = String(token || "").trim();
+  if (!normalizedToken) {
+    return;
+  }
+  for (const [username, bucket] of onlineConnections) {
+    if (!bucket || bucket.size === 0) {
+      continue;
+    }
+    let removed = false;
+    for (const connection of [...bucket]) {
+      if (connection?.token !== normalizedToken) {
+        continue;
+      }
+      removed = true;
+      try {
+        writeSse(connection.res, "system", { reason, at: Date.now() });
+        connection.res.end();
+      } catch (error) {
+        // ignore close errors
+      }
+      clearInterval(connection.heartbeat);
+      bucket.delete(connection);
+    }
+    if (!removed) {
+      continue;
+    }
+    if (bucket.size === 0) {
+      onlineConnections.delete(username);
+      pushPresence(username, false);
+      continue;
+    }
+    onlineConnections.set(username, bucket);
+  }
 }
 
 function purgeUserEventTickets(username) {
@@ -1925,6 +1978,8 @@ function handleLogout(req, res, url) {
     return;
   }
   sessions.delete(session.token);
+  purgeSessionEventTickets(session.token);
+  disconnectSessionRealtime(session.token, "logged out");
   sendJson(res, 200, { ok: true }, {
     "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
   });
@@ -2563,6 +2618,8 @@ function handleAdminLogout(req, res, url) {
   }
   recordAdminAction("admin_logout", session, req, {});
   sessions.delete(session.token);
+  purgeSessionEventTickets(session.token);
+  disconnectSessionRealtime(session.token, "logged out");
   sendJson(res, 200, { ok: true }, {
     "Set-Cookie": clearSessionCookieHeader(ADMIN_SESSION_COOKIE)
   });
@@ -3595,7 +3652,7 @@ function handleEvents(req, res, url) {
   );
   res.write(": connected\n\n");
 
-  const connection = attachConnection(ticketRecord.username, res);
+  const connection = attachConnection(ticketRecord.username, res, ticketRecord.token);
   writeSse(res, "ready", {
     me: ticketRecord.username,
     onlineUsers: listOnlineUsers().filter((username) => isPresenceVisibleTo(ticketRecord.username, username))

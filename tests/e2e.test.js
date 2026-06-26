@@ -777,7 +777,38 @@ test("session expires and is rejected after ttl", async () => {
   }
 });
 
-test("password change rotates the encrypted private key bundle and active session", async () => {
+test("session expiry closes live SSE connections for expired tokens", async () => {
+  const server = await startServer({ SESSION_TTL_MS: "1200" });
+
+  try {
+    const register = await postJsonAndRead(server.port, "/api/register", {
+      username: "ExpireLiveUser",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 49).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 50).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 51).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 52).toString("base64")
+    });
+    assert.equal(register.response.status, 201);
+    const token = register.json.token;
+
+    const liveEvents = await openEvents(server.port, token);
+    await liveEvents.ready;
+    await waitForEvent(liveEvents, "ready", (payload) => payload.me === "ExpireLiveUser");
+    await delay(1700);
+
+    const systemEvent = await waitForEvent(liveEvents, "system", (payload) => payload.reason === "session expired");
+    assert.equal(systemEvent.reason, "session expired");
+
+    const me = await getJson(server.port, "/api/me", token);
+    assert.equal(me.response.status, 401);
+    liveEvents.close();
+  } finally {
+    await server.stop();
+  }
+});
+
+test("password change revokes old sessions, rotates the current token and refreshes the cookie", async () => {
   const server = await startServer();
   try {
     const register = await postJsonAndRead(server.port, "/api/register", {
@@ -861,6 +892,35 @@ test("logout all revokes outstanding event tickets and active user sessions", as
       `http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(ticket)}`
     );
     assert.equal(blockedTicket.status, 401);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("single-device logout closes the active SSE session for that token", async () => {
+  const server = await startServer();
+  try {
+    const register = await postJsonAndRead(server.port, "/api/register", {
+      username: "LogoutLiveUser",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 53).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 54).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 55).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 56).toString("base64")
+    });
+    assert.equal(register.response.status, 201);
+    const userToken = register.json.token;
+
+    const liveEvents = await openEvents(server.port, userToken);
+    await liveEvents.ready;
+    await waitForEvent(liveEvents, "ready", (payload) => payload.me === "LogoutLiveUser");
+
+    const logout = await postJson(server.port, "/api/logout", {}, userToken);
+    assert.equal(logout.status, 200);
+
+    const systemEvent = await waitForEvent(liveEvents, "system", (payload) => payload.reason === "logged out");
+    assert.equal(systemEvent.reason, "logged out");
+    liveEvents.close();
   } finally {
     await server.stop();
   }
