@@ -317,11 +317,14 @@ async function createEventsTicket(port, token) {
 }
 
 async function openEvents(port, token) {
+  const ticket = await createEventsTicket(port, token);
+  return openEventsWithTicket(port, ticket);
+}
+
+async function openEventsWithTicket(port, ticket) {
   const events = [];
   let buffer = "";
   let request;
-  const ticket = await createEventsTicket(port, token);
-
   const ready = new Promise((resolve, reject) => {
     request = http.get(
       {
@@ -354,6 +357,46 @@ async function openEvents(port, token) {
     events,
     close: () => request.destroy()
   };
+}
+
+async function redeemEventsTicket(port, ticket) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: `/api/events?ticket=${encodeURIComponent(ticket)}`,
+        headers: { Accept: "text/event-stream" }
+      },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          let json = null;
+          try {
+            json = body ? JSON.parse(body) : null;
+          } catch (error) {
+            json = null;
+          }
+          resolve({
+            status: Number(response.statusCode || 0),
+            json
+          });
+        });
+        if (response.statusCode === 200) {
+          response.destroy();
+          resolve({
+            status: 200,
+            json: null
+          });
+        }
+      }
+    );
+    request.on("error", reject);
+  });
 }
 
 function parseSsePacket(packet) {
@@ -2105,6 +2148,43 @@ test("events ticket creation caps concurrent SSE connections per user", async ()
 
     const allowed = await postJson(server.port, "/api/events/token", {}, token);
     assert.equal(allowed.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("events redemption also caps concurrent SSE connections when tickets were pre-issued", async () => {
+  const server = await startServer({
+    MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER: "2"
+  });
+
+  try {
+    const register = await postJson(server.port, "/api/register", {
+      username: "SsePreIssue",
+      password: "pass1234",
+      publicKey: Buffer.alloc(65, 81).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 82).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 83).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 84).toString("base64")
+    });
+    const token = (await register.json()).token;
+
+    const tickets = await Promise.all([
+      createEventsTicket(server.port, token),
+      createEventsTicket(server.port, token),
+      createEventsTicket(server.port, token)
+    ]);
+
+    const first = await openEventsWithTicket(server.port, tickets[0]);
+    const second = await openEventsWithTicket(server.port, tickets[1]);
+    await Promise.all([first.ready, second.ready]);
+
+    const rejected = await redeemEventsTicket(server.port, tickets[2]);
+    assert.equal(rejected.status, 429);
+    assert.equal(rejected.json?.error, "too many concurrent connections");
+
+    first.close();
+    second.close();
   } finally {
     await server.stop();
   }

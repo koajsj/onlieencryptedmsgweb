@@ -1718,6 +1718,10 @@ function disconnectSessionRealtime(token, reason = "session ended") {
   }
 }
 
+function activeConnectionCount(username) {
+  return (onlineConnections.get(username) || new Set()).size;
+}
+
 function purgeUserEventTickets(username) {
   for (const [ticket, record] of eventTickets) {
     if (record?.username === username) {
@@ -3592,7 +3596,7 @@ function handleCreateEventTicket(req, res, url) {
   ) {
     return;
   }
-  const activeConnections = (onlineConnections.get(session.username) || new Set()).size;
+  const activeConnections = activeConnectionCount(session.username);
   if (activeConnections >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
     sendJson(res, 429, { error: "too many concurrent connections" });
     return;
@@ -3639,6 +3643,10 @@ function handleEvents(req, res, url) {
       "too many event connections"
     )
   ) {
+    return;
+  }
+  if (activeConnectionCount(ticketRecord.username) >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
+    sendJson(res, 429, { error: "too many concurrent connections" });
     return;
   }
 
