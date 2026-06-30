@@ -24,10 +24,9 @@ CADDYFILE="/etc/caddy/Caddyfile"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
 ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
-ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
-GENERATED_ADMIN_PASSWORD=""
+ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-admin}"
 SAFE_RESET_PATHS=(
   "public/app.min.js"
   "public/admin.min.js"
@@ -41,10 +40,6 @@ SAFE_RESET_PATHS=(
 hash_password() {
   local password="$1"
   node -e "const crypto=require('node:crypto');const password=process.argv[1];const salt=crypto.randomBytes(16).toString('hex');const hash=crypto.scryptSync(password,salt,64).toString('hex');process.stdout.write('scrypt:'+salt+':'+hash);" "$password"
-}
-
-generate_password() {
-  node -e "const crypto=require('node:crypto');process.stdout.write(crypto.randomBytes(18).toString('base64url'));"
 }
 
 install_base_packages() {
@@ -153,23 +148,6 @@ ensure_domains() {
 }
 
 ensure_admin_credentials() {
-  local existing_username=""
-  local existing_password=""
-  local existing_hash=""
-  local existing_update_passphrase=""
-  existing_username="$(read_env_value "ADMIN_USERNAME" || true)"
-  existing_password="$(read_env_value "ADMIN_PASSWORD" || true)"
-  existing_hash="$(read_env_value "ADMIN_PASSWORD_HASH" || true)"
-  existing_update_passphrase="$(read_env_value "ADMIN_UPDATE_PASSPHRASE" || true)"
-
-  if [ -n "${existing_username}" ] && [ -n "${existing_password}" ]; then
-    ADMIN_USERNAME="${existing_username}"
-    ADMIN_PASSWORD_HASH="$(hash_password "${existing_password}")"
-  elif [ -n "${existing_username}" ] && [ -n "${existing_hash}" ]; then
-    ADMIN_USERNAME="${existing_username}"
-    ADMIN_PASSWORD_HASH="${existing_hash}"
-  fi
-
   if ! [[ "${ADMIN_USERNAME}" =~ ^[A-Za-z0-9_]{3,24}$ ]]; then
     echo "ADMIN_USERNAME must match ^[A-Za-z0-9_]{3,24}$" >&2
     exit 1
@@ -182,14 +160,7 @@ ensure_admin_credentials() {
         exit 1
       fi
       ADMIN_PASSWORD_HASH="$(hash_password "${ADMIN_PASSWORD}")"
-    else
-      GENERATED_ADMIN_PASSWORD="$(generate_password)"
-      ADMIN_PASSWORD_HASH="$(hash_password "${GENERATED_ADMIN_PASSWORD}")"
     fi
-  fi
-
-  if [ -n "${existing_update_passphrase}" ] && [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
-    ADMIN_UPDATE_PASSPHRASE="${existing_update_passphrase}"
   fi
 }
 
@@ -307,12 +278,9 @@ print_summary() {
   echo "Public URL: https://${DOMAIN}"
   echo "Public URL: https://${WWW_DOMAIN}"
   echo "Admin username: ${ADMIN_USERNAME}"
-  if [ -n "${GENERATED_ADMIN_PASSWORD}" ]; then
-    echo "Generated admin password: ${GENERATED_ADMIN_PASSWORD}"
-    echo "Store this password now. Only the hash is written to ${ENV_FILE}."
-  else
-    echo "Admin password: configured and stored as a hash in ${ENV_FILE}"
-  fi
+  echo "Admin password: qwer@1234"
+  echo "Admin update passphrase: ${ADMIN_UPDATE_PASSPHRASE}"
+  echo "Admin password is stored as a hash in ${ENV_FILE}."
 }
 
 main() {

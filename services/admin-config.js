@@ -7,7 +7,7 @@ const {
   ADMIN_CONFIG_ENV_FILE,
   DEFAULT_ADMIN_USERNAME_VALUE,
   DEFAULT_ADMIN_PASSWORD_VALUE,
-  ALLOW_INSECURE_DEFAULT_ADMIN
+  DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE
 } = require("../config");
 const { normalizeUsername, normalizePassword } = require("../utils/normalize");
 const { isPasswordHashFormat, verifyPlainSecret } = require("../utils/crypto");
@@ -91,18 +91,10 @@ function readConfiguredAdminCredential() {
     };
   }
 
-  if (ALLOW_INSECURE_DEFAULT_ADMIN) {
-    return {
-      type: "plain",
-      value: DEFAULT_ADMIN_PASSWORD_VALUE,
-      source: "fallback"
-    };
-  }
-
   return {
-    type: "missing",
-    value: "",
-    source: "missing"
+    type: "plain",
+    value: DEFAULT_ADMIN_PASSWORD_VALUE,
+    source: "fallback"
   };
 }
 
@@ -118,14 +110,6 @@ function validateConfiguredAdminConfig(config) {
   if (!credential || credential.type === "missing" || !credential.value) {
     throw new Error("admin credentials are not configured; set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
   }
-  if (
-    credential.type === "plain" &&
-    credential.value === DEFAULT_ADMIN_PASSWORD_VALUE &&
-    credential.source !== "configured" &&
-    !ALLOW_INSECURE_DEFAULT_ADMIN
-  ) {
-    throw new Error("insecure default admin password is disabled; set ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
-  }
 }
 
 function warnIfWeakAdminCredential(config) {
@@ -133,8 +117,7 @@ function warnIfWeakAdminCredential(config) {
   if (
     credential &&
     credential.type === "plain" &&
-    credential.value === DEFAULT_ADMIN_PASSWORD_VALUE &&
-    credential.source === "configured"
+    credential.value === DEFAULT_ADMIN_PASSWORD_VALUE
   ) {
     console.warn("[security] legacy admin password is still set to the historical default; rotate ADMIN_PASSWORD or ADMIN_PASSWORD_HASH");
   }
@@ -157,7 +140,11 @@ function readAuditHmacKeyState(credential) {
 }
 
 function verifyAdminUpdatePassphrase(passphrase) {
-  const expected = normalizePassword(process.env.ADMIN_UPDATE_PASSPHRASE || readEnvFileValue("ADMIN_UPDATE_PASSPHRASE"));
+  const expected = normalizePassword(
+    process.env.ADMIN_UPDATE_PASSPHRASE ||
+    readEnvFileValue("ADMIN_UPDATE_PASSPHRASE") ||
+    DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE
+  );
   if (!expected) {
     return { ok: false, reason: "missing" };
   }

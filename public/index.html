@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#111512" media="(prefers-color-scheme: dark)" />
     <meta name="color-scheme" content="light dark" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=2e5d44c1b6" />
+    <link rel="stylesheet" href="./styles.min.css?v=eca2a0d66d" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -304,7 +304,7 @@
                   <div class="detail-info-row"><span>备注</span><strong id="detailsNote">未设置</strong></div>
                   <div class="detail-info-row"><span>账号 ID</span><span class="detail-id-value"><strong id="detailsAccountId">@user</strong><button class="icon-button compact-copy" id="copyContactIdButton" type="button" aria-label="复制账号 ID" title="复制账号 ID"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg></button></span></div>
                   <div class="detail-info-row"><span>最后在线</span><strong id="detailsLastSeen">刚刚</strong></div>
-                  <div class="detail-info-row"><span>安全码</span><strong id="detailsSafetyCode">计算中</strong></div>
+                  <div class="detail-info-row detail-info-row-stacked"><span>安全码</span><strong id="detailsSafetyCode">计算中</strong><small>用于线下核对联系人密钥，双方一致时可确认当前会话没有被替换密钥。</small></div>
                 </div>
                 <button class="ghost-button compact" id="detailsTrustKeyButton" type="button" hidden>确认新密钥</button>
               </section>
@@ -451,6 +451,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="./ui-utils.min.js?v=cd59756d46" defer></script>
-    <script src="./app.min.js?v=cb7cec6b21" defer></script>
+    <script src="./app.min.js?v=0b2fbb0aca" defer></script>
   </body>
 </html>

@@ -18,7 +18,8 @@ DOMAIN="${DOMAIN:-257823.xyz}"
 WWW_DOMAIN="${WWW_DOMAIN:-}"
 CADDYFILE="${CADDYFILE:-/etc/caddy/Caddyfile}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
+ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-admin}"
 SAFE_RESET_PATHS=(
   "public/index.html"
   "public/admin.html"
@@ -84,16 +85,6 @@ normalize_environment_file() {
   if [ ! -f "${ENV_FILE}" ]; then
     return
   fi
-  local existing_username=""
-  local existing_password=""
-  local existing_hash=""
-  existing_username="$(read_env_value "ADMIN_USERNAME" || true)"
-  existing_password="$(read_env_value "ADMIN_PASSWORD" || true)"
-  existing_hash="$(read_env_value "ADMIN_PASSWORD_HASH" || true)"
-
-  if [ -n "${existing_username}" ]; then
-    ADMIN_USERNAME="${existing_username}"
-  fi
   ensure_line "HOST" "${APP_HOST}"
   ensure_line "PORT" "${APP_PORT}"
   ensure_line "NODE_ENV" "production"
@@ -102,6 +93,9 @@ normalize_environment_file() {
   ensure_line "TRUSTED_ORIGINS" "https://${DOMAIN},https://${WWW_DOMAIN}"
   ensure_line "HSTS_MAX_AGE_SECONDS" "31536000"
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
+  ensure_line "ADMIN_PASSWORD_HASH" "$(hash_password "${ADMIN_PASSWORD}")"
+  ensure_line "ADMIN_UPDATE_PASSPHRASE" "${ADMIN_UPDATE_PASSPHRASE}"
+  remove_line "ADMIN_PASSWORD"
   ensure_line_if_missing "TRUSTED_PROXY_ADDRESSES" "127.0.0.1,::1,::ffff:127.0.0.1"
   ensure_line_if_missing "ALLOW_BEARER_AUTH" "0"
   ensure_line_if_missing "ACCESS_LOG_RETENTION_DAYS" "30"
@@ -111,16 +105,6 @@ normalize_environment_file() {
   ensure_line_if_missing "IP_GEO_CACHE_TTL_MS" "86400000"
   remove_line "MANAGE_CADDY"
 
-  if [ -n "${existing_hash}" ]; then
-    ensure_line "ADMIN_PASSWORD_HASH" "${existing_hash}"
-    remove_line "ADMIN_PASSWORD"
-  elif [ -n "${existing_password}" ]; then
-    ensure_line "ADMIN_PASSWORD_HASH" "$(hash_password "${existing_password}")"
-    remove_line "ADMIN_PASSWORD"
-  elif [ -n "${ADMIN_PASSWORD}" ]; then
-    ensure_line "ADMIN_PASSWORD_HASH" "$(hash_password "${ADMIN_PASSWORD}")"
-    remove_line "ADMIN_PASSWORD"
-  fi
   chmod 0600 "${ENV_FILE}" 2>/dev/null || true
 }
 

@@ -27,14 +27,13 @@
 
 ## 管理员账号
 
-管理员用户名默认是 `admin`，也可以在部署时通过 `ADMIN_USERNAME` 覆盖。
-
-管理员密码**没有可用的内置默认值**：服务启动时如果没有配置 `ADMIN_PASSWORD` 或 `ADMIN_PASSWORD_HASH`，进程会直接报错退出。生产环境必须在部署前设置其中之一：
+管理员用户名默认固定为 `admin`，默认管理员密码为 `qwer@1234`。如果没有配置 `ADMIN_PASSWORD` 或 `ADMIN_PASSWORD_HASH`，服务会自动使用这个默认密码。
 
 - `ADMIN_PASSWORD`：明文口令，服务会在写入 `/etc/default/secure-chat`（权限 0600）前自动哈希。
 - `ADMIN_PASSWORD_HASH`：`scrypt:salt:hash` 形式的预生成哈希，直接喂入。
+- `ADMIN_UPDATE_PASSPHRASE`：管理员账号热更新验证口令，默认是 `admin`。
 
-部署脚本会把最终的凭据写入 `/etc/default/secure-chat`。仓库里存在一个仅供本地试跑的弱口令，但它默认被禁用，只有显式设置 `ALLOW_INSECURE_DEFAULT_ADMIN=1` 时才会启用——**切勿在生产环境这样做**。
+部署和更新脚本会把最终凭据写入 `/etc/default/secure-chat`，默认会写入 `ADMIN_USERNAME=admin`、`ADMIN_PASSWORD_HASH=<qwer@1234 的哈希>` 和 `ADMIN_UPDATE_PASSPHRASE=admin`。
 
 后台地址：
 
@@ -157,7 +156,7 @@ sudo bash scripts/update-debian.sh
 
 如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
-如果 `/etc/default/secure-chat` 里已经有管理员口令，脚本不会重新写入。
+更新脚本会把管理员账号恢复为 `admin`，密码恢复为 `qwer@1234`（写入哈希），并把热更新验证口令恢复为 `admin`。
 
 如果你之前临时改成 `PORT=3001` 或 `MANAGE_CADDY=0`，新版更新脚本会恢复默认 Caddy/443 部署方式。运行前要确保没有 `mtproto-proxy`、Nginx、Apache 等非 Caddy 服务占用 `80/443`。
 
@@ -264,18 +263,16 @@ ss -lntp | grep ':443'
 
 本地需要 Node.js 20.17 或更高版本。
 
-本地启动必须提供管理员凭据，否则服务会报错退出：
+本地启动默认使用管理员账号 `admin/qwer@1234`，管理员热更新验证口令默认是 `admin`：
+
+```bash
+npm start
+```
+
+如需覆盖默认密码，也支持用 `ADMIN_PASSWORD` 或 `ADMIN_PASSWORD_HASH`（`scrypt:salt:hash` 形式）指定：
 
 ```bash
 ADMIN_USERNAME=admin ADMIN_PASSWORD='你的口令' npm start
-```
-
-也支持用 `ADMIN_PASSWORD_HASH`（`scrypt:salt:hash` 形式）直接喂入预生成哈希。
-
-如果只是想用内置弱口令快速试跑（**仅限本地**），可以显式开启：
-
-```bash
-ALLOW_INSECURE_DEFAULT_ADMIN=1 npm start
 ```
 
 安装依赖：

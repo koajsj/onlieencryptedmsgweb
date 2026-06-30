@@ -22,6 +22,7 @@ const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const { escapeHtml, isElementNode, scheduleClientMetaReport } = window.EchoUi;
+const LOCK_ICON_MARKUP = '<span class="inline-lock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg></span>';
 
 const elements = {
   authScreen: document.querySelector("#authScreen"),
@@ -1593,8 +1594,12 @@ function estimateMessageHeight(message) {
   return height + 16;
 }
 
+function shouldVirtualizeMessages(messages) {
+  return messages.length > MESSAGE_VIRTUAL_THRESHOLD && window.innerWidth >= 768;
+}
+
 function buildMessageVirtualWindow(messages, scrollTop, viewportHeight, anchor = "scroll") {
-  if (messages.length <= MESSAGE_VIRTUAL_THRESHOLD) {
+  if (!shouldVirtualizeMessages(messages)) {
     return null;
   }
 
@@ -1649,6 +1654,11 @@ function scheduleResponsiveRender() {
   state.resizeRenderRaf = window.requestAnimationFrame(() => {
     state.resizeRenderRaf = 0;
     syncViewportHeight();
+    if (document.activeElement === elements.messageInput) {
+      syncLayoutState();
+      updateScrollBottomButton();
+      return;
+    }
     render();
   });
 }
@@ -2061,8 +2071,18 @@ function setDetailsPanelOpen(force) {
   syncLayoutState();
 }
 
+function openContactDetailsPanel() {
+  if (isDetailsDrawerLayout()) {
+    setDetailsPanelOpen(true);
+    return;
+  }
+  state.detailsPanelCollapsed = false;
+  syncLayoutState();
+  renderThread({ scrollBehavior: "preserve" });
+}
+
 function syncViewportHeight() {
-  const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+  const viewportHeight = window.innerHeight || window.visualViewport?.height || 0;
   if (!viewportHeight) {
     return;
   }
@@ -2246,7 +2266,7 @@ function renderContactDetails(peer) {
     elements.blockContactButtonLabel.textContent = contact?.blocked ? "取消拉黑" : "拉黑";
   }
   if (elements.detailsCollapseButton) {
-    elements.detailsCollapseButton.textContent = state.detailsPanelCollapsed ? "展开" : "收起";
+    elements.detailsCollapseButton.textContent = isDetailsDrawerLayout() ? "关闭" : "收起";
   }
   if (elements.editContactButton) {
     elements.editContactButton.disabled = false;
@@ -2656,9 +2676,16 @@ function renderThread(options = {}) {
     statusTags.push("被对方拉黑");
   }
   const threadQuery = state.threadSearchQuery.trim().toLowerCase();
-  const statusSuffix = statusTags.length ? ` · ${statusTags.join(" · ")}` : "";
   const basePresence = peer.online ? "在线" : contact?.lastSeenAt ? `最后在线 ${formatLastSeen(contact.lastSeenAt)}` : "离线";
-  elements.peerStatus.textContent = `${basePresence} · 端到端加密${connectionLabel}${statusSuffix}`;
+  const peerStatusParts = [
+    escapeHtml(basePresence),
+    `<span class="secure-status-label">端到端加密${LOCK_ICON_MARKUP}</span>`
+  ];
+  if (connectionLabel) {
+    peerStatusParts.push(escapeHtml(connectionLabel.replace(/^\s*·\s*/, "")));
+  }
+  peerStatusParts.push(...statusTags.map((tag) => escapeHtml(tag)));
+  elements.peerStatus.innerHTML = peerStatusParts.join('<span class="message-meta-sep">·</span>');
   updateSecurityStatus(peer);
   setAvatar(elements.peerAvatar, peer.username);
 
@@ -3279,12 +3306,72 @@ function setPendingMessageState(tempId, status, lastError = "") {
   return false;
 }
 
+function messageIdentitySet(message) {
+  const values = [message?.id, message?.clientId, message?.tempId]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return new Set(values);
+}
+
+function messagesShareIdentity(left, right) {
+  const leftIds = messageIdentitySet(left);
+  if (leftIds.size === 0) {
+    return false;
+  }
+  for (const value of messageIdentitySet(right)) {
+    if (leftIds.has(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function mergeCachedMessage(current, incoming) {
+  const currentDeliveredAt = Number(current?.deliveredAt || 0);
+  const incomingDeliveredAt = Number(incoming?.deliveredAt || 0);
+  const currentReadAt = Number(current?.readAt || 0);
+  const incomingReadAt = Number(incoming?.readAt || 0);
+  const recalled = Boolean(current?.recalled || incoming?.recalled);
+  return {
+    ...incoming,
+    recalled,
+    text: recalled && current?.recalled && !incoming?.recalled ? current.text : incoming.text,
+    pending: Boolean(incoming?.pending),
+    failed: Boolean(incoming?.failed),
+    deliveredAt: Math.max(currentDeliveredAt, incomingDeliveredAt),
+    readAt: Math.max(currentReadAt, incomingReadAt)
+  };
+}
+
+function upsertMessageInCache(peer, incoming) {
+  if (!peer || !incoming) {
+    return { inserted: false, replaced: false };
+  }
+  const current = state.messageCache.get(peer) || [];
+  const next = [];
+  let replaced = false;
+  for (const message of current) {
+    if (!messagesShareIdentity(message, incoming)) {
+      next.push(message);
+      continue;
+    }
+    if (!replaced) {
+      next.push(mergeCachedMessage(message, incoming));
+      replaced = true;
+    }
+  }
+  if (!replaced) {
+    next.push(incoming);
+  }
+  next.sort((left, right) => left.createdAt - right.createdAt);
+  state.messageCache.set(peer, next);
+  rebuildConversationSearchIndex(peer);
+  return { inserted: !replaced, replaced };
+}
+
 function addPendingMessage(peer, text, replyTo = null) {
   const pending = buildTempMessage(peer, text, replyTo);
-  const current = state.messageCache.get(peer) || [];
-  current.push(pending);
-  current.sort((left, right) => left.createdAt - right.createdAt);
-  state.messageCache.set(peer, current);
+  upsertMessageInCache(peer, pending);
   const transient = Boolean(parseAttachmentMessage(text));
   state.pendingMessages.set(pending.tempId, {
     tempId: pending.tempId,
@@ -3323,7 +3410,6 @@ function addPendingMessage(peer, text, replyTo = null) {
     previewText: conversationMessageLabel(pending),
     lastAt: pending.createdAt
   });
-  rebuildConversationSearchIndex(peer);
   return pending.tempId;
 }
 
@@ -3794,11 +3880,7 @@ async function ingestEncryptedMessage(message) {
     }
   }
 
-  const current = state.messageCache.get(peer) || [];
-  current.push(decrypted);
-  current.sort((left, right) => left.createdAt - right.createdAt);
-  state.messageCache.set(peer, current);
-  rebuildConversationSearchIndex(peer);
+  upsertMessageInCache(peer, decrypted);
 
   const previous = getConversation(peer);
   const muted = peerPrefs(peer).muted;
@@ -4196,12 +4278,7 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     state.pendingMessages.delete(tempId);
     removePendingMessageFromCache(tempId);
     removePendingOutboxEntry(tempId);
-    const existing = (state.messageCache.get(peer) || []).find(
-      (message) =>
-        message.id === payload.message?.id ||
-        (payload.message?.clientId &&
-          (message.clientId === payload.message.clientId || message.tempId === payload.message.clientId))
-    );
+    const existing = (state.messageCache.get(peer) || []).find((message) => messagesShareIdentity(message, payload.message));
     if (!existing) {
       await ingestEncryptedMessage(payload.message);
     }
@@ -4865,7 +4942,7 @@ function bindEvents() {
       return;
     }
     const messages = state.messageCache.get(peer) || [];
-    if (messages.length <= MESSAGE_VIRTUAL_THRESHOLD) {
+    if (!shouldVirtualizeMessages(messages)) {
       updateScrollBottomButton();
       return;
     }
@@ -4921,14 +4998,14 @@ function bindEvents() {
       showToast(error.message || "添加好友失败", "error");
     }
   });
-  elements.headerDetailsButton?.addEventListener("click", () => setDetailsPanelOpen());
+  elements.headerDetailsButton?.addEventListener("click", openContactDetailsPanel);
   elements.detailsCloseButton?.addEventListener("click", () => setDetailsPanelOpen(false));
   elements.detailsCollapseButton?.addEventListener("click", () => {
     if (isDetailsDrawerLayout()) {
       setDetailsPanelOpen(false);
       return;
     }
-    state.detailsPanelCollapsed = !state.detailsPanelCollapsed;
+    state.detailsPanelCollapsed = true;
     syncLayoutState();
     renderThread({ scrollBehavior: "preserve" });
   });
@@ -5126,7 +5203,6 @@ function bindEvents() {
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
   window.visualViewport?.addEventListener("resize", scheduleResponsiveRender);
-  window.visualViewport?.addEventListener("scroll", scheduleResponsiveRender);
   document.addEventListener("click", (event) => {
     if (!isAccountMenuEventTarget(event.target)) {
       closeAccountMenu();

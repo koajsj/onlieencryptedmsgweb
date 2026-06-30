@@ -56,6 +56,28 @@ test("browser client keeps authentication tokens out of web storage", () => {
   assert.match(appSource, /payload\?\.error === "account banned"/);
 });
 
+test("mobile chat avoids viewport-scroll rerenders and duplicate message inserts", () => {
+  const appSource = fs.readFileSync(path.join(ROOT_DIR, "public", "app.js"), "utf8");
+  assert.doesNotMatch(appSource, /visualViewport\?\.addEventListener\("scroll",\s*scheduleResponsiveRender\)/);
+  assert.match(appSource, /function upsertMessageInCache\(peer, incoming\)/);
+  assert.match(appSource, /messagesShareIdentity\(message, payload\.message\)/);
+  assert.match(appSource, /window\.innerWidth >= 768/);
+  assert.match(appSource, /elements\.headerDetailsButton\?\.addEventListener\("click", openContactDetailsPanel\)/);
+  assert.match(appSource, /LOCK_ICON_MARKUP/);
+});
+
+test("deployment defaults keep fixed admin credentials and update passphrase", () => {
+  const configSource = fs.readFileSync(path.join(ROOT_DIR, "config.js"), "utf8");
+  const deployScript = fs.readFileSync(path.join(ROOT_DIR, "scripts", "deploy-debian.sh"), "utf8");
+  const updateScript = fs.readFileSync(path.join(ROOT_DIR, "scripts", "update-debian.sh"), "utf8");
+  assert.match(configSource, /DEFAULT_ADMIN_PASSWORD_VALUE = "qwer@1234"/);
+  assert.match(configSource, /DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE = "admin"/);
+  assert.match(deployScript, /ADMIN_PASSWORD="\$\{ADMIN_PASSWORD:-qwer@1234\}"/);
+  assert.match(deployScript, /ADMIN_UPDATE_PASSPHRASE="\$\{ADMIN_UPDATE_PASSPHRASE:-admin\}"/);
+  assert.match(updateScript, /ADMIN_PASSWORD="\$\{ADMIN_PASSWORD:-qwer@1234\}"/);
+  assert.match(updateScript, /ADMIN_UPDATE_PASSPHRASE="\$\{ADMIN_UPDATE_PASSPHRASE:-admin\}"/);
+});
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1829,16 +1851,13 @@ test("admin credentials must come from environment configuration", async () => {
   }
 });
 
-test("server fails fast when admin credentials are missing", async () => {
-  const result = await startServerAndWaitForExit({
+test("server uses fixed default admin credentials when env credentials are missing", async () => {
+  const server = await startServer({
     ADMIN_USERNAME: "",
     ADMIN_PASSWORD_HASH: "",
     ADMIN_PASSWORD: ""
   });
 
-  assert.notEqual(result.exitCode, 0);
-  assert.match(result.stderr, /admin credentials are not configured/i);
-  /*
   try {
     const defaultLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",
@@ -1848,8 +1867,7 @@ test("server fails fast when admin credentials are missing", async () => {
     const defaultPayload = await defaultLogin.json();
     const previousAdminToken = String(defaultPayload.token || "");
     assert.ok(previousAdminToken);
-    const payload = await defaultLogin.json();
-    assert.equal(payload.admin.username, "admin");
+    assert.equal(defaultPayload.admin.username, "admin");
 
     const wrongLogin = await postJson(server.port, "/api/admin/login", {
       username: "admin",
@@ -1862,9 +1880,6 @@ test("server fails fast when admin credentials are missing", async () => {
   }
 });
 
-*/
-});
-
 test("server accepts the explicitly configured legacy admin password", async () => {
   const server = await startServer({
     ADMIN_PASSWORD_HASH: "",
@@ -1875,6 +1890,41 @@ test("server accepts the explicitly configured legacy admin password", async () 
     assert.equal(health.response.status, 200);
     assert.deepEqual(health.json, { ok: true });
   } finally {
+    await server.stop();
+  }
+});
+
+test("admin account reset accepts the fixed default update passphrase", async () => {
+  const envFile = path.join(os.tmpdir(), `secure-chat-admin-default-passphrase-${Date.now()}.env`);
+  const server = await startServer({
+    ADMIN_USERNAME: "",
+    ADMIN_PASSWORD: "",
+    ADMIN_PASSWORD_HASH: "",
+    ADMIN_UPDATE_PASSPHRASE: "",
+    ADMIN_CONFIG_ENV_FILE: envFile
+  });
+
+  try {
+    const defaultLogin = await postJson(server.port, "/api/admin/login", {
+      username: "admin",
+      password: "qwer@1234"
+    });
+    assert.equal(defaultLogin.status, 200);
+
+    const reset = await postJson(server.port, "/api/admin/account/reset", {
+      passphrase: "admin",
+      username: "root_admin",
+      password: "next-pass-default"
+    });
+    assert.equal(reset.status, 200);
+
+    const newLogin = await postJson(server.port, "/api/admin/login", {
+      username: "root_admin",
+      password: "next-pass-default"
+    });
+    assert.equal(newLogin.status, 200);
+  } finally {
+    fs.rmSync(envFile, { force: true });
     await server.stop();
   }
 });
