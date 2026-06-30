@@ -873,6 +873,26 @@ function clearSessionCookieHeader(name) {
   return `${name}=; ${cookieAttributes(0)}`;
 }
 
+function normalizeSetCookieValues(value) {
+  if (!value) {
+    return [];
+  }
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item) => String(item || "")).filter(Boolean);
+}
+
+function mergeSetCookieValues(...sources) {
+  const merged = [];
+  for (const source of sources) {
+    for (const value of normalizeSetCookieValues(source)) {
+      if (!merged.includes(value)) {
+        merged.push(value);
+      }
+    }
+  }
+  return merged;
+}
+
 function sessionCookieNameForPath(pathname) {
   return pathname.startsWith("/api/admin") ? ADMIN_SESSION_COOKIE : USER_SESSION_COOKIE;
 }
@@ -1416,6 +1436,7 @@ function buildConversationSummary(viewer, peer) {
 
   const conversationMessages = visibleMessagesBetween(viewer, peer);
   const latest = conversationMessages.at(-1) || null;
+  const blocked = isBlockedBetween(viewer, peer);
 
   return {
     username: peer,
@@ -1426,7 +1447,9 @@ function buildConversationSummary(viewer, peer) {
     lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, viewer)
       ? Number.parseInt(String(peerUser.lastSeenAt || "0"), 10) || 0
       : 0,
-    unread: conversationMessages.filter((message) => message.to === viewer && !message.readAt && !message.recalled).length,
+    unread: blocked
+      ? 0
+      : conversationMessages.filter((message) => message.to === viewer && !message.readAt && !message.recalled).length,
     latestMessage: latest
       ? {
           id: latest.id,
@@ -1800,6 +1823,17 @@ function sendJsonBodyError(res, error) {
     return;
   }
   sendJson(res, 400, { error: "invalid json" });
+}
+
+function runAsyncRoute(promise, res) {
+  Promise.resolve(promise).catch((error) => {
+    console.error(error instanceof Error ? error.stack || error.message : String(error));
+    if (res.headersSent || res.writableEnded) {
+      res.destroy(error instanceof Error ? error : undefined);
+      return;
+    }
+    sendJson(res, 500, { error: "internal server error" });
+  });
 }
 
 async function handleRegister(req, res) {
@@ -3727,17 +3761,24 @@ const server = http.createServer((req, res) => {
   const originalWriteHead = res.writeHead;
   res.writeHead = function patchedWriteHead(statusCode, ...rest) {
     const refreshCookie = req.pendingSessionCookie;
-    if (refreshCookie) {
-      const trailingHeaders = rest[rest.length - 1];
-      if (trailingHeaders && typeof trailingHeaders === "object" && !Array.isArray(trailingHeaders)) {
-        if (
-          !Object.prototype.hasOwnProperty.call(trailingHeaders, "Set-Cookie") &&
-          !Object.prototype.hasOwnProperty.call(trailingHeaders, "set-cookie")
-        ) {
-          trailingHeaders["Set-Cookie"] = refreshCookie;
-        }
-      } else if (!res.hasHeader("Set-Cookie")) {
-        res.setHeader("Set-Cookie", refreshCookie);
+    const existingCookie = res.getHeader("Set-Cookie");
+    const trailingHeaders = rest[rest.length - 1];
+    if (trailingHeaders && typeof trailingHeaders === "object" && !Array.isArray(trailingHeaders)) {
+      const responseCookies = mergeSetCookieValues(
+        existingCookie,
+        trailingHeaders["Set-Cookie"],
+        trailingHeaders["set-cookie"],
+        refreshCookie
+      );
+      if (responseCookies.length > 0) {
+        delete trailingHeaders["Set-Cookie"];
+        delete trailingHeaders["set-cookie"];
+        trailingHeaders["Set-Cookie"] = responseCookies;
+      }
+    } else {
+      const responseCookies = mergeSetCookieValues(existingCookie, refreshCookie);
+      if (responseCookies.length > 0) {
+        res.setHeader("Set-Cookie", responseCookies);
       }
     }
     return originalWriteHead.call(this, statusCode, ...rest);
@@ -3760,16 +3801,16 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && pathname === "/api/client-meta") {
-    void handleClientMeta(req, res, url);
+    runAsyncRoute(handleClientMeta(req, res, url), res);
     return;
   }
 
   if (req.method === "POST" && pathname === "/api/admin/login") {
-    void handleAdminLogin(req, res);
+    runAsyncRoute(handleAdminLogin(req, res), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/admin/account/reset") {
-    void handleAdminAccountReset(req, res);
+    runAsyncRoute(handleAdminAccountReset(req, res), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/admin/logout") {
@@ -3797,15 +3838,15 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "GET" && parseAdminUserPath(pathname)) {
-    void handleAdminUserDetail(req, res, url, pathname);
+    runAsyncRoute(handleAdminUserDetail(req, res, url, pathname), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/admin/users/batch") {
-    void handleAdminUsersBatch(req, res, url);
+    runAsyncRoute(handleAdminUsersBatch(req, res, url), res);
     return;
   }
   if (req.method === "PATCH" && parseAdminUserPath(pathname)) {
-    void handleAdminUserPatch(req, res, url, pathname);
+    runAsyncRoute(handleAdminUserPatch(req, res, url, pathname), res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/messages") {
@@ -3817,24 +3858,24 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/access/summary") {
-    void handleAdminAccessSummary(req, res, url);
+    runAsyncRoute(handleAdminAccessSummary(req, res, url), res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/access/logs") {
-    void handleAdminAccessLogs(req, res, url);
+    runAsyncRoute(handleAdminAccessLogs(req, res, url), res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/access/profile") {
-    void handleAdminAccessProfile(req, res, url);
+    runAsyncRoute(handleAdminAccessProfile(req, res, url), res);
     return;
   }
 
   if (req.method === "POST" && pathname === "/api/register") {
-    void handleRegister(req, res);
+    runAsyncRoute(handleRegister(req, res), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/login") {
-    void handleLogin(req, res);
+    runAsyncRoute(handleLogin(req, res), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/logout") {
@@ -3858,11 +3899,11 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "PATCH" && pathname === "/api/me/settings") {
-    void handleMeSettingsPatch(req, res, url);
+    runAsyncRoute(handleMeSettingsPatch(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/me/password") {
-    void handleMePassword(req, res, url);
+    runAsyncRoute(handleMePassword(req, res, url), res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/me/sessions") {
@@ -3875,11 +3916,11 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST" && pathname === "/api/contacts") {
-    void handleContactCreate(req, res, url);
+    runAsyncRoute(handleContactCreate(req, res, url), res);
     return;
   }
   if (contactPath && req.method === "PATCH" && !contactPath.action) {
-    void handleContactPatch(req, res, url, pathname);
+    runAsyncRoute(handleContactPatch(req, res, url, pathname), res);
     return;
   }
   if (contactPath && req.method === "DELETE" && !contactPath.action) {
@@ -3887,7 +3928,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (contactPath && req.method === "POST" && contactPath.action === "block") {
-    void handleContactBlock(req, res, url, pathname);
+    runAsyncRoute(handleContactBlock(req, res, url, pathname), res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/users") {
@@ -3903,27 +3944,27 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages") {
-    void handleSendMessage(req, res, url);
+    runAsyncRoute(handleSendMessage(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages/attachment") {
-    void handleSendMessage(req, res, url);
+    runAsyncRoute(handleSendMessage(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages/recall") {
-    void handleRecallMessage(req, res, url);
+    runAsyncRoute(handleRecallMessage(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages/delete") {
-    void handleDeleteMessage(req, res, url);
+    runAsyncRoute(handleDeleteMessage(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages/read") {
-    void handleMarkRead(req, res, url);
+    runAsyncRoute(handleMarkRead(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/messages/typing") {
-    void handleTypingSignal(req, res, url);
+    runAsyncRoute(handleTypingSignal(req, res, url), res);
     return;
   }
   if (req.method === "POST" && pathname === "/api/events/token") {

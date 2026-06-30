@@ -53,6 +53,7 @@ test("browser client keeps authentication tokens out of web storage", () => {
   assert.doesNotMatch(appSource, /sessionStorage\.setItem\([^\n]*session-token/);
   assert.doesNotMatch(appSource, /Authorization\s*=\s*`Bearer/);
   assert.match(appSource, /sessionStorage\.removeItem\("private-chat-session-token"\)/);
+  assert.match(appSource, /payload\?\.error === "account banned"/);
 });
 
 function delay(ms) {
@@ -198,9 +199,12 @@ test("cookie-only auth is secure by default and rejects bearer fallback", async 
     assert.equal(payload.token, undefined);
 
     const setCookie = String(register.headers.get("set-cookie") || "");
+    assert.match(setCookie, /secure_chat_visit=/);
+    assert.match(setCookie, /secure_chat_session=/);
     assert.match(setCookie, /HttpOnly/i);
     assert.match(setCookie, /SameSite=Strict/i);
-    const sessionCookie = setCookie.split(";")[0];
+    const sessionCookie = extractCookiePair(setCookie, "secure_chat_session");
+    assert.ok(sessionCookie);
 
     const cookieMe = await getJsonWithOptions(server.port, "/api/me", { cookie: sessionCookie });
     assert.equal(cookieMe.response.status, 200);
@@ -478,6 +482,12 @@ async function postJsonAndRead(port, pathname, body, token = "") {
   };
 }
 
+function extractCookiePair(setCookieHeader, name) {
+  const pattern = new RegExp(`(?:^|,\\s*)(${name}=[^;,]+)`);
+  const match = String(setCookieHeader || "").match(pattern);
+  return match ? match[1] : "";
+}
+
 test("register and login require unique usernames and return encrypted key bundles", async () => {
   const server = await startServer();
 
@@ -497,6 +507,8 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.match(registerCookie, /secure_chat_session=/);
     assert.match(registerCookie, /HttpOnly/);
     assert.match(registerCookie, /SameSite=Strict/);
+    const registerSessionCookie = extractCookiePair(registerCookie, "secure_chat_session");
+    assert.ok(registerSessionCookie);
 
     const duplicate = await postJson(server.port, "/api/register", {
       username: "alice_1",
@@ -526,7 +538,7 @@ test("register and login require unique usernames and return encrypted key bundl
     assert.equal(me.json.user.publicKey, SAMPLE_BUNDLES.Alice_1.publicKey);
 
     const cookieMeResponse = await fetch(`http://127.0.0.1:${server.port}/api/me`, {
-      headers: { Cookie: registerCookie.split(";")[0] }
+      headers: { Cookie: registerSessionCookie }
     });
     assert.equal(cookieMeResponse.status, 200);
     assert.equal((await cookieMeResponse.json()).user.username, "Alice_1");
@@ -1245,6 +1257,9 @@ test("blocks suppress delivery and read receipts", async () => {
     }, senderToken);
     assert.equal(sent.response.status, 201);
     assert.equal(sent.json.message.deliveredAt, 0);
+    const unreadBeforeBlock = await getJson(server.port, "/api/conversations", recipientToken);
+    assert.equal(unreadBeforeBlock.response.status, 200);
+    assert.equal(unreadBeforeBlock.json.conversations[0].unread, 1);
 
     const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ReceiptBlockA/block`, {
       method: "POST",
@@ -1252,6 +1267,9 @@ test("blocks suppress delivery and read receipts", async () => {
       body: JSON.stringify({ blocked: true })
     });
     assert.equal(block.status, 200);
+    const unreadAfterBlock = await getJson(server.port, "/api/conversations", recipientToken);
+    assert.equal(unreadAfterBlock.response.status, 200);
+    assert.equal(unreadAfterBlock.json.conversations[0].unread, 0);
 
     const recipientEvents = await openEvents(server.port, recipientToken);
     await recipientEvents.ready;
@@ -1648,7 +1666,7 @@ test("session auth prefers a valid cookie and falls back to a valid bearer token
     assert.equal(adminLogin.status, 200);
     const adminPayload = await adminLogin.json();
     const adminToken = String(adminPayload.token || "");
-    const adminCookie = String(adminLogin.headers.get("set-cookie") || "").split(";")[0];
+    const adminCookie = extractCookiePair(adminLogin.headers.get("set-cookie"), "secure_chat_admin_session");
     assert.ok(adminToken);
     assert.ok(adminCookie);
 
@@ -1798,9 +1816,11 @@ test("admin credentials must come from environment configuration", async () => {
     const cookie = fixedLogin.headers.get("set-cookie") || "";
     assert.match(cookie, /secure_chat_admin_session=/);
     assert.match(cookie, /HttpOnly/);
+    const adminSessionCookie = extractCookiePair(cookie, "secure_chat_admin_session");
+    assert.ok(adminSessionCookie);
 
     const me = await fetch(`http://127.0.0.1:${server.port}/api/admin/me`, {
-      headers: { Cookie: cookie.split(";")[0] }
+      headers: { Cookie: adminSessionCookie }
     });
     assert.equal(me.status, 200);
     assert.equal((await me.json()).admin.username, "root_admin");

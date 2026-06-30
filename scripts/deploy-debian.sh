@@ -143,11 +143,12 @@ read_env_value() {
 }
 
 ensure_domains() {
-  if [ -n "${DOMAIN}" ]; then
-    if [ -z "${WWW_DOMAIN}" ]; then
-      WWW_DOMAIN="www.${DOMAIN}"
-    fi
-    return
+  if [ -n "${DOMAIN}" ] && [ -z "${WWW_DOMAIN}" ]; then
+    WWW_DOMAIN="www.${DOMAIN}"
+  fi
+  if [ -z "${DOMAIN}" ] || [ -z "${WWW_DOMAIN}" ]; then
+    echo "DOMAIN and WWW_DOMAIN are required for the default Caddy/443 deployment." >&2
+    exit 1
   fi
 }
 

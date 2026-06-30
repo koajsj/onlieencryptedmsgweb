@@ -1748,7 +1748,9 @@ async function api(pathname, options = {}) {
   }
 
   if (!response.ok) {
-    if (response.status === 401 && state.authenticated && !options.skipAuthReset) {
+    const shouldResetAuth =
+      response.status === 401 || (response.status === 403 && payload?.error === "account banned");
+    if (shouldResetAuth && state.authenticated && !options.skipAuthReset) {
       clearSession(true);
     }
     throw new Error(translateApiError(pathname, response.status, payload));
