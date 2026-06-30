@@ -205,6 +205,9 @@ write_environment_file() {
     printf 'ALLOW_BEARER_AUTH=0\n'
     printf 'ACCESS_LOG_RETENTION_DAYS=30\n'
     printf 'ACCESS_LOG_MAX_QUEUE=10000\n'
+    printf 'ENABLE_IP_GEO=1\n'
+    printf 'IP_GEO_TIMEOUT_MS=1500\n'
+    printf 'IP_GEO_CACHE_TTL_MS=86400000\n'
     printf 'HSTS_MAX_AGE_SECONDS=31536000\n'
     printf 'TRUSTED_ORIGINS=%s,%s\n' "https://${DOMAIN}" "https://${WWW_DOMAIN}"
     printf 'ADMIN_USERNAME=%s\n' "${ADMIN_USERNAME}"

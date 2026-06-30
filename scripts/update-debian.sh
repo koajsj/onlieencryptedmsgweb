@@ -106,6 +106,9 @@ normalize_environment_file() {
   ensure_line_if_missing "ALLOW_BEARER_AUTH" "0"
   ensure_line_if_missing "ACCESS_LOG_RETENTION_DAYS" "30"
   ensure_line_if_missing "ACCESS_LOG_MAX_QUEUE" "10000"
+  ensure_line_if_missing "ENABLE_IP_GEO" "1"
+  ensure_line_if_missing "IP_GEO_TIMEOUT_MS" "1500"
+  ensure_line_if_missing "IP_GEO_CACHE_TTL_MS" "86400000"
   remove_line "MANAGE_CADDY"
 
   if [ -n "${existing_hash}" ]; then

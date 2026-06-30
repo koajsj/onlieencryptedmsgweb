@@ -103,6 +103,12 @@ function setRefreshMeta() {
     : "尚未刷新";
 }
 
+function formatIpLocation(row) {
+  const ip = String(row?.ip || "-");
+  const location = String(row?.ipAttribution || row?.ipLocation || "").trim();
+  return location ? `${ip} · ${location}` : ip;
+}
+
 function renderOverview(detail) {
   const messageStats = detail.messageStats || {};
   const access = detail.access || {};
@@ -196,7 +202,7 @@ function renderAccess(detail) {
       { title: "首次访问", meta: formatDateTime(profile.firstVisitAt) },
       { title: "最近访问", meta: formatDateTime(profile.lastVisitAt) },
       { title: "累计访问", meta: `${profile.visits || 0} 次` },
-      { title: "主会话 / IP", meta: `${profile.sessionId || "-"} · ${profile.ip || "-"} (${profile.ipAttribution || "-"})` },
+      { title: "主会话 / IP", meta: `${profile.sessionId || "-"} · ${formatIpLocation(profile)}` },
       {
         title: "客户端环境",
         meta: `${profile.clientMeta?.browser || "-"} · ${profile.clientMeta?.os || "-"} · ${profile.clientMeta?.deviceType || "-"}`
@@ -225,7 +231,7 @@ function renderAccess(detail) {
       <article class="detail-item">
         <strong>${escapeHtml(`${row.method || "GET"} ${row.path || "/"}`)}</strong>
         <div class="detail-item-meta">${escapeHtml(formatDateTime(row.createdAt))}</div>
-        <div class="detail-item-meta">${escapeHtml(`${row.ip || "-"} · ${row.browser || "-"} · ${row.os || "-"}`)}</div>
+        <div class="detail-item-meta">${escapeHtml(`${formatIpLocation(row)} · ${row.browser || "-"} · ${row.os || "-"}`)}</div>
       </article>
     `)
     .join("");

@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#f4f5f2" />
+    <meta name="theme-color" content="#eef2f3" />
     <meta name="color-scheme" content="light" />
     <title>管理后台</title>
-    <link rel="stylesheet" href="./admin.min.css?v=b4d9c301cd" />
+    <link rel="stylesheet" href="./admin.min.css?v=4e12d08514" />
   </head>
   <body>
     <main class="admin-root">
@@ -96,6 +96,14 @@
               <p id="adminMeta">管理员</p>
             </div>
             <div class="toolbar">
+              <label class="range-control">
+                <span>时间范围</span>
+                <select id="dashboardRangeSelect" aria-label="选择后台统计时间范围">
+                  <option value="7">近 7 天</option>
+                  <option value="14">近 14 天</option>
+                  <option value="30">近 30 天</option>
+                </select>
+              </label>
               <span class="status-pill" id="refreshMeta">尚未刷新</span>
               <button id="refreshButton" type="button" class="button secondary">刷新</button>
               <button id="logoutButton" type="button" class="button secondary">退出</button>
@@ -105,9 +113,47 @@
           <div class="content-stack">
             <section class="panel overview-panel" id="overviewPanel">
               <div class="panel-head">
-                <h3><span class="sec-icon" aria-hidden="true">◌</span>管理员信息面板</h3>
+                <h3><span class="sec-icon" aria-hidden="true">◌</span>运营与安全总览</h3>
+                <span class="detail-badge" id="chartRangeText">近 7 天</span>
               </div>
               <div class="overview-grid" id="overviewGrid"></div>
+              <div class="insight-grid">
+                <article class="chart-card chart-card-wide">
+                  <div class="detail-head">
+                    <h4>用户增长与消息量</h4>
+                    <span class="detail-badge">柱状图</span>
+                  </div>
+                  <div class="bar-chart" id="growthBarChart"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="detail-head">
+                    <h4>活跃与错误趋势</h4>
+                    <span class="detail-badge">折线图</span>
+                  </div>
+                  <div class="line-chart" id="activityLineChart"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="detail-head">
+                    <h4>用户状态占比</h4>
+                    <span class="detail-badge">扇形图</span>
+                  </div>
+                  <div class="donut-chart" id="userMixChart"></div>
+                </article>
+                <article class="chart-card">
+                  <div class="detail-head">
+                    <h4>设备来源占比</h4>
+                    <span class="detail-badge">扇形图</span>
+                  </div>
+                  <div class="donut-chart" id="deviceMixChart"></div>
+                </article>
+                <article class="chart-card chart-card-wide">
+                  <div class="detail-head">
+                    <h4>安全与稳定性告警</h4>
+                    <span class="detail-badge">按影响排序</span>
+                  </div>
+                  <div class="alert-list" id="securityAlertsList"></div>
+                </article>
+              </div>
               <div class="detail-columns">
                 <article class="detail-card">
                   <div class="detail-head">
@@ -151,7 +197,7 @@
                 <article class="detail-card">
                   <div class="detail-head">
                     <h4>访问趋势</h4>
-                    <span class="detail-badge">近 7 天</span>
+                    <span class="detail-badge" id="accessRangeText">近 7 天</span>
                   </div>
                   <div class="trend-chart" id="accessTrend"></div>
                 </article>
@@ -341,6 +387,6 @@
       </section>
     </div>
     <script src="./ui-utils.min.js?v=cd59756d46" defer></script>
-    <script src="./admin.min.js?v=c1a28ed498" defer></script>
+    <script src="./admin.min.js?v=f0ab4ddcdb" defer></script>
   </body>
 </html>

@@ -38,7 +38,8 @@ const {
   MAX_API_REQUESTS_PER_WINDOW, MAX_MESSAGES_PER_CONVERSATION_WINDOW,
   HEARTBEAT_MS, EVENT_TICKET_TTL_MS, MESSAGE_PERSIST_DEBOUNCE_MS,
   HSTS_MAX_AGE_SECONDS, COOKIE_SECURE, ENABLE_ACCESS_LOG,
-  ACCESS_LOG_RETENTION_DAYS, ACCESS_LOG_MAX_QUEUE, ALLOW_BEARER_AUTH,
+  ACCESS_LOG_RETENTION_DAYS, ACCESS_LOG_MAX_QUEUE, ENABLE_IP_GEO,
+  IP_GEO_TIMEOUT_MS, IP_GEO_CACHE_TTL_MS, ALLOW_BEARER_AUTH,
   USER_SESSION_COOKIE, ADMIN_SESSION_COOKIE,
   DEFAULT_ADMIN_USERNAME_VALUE,
   AUDIT_TEXT_RETENTION_DAYS, TRUST_PROXY, TRUSTED_ORIGINS,
@@ -119,6 +120,9 @@ const accessLogStore = createAccessLogStore({
   enabled: ENABLE_ACCESS_LOG,
   retentionDays: ACCESS_LOG_RETENTION_DAYS,
   maxQueueSize: ACCESS_LOG_MAX_QUEUE,
+  enableIpGeo: ENABLE_IP_GEO,
+  ipGeoTimeoutMs: IP_GEO_TIMEOUT_MS,
+  ipGeoCacheTtlMs: IP_GEO_CACHE_TTL_MS,
   logger: (error) => {
     console.error(`[access-log] ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -1044,6 +1048,200 @@ function parseContactPath(pathname) {
   };
 }
 
+function parseAdminDashboardDays(url) {
+  const days = Number.parseInt(String(url.searchParams.get("days") || "7"), 10) || 7;
+  if (days <= 7) {
+    return 7;
+  }
+  if (days <= 14) {
+    return 14;
+  }
+  return 30;
+}
+
+function localDateLabel(timestamp) {
+  const time = Number(timestamp);
+  const date = new Date(Number.isFinite(time) ? time : Date.now());
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localDayStart(timestamp = Date.now()) {
+  const time = Number(timestamp);
+  const date = new Date(Number.isFinite(time) ? time : Date.now());
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function buildDashboardDayRows(days) {
+  const todayStart = localDayStart();
+  return Array.from({ length: days }, (_, index) => {
+    const at = todayStart - (days - index - 1) * 24 * 60 * 60 * 1000;
+    return {
+      label: localDateLabel(at),
+      users: 0,
+      messages: 0,
+      activeUsers: 0,
+      failedLogins: 0,
+      requests: 0,
+      errors: 0,
+      avgRequestTimeMs: 0
+    };
+  });
+}
+
+function incrementDashboardDay(rowsByLabel, timestamp, key, value = 1) {
+  const time = Number(timestamp || 0);
+  if (!time) {
+    return;
+  }
+  const label = localDateLabel(time);
+  const row = rowsByLabel.get(label);
+  if (row) {
+    row[key] = Number(row[key] || 0) + value;
+  }
+}
+
+function buildUserDistribution(dayAgo) {
+  let banned = 0;
+  let active = 0;
+  let inactive = 0;
+  for (const user of users) {
+    if (user.banned) {
+      banned += 1;
+    } else if (Number(user.lastSeenAt || 0) >= dayAgo) {
+      active += 1;
+    } else {
+      inactive += 1;
+    }
+  }
+  return [
+    { label: "24h 活跃", value: active },
+    { label: "未活跃", value: inactive },
+    { label: "已封禁", value: banned }
+  ];
+}
+
+function buildMessageSecurityDistribution() {
+  let encrypted = 0;
+  let legacyPlaintext = 0;
+  let recalled = 0;
+  for (const message of messages) {
+    if (message.ciphertext) {
+      encrypted += 1;
+    } else if (typeof message.text === "string" && message.text) {
+      legacyPlaintext += 1;
+    }
+    if (message.recalled) {
+      recalled += 1;
+    }
+  }
+  return {
+    encrypted,
+    legacyPlaintext,
+    recalled,
+    distribution: [
+      { label: "端到端密文", value: encrypted },
+      { label: "历史明文", value: legacyPlaintext },
+      { label: "已撤回", value: recalled }
+    ]
+  };
+}
+
+function buildDashboardTrends(days, auditEntries, accessSummary) {
+  const rows = buildDashboardDayRows(days);
+  const rowsByLabel = new Map(rows.map((row) => [row.label, row]));
+  for (const user of users) {
+    incrementDashboardDay(rowsByLabel, Number(user.createdAt || 0), "users");
+    incrementDashboardDay(rowsByLabel, Number(user.lastSeenAt || 0), "activeUsers");
+  }
+  for (const message of messages) {
+    incrementDashboardDay(rowsByLabel, Number(message.createdAt || 0), "messages");
+  }
+  for (const entry of auditEntries) {
+    if (entry.action === "admin_login_failed" || entry.action === "user_login_failed") {
+      incrementDashboardDay(rowsByLabel, Number(entry.at || 0), "failedLogins");
+    }
+  }
+  for (const row of accessSummary?.requestTrend || []) {
+    const target = rowsByLabel.get(String(row.label || ""));
+    if (!target) {
+      continue;
+    }
+    target.requests = Number(row.requests || 0);
+    target.errors = Number(row.errors || 0);
+    target.avgRequestTimeMs = Number(row.avgRequestTimeMs || 0);
+  }
+  return rows;
+}
+
+function buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecurity }) {
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const failedLogins24h = auditEntries.filter(
+    (entry) =>
+      Number(entry.at || 0) >= dayAgo &&
+      (entry.action === "admin_login_failed" || entry.action === "user_login_failed")
+  ).length;
+  const adminFailed24h = auditEntries.filter(
+    (entry) => Number(entry.at || 0) >= dayAgo && entry.action === "admin_login_failed"
+  ).length;
+  const errorsInRange = Number(accessSummary?.totals?.errorsInRange || 0);
+  const errorRate = Number(accessSummary?.totals?.errorRate || 0);
+  const alerts = [];
+  if (messageSecurity.legacyPlaintext > 0) {
+    alerts.push({
+      level: "high",
+      title: "历史明文消息仍存在",
+      detail: `检测到 ${messageSecurity.legacyPlaintext} 条历史明文消息，建议保留只读审计并尽快完成迁移清理。`
+    });
+  }
+  if (adminFailed24h > 0) {
+    alerts.push({
+      level: "high",
+      title: "管理员登录失败",
+      detail: `近 24 小时有 ${adminFailed24h} 次管理员登录失败，建议核查来源 IP 与账号口令。`
+    });
+  }
+  if (failedLogins24h > 0) {
+    alerts.push({
+      level: "medium",
+      title: "登录异常尝试",
+      detail: `近 24 小时累计 ${failedLogins24h} 次登录失败，已纳入速率限制与锁定策略。`
+    });
+  }
+  if (errorsInRange > 0 || errorRate >= 0.01) {
+    alerts.push({
+      level: errorRate >= 0.05 ? "high" : "medium",
+      title: "服务错误率上升",
+      detail: `当前时间范围内 ${errorsInRange} 个错误请求，错误率 ${(errorRate * 100).toFixed(2)}%。`
+    });
+  }
+  if (Number(health?.runtime?.accessLogQueue || 0) > 0) {
+    alerts.push({
+      level: "low",
+      title: "访问日志仍在写入",
+      detail: `访问日志队列还有 ${health.runtime.accessLogQueue} 条待处理记录。`
+    });
+  }
+  if (!COOKIE_SECURE) {
+    alerts.push({
+      level: "medium",
+      title: "Secure Cookie 未启用",
+      detail: "生产环境应通过 HTTPS 设置 COOKIE_SECURE=1，避免 Cookie 在非 TLS 通道发送。"
+    });
+  }
+  if (alerts.length === 0) {
+    alerts.push({
+      level: "ok",
+      title: "未发现高优先级告警",
+      detail: "当前时间范围内未发现后台登录、服务错误或消息加密方面的突出异常。"
+    });
+  }
+  return alerts.slice(0, 6);
+}
+
 function adminBasicStats() {
   const now = Date.now();
   const dayAgo = now - 24 * 60 * 60 * 1000;
@@ -1301,9 +1499,11 @@ async function buildAdminUserDetail(user) {
   };
 }
 
-function adminDashboardSnapshot(session, req) {
+async function adminDashboardSnapshot(session, req, options = {}) {
+  const rangeDays = Math.max(7, Math.min(30, Number(options.days) || 7));
   const basicStats = adminBasicStats();
-  const auditEntries = readRecentAdminAuditEntries(200);
+  const auditEntries = readRecentAdminAuditEntries(1000);
+  const accessSummary = await accessLogStore.getDashboardSummary({ days: rangeDays });
   const recentLogins = auditEntries
     .filter((entry) => entry.action === "admin_login" || entry.action === "user_login")
     .slice(-5)
@@ -1333,9 +1533,32 @@ function adminDashboardSnapshot(session, req) {
       banned: Boolean(user.banned)
     }));
   const health = adminHealthSnapshot();
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const messageSecurity = buildMessageSecurityDistribution();
+  const trends = buildDashboardTrends(rangeDays, auditEntries, accessSummary);
+  const requestTotals = accessSummary?.totals || {};
   return {
+    generatedAt: Date.now(),
+    rangeDays,
+    stats: basicStats,
+    health,
+    accessSummary,
     userTotal: basicStats.users,
     activeUsers: basicStats.activeUsers,
+    onlineUsers: basicStats.onlineUsers,
+    sessions: basicStats.sessions,
+    messages: basicStats.messages,
+    messagesToday: basicStats.messagesToday,
+    conversations: messageBuckets.size,
+    errorRate: Number(requestTotals.errorRate || 0),
+    securityAlerts: buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecurity }),
+    charts: {
+      trends,
+      userDistribution: buildUserDistribution(dayAgo),
+      messageSecurity: messageSecurity.distribution,
+      deviceBreakdown: accessSummary?.deviceBreakdown || [],
+      statusBreakdown: accessSummary?.statusBreakdown || []
+    },
     currentAdmin: {
       username: session.username,
       role: session.role
@@ -2740,7 +2963,7 @@ function handleAdminHealth(req, res, url) {
   });
 }
 
-function handleAdminDashboardStats(req, res, url) {
+async function handleAdminDashboardStats(req, res, url) {
   const session = requireAdminSession(req, res, url);
   if (!session) {
     return;
@@ -2757,8 +2980,9 @@ function handleAdminDashboardStats(req, res, url) {
   ) {
     return;
   }
+  const days = parseAdminDashboardDays(url);
   sendJson(res, 200, {
-    dashboard: adminDashboardSnapshot(session, req)
+    dashboard: await adminDashboardSnapshot(session, req, { days })
   });
 }
 
@@ -3169,8 +3393,9 @@ async function handleAdminAccessSummary(req, res, url) {
   ) {
     return;
   }
+  const days = parseAdminDashboardDays(url);
   sendJson(res, 200, {
-    summary: await accessLogStore.getDashboardSummary()
+    summary: await accessLogStore.getDashboardSummary({ days })
   });
 }
 
@@ -3830,7 +4055,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/dashboard/stats") {
-    handleAdminDashboardStats(req, res, url);
+    runAsyncRoute(handleAdminDashboardStats(req, res, url), res);
     return;
   }
   if (req.method === "GET" && pathname === "/api/admin/users") {

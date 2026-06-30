@@ -21,6 +21,7 @@
 - 生产环境默认禁用 Bearer Token，避免令牌进入脚本可读内存、日志或外部客户端；仅兼容旧客户端时才可临时设置 `ALLOW_BEARER_AUTH=1`。
 - 开启 `TRUST_PROXY=1` 时，只接受 `TRUSTED_PROXY_ADDRESSES` 中代理发送的转发头，防止伪造客户端 IP 绕过限流。
 - 访问日志默认保留 30 天，并限制待写队列，避免长期磁盘增长或数据库变慢时耗尽内存。
+- 后台 IP 国家/地区/城市归属默认在服务端通过固定 HTTPS 接口查询并缓存；如需关闭第三方归属查询，可设置 `ENABLE_IP_GEO=0`。
 
 适用环境：Debian 12、个人域名、Cloudflare 托管 DNS、Caddy 自动 HTTPS、Node.js 20.17 或更高版本。
 

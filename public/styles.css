@@ -22,7 +22,7 @@
   --green-soft: rgba(92, 207, 114, 0.16);
   --touch-target: 44px;
   --app-max-width: 1560px;
-  --app-vh: 100vh;
+  --app-vh: 100dvh;
 }
 
 * {
@@ -2764,7 +2764,7 @@ body.is-lightbox-open {
 
   .workspace {
     height: 100dvh;
-    min-height: 100vh;
+    min-height: 100dvh;
     padding: 14px;
     gap: 14px;
     overflow: hidden;
@@ -3808,7 +3808,7 @@ body {
   max-width: none;
   font-size: clamp(32px, 3.5vw, 40px);
   line-height: 1.08;
-  letter-spacing: -0.045em;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 
@@ -3858,7 +3858,7 @@ body {
 .auth-form-heading h2 {
   font-size: 24px;
   line-height: 1.2;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .auth-form-heading p {
@@ -4095,7 +4095,7 @@ textarea:focus-visible {
   .auth-branding h1 {
     max-width: none;
     font-size: 28px;
-    letter-spacing: -0.035em;
+    letter-spacing: 0;
   }
 
   .auth-copy {

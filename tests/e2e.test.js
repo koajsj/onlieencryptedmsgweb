@@ -2133,25 +2133,43 @@ test("access log collection stores client metadata and exposes admin analytics",
 
     const summary = await getJson(server.port, "/api/admin/access/summary", adminToken);
     assert.equal(summary.response.status, 200);
+    assert.equal(summary.json.summary.days, 7);
     assert.ok(summary.json.summary.totals.logRows >= 3);
     assert.ok(summary.json.summary.totals.pageViews >= 1);
+    assert.equal(typeof summary.json.summary.totals.errorRate, "number");
+    assert.ok(Array.isArray(summary.json.summary.requestTrend));
+    assert.ok(Array.isArray(summary.json.summary.deviceBreakdown));
     assert.ok(summary.json.summary.topPages.some((row) => row.path === "/"));
 
-    const dashboard = await getJson(server.port, "/api/admin/dashboard/stats", adminToken);
+    const rangedSummary = await getJson(server.port, "/api/admin/access/summary?days=14", adminToken);
+    assert.equal(rangedSummary.response.status, 200);
+    assert.equal(rangedSummary.json.summary.days, 14);
+
+    const dashboard = await getJson(server.port, "/api/admin/dashboard/stats?days=14", adminToken);
     assert.equal(dashboard.response.status, 200);
     assert.equal(dashboard.json.dashboard.systemStatus.label, "正常");
+    assert.equal(dashboard.json.dashboard.rangeDays, 14);
+    assert.ok(dashboard.json.dashboard.stats.users >= 2);
+    assert.equal(dashboard.json.dashboard.health.ok, true);
+    assert.ok(Array.isArray(dashboard.json.dashboard.charts.trends));
+    assert.equal(dashboard.json.dashboard.charts.trends.length, 14);
+    assert.ok(Array.isArray(dashboard.json.dashboard.charts.userDistribution));
+    assert.ok(Array.isArray(dashboard.json.dashboard.securityAlerts));
 
     const logs = await getJson(server.port, "/api/admin/access/logs?sessionId=" + encodeURIComponent(accessCookie.split("=")[1]), adminToken);
     assert.equal(logs.response.status, 200);
     assert.ok(logs.json.rows.length >= 1);
     assert.ok(logs.json.rows.some((row) => row.language === "zh-CN"));
     assert.ok(logs.json.rows.some((row) => row.userId === "VisitorA"));
+    assert.ok(logs.json.rows.every((row) => typeof row.ipAttribution === "string"));
+    assert.ok(logs.json.rows.every((row) => Object.prototype.hasOwnProperty.call(row, "ipCountry")));
 
     const profile = await getJson(server.port, "/api/admin/access/profile?userId=VisitorA", adminToken);
     assert.equal(profile.response.status, 200);
     assert.equal(profile.json.profile.userId, "VisitorA");
     assert.ok(profile.json.profile.visits >= 1);
     assert.equal(profile.json.profile.clientMeta.language, "zh-CN");
+    assert.equal(typeof profile.json.profile.ipAttribution, "string");
     assert.equal(profile.json.profile.sessionId, accessCookie.split("=")[1]);
     assert.notEqual(profile.json.profile.sessionId, accessCookie2.split("=")[1]);
   } finally {

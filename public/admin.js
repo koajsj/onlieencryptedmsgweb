@@ -15,9 +15,16 @@ const elements = {
   dashboard: document.querySelector("#dashboard"),
   adminMeta: document.querySelector("#adminMeta"),
   refreshMeta: document.querySelector("#refreshMeta"),
+  dashboardRangeSelect: document.querySelector("#dashboardRangeSelect"),
   refreshButton: document.querySelector("#refreshButton"),
   logoutButton: document.querySelector("#logoutButton"),
   overviewGrid: document.querySelector("#overviewGrid"),
+  chartRangeText: document.querySelector("#chartRangeText"),
+  growthBarChart: document.querySelector("#growthBarChart"),
+  activityLineChart: document.querySelector("#activityLineChart"),
+  userMixChart: document.querySelector("#userMixChart"),
+  deviceMixChart: document.querySelector("#deviceMixChart"),
+  securityAlertsList: document.querySelector("#securityAlertsList"),
   recentLoginsList: document.querySelector("#recentLoginsList"),
   recentUsersList: document.querySelector("#recentUsersList"),
   abnormalLoginsList: document.querySelector("#abnormalLoginsList"),
@@ -29,6 +36,7 @@ const elements = {
   accessTrend: document.querySelector("#accessTrend"),
   accessTopPages: document.querySelector("#accessTopPages"),
   accessTopIps: document.querySelector("#accessTopIps"),
+  accessRangeText: document.querySelector("#accessRangeText"),
   accessIpInput: document.querySelector("#accessIpInput"),
   accessUserIdInput: document.querySelector("#accessUserIdInput"),
   accessSessionInput: document.querySelector("#accessSessionInput"),
@@ -95,6 +103,7 @@ const state = {
   token: "",
   admin: { username: "", role: "admin" },
   dashboard: null,
+  dashboardRangeDays: 7,
   stats: {},
   health: null,
   accessSummary: null,
@@ -125,6 +134,7 @@ function hasPermission(permission) {
 function resetAdminState(showLogin = false) {
   state.token = "";
   state.dashboard = null;
+  state.dashboardRangeDays = 7;
   state.stats = {};
   state.health = null;
   state.accessSummary = null;
@@ -355,6 +365,17 @@ function parseSortValue() {
   };
 }
 
+function selectedDashboardDays() {
+  const days = Number(elements.dashboardRangeSelect?.value || state.dashboardRangeDays || 7);
+  if (days <= 7) {
+    return 7;
+  }
+  if (days <= 14) {
+    return 14;
+  }
+  return 30;
+}
+
 function userDetailHref(username) {
   return `./admin-user.html?username=${encodeURIComponent(String(username || ""))}`;
 }
@@ -385,7 +406,9 @@ function renderStats() {
     ["封禁用户", stats.bannedUsers || 0],
     ["在线用户", stats.onlineUsers || 0],
     ["24h 活跃", stats.activeUsers || 0],
+    ["会话数", stats.sessions || 0],
     ["消息总量", stats.messages || 0],
+    ["24h 消息", stats.messages24h || 0],
     ["今日消息", stats.messagesToday || 0]
   ];
   elements.statsGrid.textContent = "";
@@ -417,10 +440,194 @@ function renderDetailList(container, rows, emptyText) {
   }
 }
 
+const chartColors = ["#2f8f5b", "#5979d7", "#b55044", "#a26a23", "#7a6cc9", "#5d7568"];
+
+function renderEmptyBlock(container, text) {
+  container.textContent = "";
+  const empty = document.createElement("article");
+  empty.className = "empty-state compact";
+  empty.textContent = text;
+  container.append(empty);
+}
+
+function formatPercent(value) {
+  return `${(Math.max(0, Number(value) || 0) * 100).toFixed(2)}%`;
+}
+
+function rangeLabel(days) {
+  return `近 ${Number(days) || 7} 天`;
+}
+
+function setRangeLabels(days) {
+  const label = rangeLabel(days);
+  if (elements.chartRangeText) {
+    elements.chartRangeText.textContent = label;
+  }
+  if (elements.accessRangeText) {
+    elements.accessRangeText.textContent = label;
+  }
+}
+
+function renderGrowthBarChart(rows) {
+  const container = elements.growthBarChart;
+  if (!container) {
+    return;
+  }
+  container.textContent = "";
+  const source = Array.isArray(rows) ? rows : [];
+  if (source.length === 0) {
+    renderEmptyBlock(container, "当前范围暂无趋势数据");
+    return;
+  }
+  const maxValue = Math.max(1, ...source.map((row) => Math.max(Number(row.users || 0), Number(row.messages || 0))));
+  for (const row of source) {
+    const users = Number(row.users || 0);
+    const messages = Number(row.messages || 0);
+    const group = document.createElement("article");
+    group.className = "bar-group";
+    group.style.setProperty("--users-height", `${Math.max(3, Math.round((users / maxValue) * 100))}%`);
+    group.style.setProperty("--messages-height", `${Math.max(3, Math.round((messages / maxValue) * 100))}%`);
+    group.innerHTML = `
+      <div class="bar-pair" aria-label="${escapeHtml(`${row.label}: ${users} 个新用户，${messages} 条消息`)}">
+        <span class="bar-column users"></span>
+        <span class="bar-column messages"></span>
+      </div>
+      <strong>${escapeHtml(String(row.label || "").slice(5))}</strong>
+    `;
+    container.append(group);
+  }
+}
+
+function svgLinePoints(rows, key, width, height, maxValue) {
+  if (rows.length === 1) {
+    const value = Number(rows[0]?.[key] || 0);
+    const y = height - (value / maxValue) * (height - 16) - 8;
+    return `8,${y.toFixed(1)} ${width - 8},${y.toFixed(1)}`;
+  }
+  return rows.map((row, index) => {
+    const x = 8 + (index / Math.max(1, rows.length - 1)) * (width - 16);
+    const value = Number(row?.[key] || 0);
+    const y = height - (value / maxValue) * (height - 16) - 8;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function renderActivityLineChart(rows) {
+  const container = elements.activityLineChart;
+  if (!container) {
+    return;
+  }
+  container.textContent = "";
+  const source = Array.isArray(rows) ? rows : [];
+  if (source.length === 0) {
+    renderEmptyBlock(container, "当前范围暂无活跃趋势");
+    return;
+  }
+  const width = 360;
+  const height = 150;
+  const maxValue = Math.max(1, ...source.map((row) => Math.max(Number(row.activeUsers || 0), Number(row.errors || 0))));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "活跃用户与错误请求趋势");
+  const grid = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  grid.setAttribute("d", `M8 ${height - 8}H${width - 8}M8 ${Math.round(height / 2)}H${width - 8}M8 8H${width - 8}`);
+  grid.setAttribute("class", "line-grid");
+  svg.append(grid);
+  for (const [key, className] of [["activeUsers", "line-active"], ["errors", "line-error"]]) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("points", svgLinePoints(source, key, width, height, maxValue));
+    line.setAttribute("class", className);
+    svg.append(line);
+  }
+  container.append(svg);
+  const legend = document.createElement("div");
+  legend.className = "chart-legend";
+  legend.innerHTML = `
+    <span><i class="legend-dot active"></i>活跃用户</span>
+    <span><i class="legend-dot error"></i>错误请求</span>
+  `;
+  container.append(legend);
+}
+
+function renderDonutChart(container, rows, emptyText) {
+  if (!container) {
+    return;
+  }
+  container.textContent = "";
+  const source = (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      label: String(row.label || "-"),
+      value: Math.max(0, Number(row.value ?? row.hits ?? row.sessions ?? 0))
+    }))
+    .filter((row) => row.value > 0);
+  const total = source.reduce((sum, row) => sum + row.value, 0);
+  if (!total) {
+    renderEmptyBlock(container, emptyText);
+    return;
+  }
+  let cursor = 0;
+  const stops = source.map((row, index) => {
+    const start = cursor;
+    cursor += (row.value / total) * 100;
+    const color = chartColors[index % chartColors.length];
+    return `${color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;
+  });
+  const visual = document.createElement("div");
+  visual.className = "donut-visual";
+  visual.style.background = `conic-gradient(${stops.join(", ")})`;
+  visual.innerHTML = `<span>${escapeHtml(String(total))}</span>`;
+  const legend = document.createElement("div");
+  legend.className = "donut-legend";
+  source.forEach((row, index) => {
+    const item = document.createElement("div");
+    item.className = "donut-legend-item";
+    item.innerHTML = `
+      <i style="background:${chartColors[index % chartColors.length]}"></i>
+      <span>${escapeHtml(row.label)}</span>
+      <strong>${escapeHtml(row.value)} · ${((row.value / total) * 100).toFixed(1)}%</strong>
+    `;
+    legend.append(item);
+  });
+  container.append(visual, legend);
+}
+
+function renderSecurityAlerts(alerts) {
+  const container = elements.securityAlertsList;
+  if (!container) {
+    return;
+  }
+  container.textContent = "";
+  const rows = Array.isArray(alerts) ? alerts : [];
+  if (rows.length === 0) {
+    renderEmptyBlock(container, "当前范围暂无告警");
+    return;
+  }
+  for (const alert of rows) {
+    const item = document.createElement("article");
+    const level = String(alert.level || "low");
+    item.className = `alert-item level-${level}`;
+    item.innerHTML = `
+      <span>${escapeHtml(level === "high" ? "高" : level === "medium" ? "中" : level === "ok" ? "正常" : "低")}</span>
+      <div>
+        <strong>${escapeHtml(alert.title || "告警")}</strong>
+        <p>${escapeHtml(alert.detail || "")}</p>
+      </div>
+    `;
+    container.append(item);
+  }
+}
+
 function renderDashboardPanel() {
   const dashboard = state.dashboard;
   elements.overviewGrid.textContent = "";
   if (!dashboard) {
+    setRangeLabels(state.dashboardRangeDays);
+    renderGrowthBarChart([]);
+    renderActivityLineChart([]);
+    renderDonutChart(elements.userMixChart, [], "暂无用户结构数据");
+    renderDonutChart(elements.deviceMixChart, [], "暂无设备来源数据");
+    renderSecurityAlerts([]);
     renderDetailList(elements.recentLoginsList, [], "暂无登录记录");
     renderDetailList(elements.recentUsersList, [], "暂无注册记录");
     renderDetailList(elements.abnormalLoginsList, [], "暂无异常登录");
@@ -429,18 +636,35 @@ function renderDashboardPanel() {
     return;
   }
 
+  state.dashboardRangeDays = Number(dashboard.rangeDays || selectedDashboardDays());
+  if (elements.dashboardRangeSelect) {
+    elements.dashboardRangeSelect.value = String(state.dashboardRangeDays);
+  }
+  setRangeLabels(state.dashboardRangeDays);
+  const alertCount = (dashboard.securityAlerts || []).filter((alert) => alert.level !== "ok").length;
   const overviewCards = [
-    ["用户总数", dashboard.userTotal || 0],
-    ["在线/活跃用户", dashboard.activeUsers || 0],
-    ["当前管理员", dashboard.currentAdmin?.username || "管理员"],
-    ["当前访问 IP", dashboard.currentIp || "-"]
+    ["在线人数", dashboard.onlineUsers || 0, `${dashboard.sessions || 0} 个会话`],
+    ["24h 活跃用户", dashboard.activeUsers || 0, `${dashboard.userTotal || 0} 个总用户`],
+    ["今日消息", dashboard.messagesToday || 0, `${dashboard.messages || 0} 条总消息`],
+    ["会话数量", dashboard.conversations || 0, "按双方会话聚合"],
+    ["错误率", formatPercent(dashboard.errorRate || 0), "当前时间范围"],
+    ["安全告警", alertCount, alertCount ? "需要处理" : "暂无高优先级"]
   ];
-  for (const [label, value] of overviewCards) {
+  for (const [label, value, meta] of overviewCards) {
     const card = document.createElement("article");
     card.className = "overview-card";
-    card.innerHTML = `<span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong>`;
+    card.innerHTML = `
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(meta)}</small>
+    `;
     elements.overviewGrid.append(card);
   }
+  renderGrowthBarChart(dashboard.charts?.trends || []);
+  renderActivityLineChart(dashboard.charts?.trends || []);
+  renderDonutChart(elements.userMixChart, dashboard.charts?.userDistribution || [], "暂无用户结构数据");
+  renderDonutChart(elements.deviceMixChart, dashboard.charts?.deviceBreakdown || [], "暂无设备来源数据");
+  renderSecurityAlerts(dashboard.securityAlerts || []);
 
   elements.systemStatusText.textContent = `系统状态 ${dashboard.systemStatus?.ok === undefined ? "-" : (dashboard.systemStatus.ok ? "正常" : "异常")}`;
   elements.currentIpText.textContent = `IP ${dashboard.currentIp || "-"}`;
@@ -517,7 +741,8 @@ function renderHealth() {
     ["消息日志", formatBytes(health.files?.messagesLogBytes)],
     ["审计日志", formatBytes(health.files?.adminAuditBytes)],
     ["在线用户", health.runtime?.onlineUsers || 0],
-    ["待写入", health.runtime?.messagesDirty ? `${health.runtime?.pendingMessageAppends || 0} 条` : "无"]
+    ["待写入", health.runtime?.messagesDirty ? `${health.runtime?.pendingMessageAppends || 0} 条` : "无"],
+    ["IP 归属", health.accessLogs?.ipGeoEnabled ? `已启用 · ${health.accessLogs?.ipGeoCacheSize || 0} 缓存` : "已关闭"]
   ];
   for (const [label, value] of items) {
     const card = document.createElement("article");
@@ -586,16 +811,21 @@ function renderAccessSummary() {
   elements.accessOverviewGrid.textContent = "";
   const summary = state.accessSummary;
   if (!summary) {
+    setRangeLabels(state.dashboardRangeDays);
     renderTrendList(elements.accessTrend, []);
     renderRankList(elements.accessTopPages, [], "pv", "path");
     renderRankList(elements.accessTopIps, [], "hits", "ip");
     return;
   }
+  setRangeLabels(summary.days || state.dashboardRangeDays);
   const cards = [
     ["总页面 PV", summary.totals?.pageViews || 0],
     ["总页面 UV", summary.totals?.uniqueVisitors || 0],
     ["近 24 小时 PV", summary.totals?.pageViews24h || 0],
-    ["近 24 小时 UV", summary.totals?.uniqueVisitors24h || 0]
+    ["近 24 小时 UV", summary.totals?.uniqueVisitors24h || 0],
+    ["范围内请求", summary.totals?.requestsInRange || 0],
+    ["范围内错误率", formatPercent(summary.totals?.errorRate || 0)],
+    ["平均耗时", `${summary.totals?.avgRequestTimeMs || 0} ms`]
   ];
   for (const [label, value] of cards) {
     const card = document.createElement("article");
@@ -800,8 +1030,12 @@ async function loadDashboardStats() {
   if (!hasPermission("admin:read")) {
     return;
   }
-  const payload = await api("/api/admin/dashboard/stats");
+  state.dashboardRangeDays = selectedDashboardDays();
+  const payload = await api(`/api/admin/dashboard/stats?days=${state.dashboardRangeDays}`);
   state.dashboard = payload.dashboard || null;
+  state.stats = payload.dashboard?.stats || state.stats || {};
+  state.health = payload.dashboard?.health || state.health || null;
+  state.accessSummary = payload.dashboard?.accessSummary || state.accessSummary || null;
   if (payload.dashboard?.currentAdmin?.username) {
     state.admin = {
       username: payload.dashboard.currentAdmin.username,
@@ -810,6 +1044,9 @@ async function loadDashboardStats() {
     updateAdminHeader();
   }
   renderDashboardPanel();
+  renderStats();
+  renderHealth();
+  renderAccessSummary();
   markAdminRefreshed();
 }
 
@@ -849,7 +1086,8 @@ async function loadAccessSummary() {
   if (!hasPermission("admin:read")) {
     return;
   }
-  const payload = await api("/api/admin/access/summary");
+  state.dashboardRangeDays = selectedDashboardDays();
+  const payload = await api(`/api/admin/access/summary?days=${state.dashboardRangeDays}`);
   state.accessSummary = payload.summary || null;
   renderAccessSummary();
   markAdminRefreshed();
@@ -953,9 +1191,6 @@ async function loadAuditLogs() {
 async function refreshAll(resetMessages = true) {
   await Promise.all([
     loadDashboardStats(),
-    loadStats(),
-    loadHealth(),
-    loadAccessSummary(),
     loadAccessLogs(),
     loadAccessProfile(),
     loadUsers(),
@@ -1026,7 +1261,7 @@ async function patchUser(username, body) {
     method: "PATCH",
     body
   });
-  await Promise.all([loadUsers(), loadStats(), loadAuditLogs()]);
+  await Promise.all([loadUsers(), loadDashboardStats(), loadAuditLogs()]);
   markAdminRefreshed();
   showToast("用户修改成功");
 }
@@ -1058,7 +1293,7 @@ async function batchUsers(banned) {
     method: "POST",
     body: { usernames, banned, bannedReason: reason }
   });
-  await Promise.all([loadUsers(), loadStats(), loadAuditLogs()]);
+  await Promise.all([loadUsers(), loadDashboardStats(), loadAuditLogs()]);
   markAdminRefreshed();
   showToast(`已更新 ${usernames.length} 个用户`);
 }
@@ -1246,6 +1481,16 @@ function bindEvents() {
     try {
       await refreshAll(true);
       showToast("已刷新");
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+
+  elements.dashboardRangeSelect?.addEventListener("change", async () => {
+    state.dashboardRangeDays = selectedDashboardDays();
+    try {
+      await loadDashboardStats();
+      showToast(`已切换到${rangeLabel(state.dashboardRangeDays)}`);
     } catch (error) {
       showToast(error.message);
     }

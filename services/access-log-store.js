@@ -9,6 +9,7 @@ const ACCESS_DB_FILE = "access_logs.sqlite";
 const DEFAULT_BATCH_SIZE = 80;
 const CLIENT_META_CACHE_LIMIT = 2000;
 const RETENTION_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const IP_GEO_PROVIDER_URL = "https://ipwho.is";
 
 function normalizeText(value, maxLength = 255) {
   return String(value || "").trim().slice(0, maxLength);
@@ -76,6 +77,50 @@ function ipAttribute(ip) {
   return "IPv4";
 }
 
+function isPrivateIp(ip) {
+  const value = String(ip || "").trim().toLowerCase();
+  if (!value || value === "unknown" || value === "localhost" || value === "::1") {
+    return true;
+  }
+  const ipv4 = value.startsWith("::ffff:") ? value.slice(7) : value;
+  const ipv4Match = ipv4.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const first = Number(ipv4Match[1]);
+    const second = Number(ipv4Match[2]);
+    return (
+      first === 0 ||
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168)
+    );
+  }
+  return value.startsWith("fc") || value.startsWith("fd") || value.startsWith("fe80:");
+}
+
+function normalizeIpGeoText(value, maxLength = 80) {
+  return normalizeText(value, maxLength).replace(/[<>]/g, "");
+}
+
+function buildIpLocationLabel(location) {
+  const country = normalizeIpGeoText(location?.country);
+  const region = normalizeIpGeoText(location?.region);
+  const city = normalizeIpGeoText(location?.city);
+  const parts = [country, region, city].filter(Boolean);
+  return parts.length > 0 ? parts.join(" / ") : "";
+}
+
+function localIpLocation(ip) {
+  const fallback = ipAttribute(ip);
+  return {
+    ipCountry: "",
+    ipRegion: "",
+    ipCity: "",
+    ipLocation: fallback
+  };
+}
+
 function dayStartTimestamp(daysAgo = 0) {
   const date = new Date();
   date.setHours(0, 0, 0, 0);
@@ -83,19 +128,48 @@ function dayStartTimestamp(daysAgo = 0) {
   return date.getTime();
 }
 
-function createEmptySummary() {
+function localDateLabel(timestamp) {
+  const date = new Date(timestamp);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dashboardDays(options) {
+  const days = Number(options?.days) || 7;
+  return Math.max(1, Math.min(30, Math.floor(days)));
+}
+
+function fillDailyRows(days, rows, buildRow) {
+  const byLabel = new Map(rows.map((row) => [String(row.label || ""), row]));
+  return Array.from({ length: days }, (_, index) => {
+    const label = localDateLabel(dayStartTimestamp(days - index - 1));
+    return buildRow(label, byLabel.get(label) || null);
+  });
+}
+
+function createEmptySummary(days = 7) {
   return {
     enabled: false,
+    days,
     totals: {
       pageViews: 0,
       uniqueVisitors: 0,
       pageViews24h: 0,
       uniqueVisitors24h: 0,
-      logRows: 0
+      logRows: 0,
+      requestsInRange: 0,
+      errorsInRange: 0,
+      avgRequestTimeMs: 0,
+      errorRate: 0
     },
     trend: [],
+    requestTrend: [],
     topPages: [],
-    topIps: []
+    topIps: [],
+    deviceBreakdown: [],
+    statusBreakdown: []
   };
 }
 
@@ -107,6 +181,9 @@ class AccessLogStore {
     this.logger = typeof options.logger === "function" ? options.logger : () => {};
     this.retentionDays = Math.max(1, Number(options.retentionDays) || 30);
     this.maxQueueSize = Math.max(100, Number(options.maxQueueSize) || 10000);
+    this.enableIpGeo = options.enableIpGeo !== false;
+    this.ipGeoTimeoutMs = Math.max(300, Number(options.ipGeoTimeoutMs) || 1500);
+    this.ipGeoCacheTtlMs = Math.max(60 * 1000, Number(options.ipGeoCacheTtlMs) || 24 * 60 * 60 * 1000);
     this.droppedRows = 0;
     this.lastPrunedAt = 0;
     this.db = null;
@@ -115,6 +192,7 @@ class AccessLogStore {
     this.processing = false;
     this.closing = false;
     this.clientMetaBySession = new Map();
+    this.ipLocationCache = new Map();
   }
 
   async initialize() {
@@ -153,6 +231,10 @@ class AccessLogStore {
         screen_resolution TEXT,
         timezone TEXT,
         platform TEXT,
+        ip_country TEXT,
+        ip_region TEXT,
+        ip_city TEXT,
+        ip_location TEXT,
         created_at INTEGER NOT NULL
       );
     `);
@@ -160,7 +242,21 @@ class AccessLogStore {
     await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_ip ON access_logs(ip);");
     await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_created_at ON access_logs(created_at);");
     await this.execImmediate("CREATE INDEX IF NOT EXISTS idx_access_logs_session_id ON access_logs(session_id);");
+    await this.ensureIpLocationColumns();
     await this.pruneExpiredLogs(true);
+  }
+
+  async ensureIpLocationColumns() {
+    if (!this.db) {
+      return;
+    }
+    const columns = await this.allImmediate("PRAGMA table_info(access_logs)");
+    const existing = new Set(columns.map((column) => String(column.name || "")));
+    for (const column of ["ip_country", "ip_region", "ip_city", "ip_location"]) {
+      if (!existing.has(column)) {
+        await this.runImmediate(`ALTER TABLE access_logs ADD COLUMN ${column} TEXT`);
+      }
+    }
   }
 
   async exec(sql) {
@@ -374,11 +470,72 @@ class AccessLogStore {
     };
   }
 
+  async resolveIpLocation(ip) {
+    const normalizedIp = normalizeText(ip, 64) || "unknown";
+    if (!this.enableIpGeo || isPrivateIp(normalizedIp) || typeof fetch !== "function") {
+      return localIpLocation(normalizedIp);
+    }
+    const now = Date.now();
+    const cached = this.ipLocationCache.get(normalizedIp);
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.ipGeoTimeoutMs);
+    try {
+      const response = await fetch(`${IP_GEO_PROVIDER_URL}/${encodeURIComponent(normalizedIp)}?fields=success,country,region,city,message`, {
+        headers: { Accept: "application/json" },
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        throw new Error(`ip geo lookup failed: ${response.status}`);
+      }
+      const payload = await response.json();
+      const value = payload?.success === false
+        ? localIpLocation(normalizedIp)
+        : {
+            ipCountry: normalizeIpGeoText(payload?.country),
+            ipRegion: normalizeIpGeoText(payload?.region),
+            ipCity: normalizeIpGeoText(payload?.city),
+            ipLocation: buildIpLocationLabel(payload) || ipAttribute(normalizedIp)
+          };
+      this.ipLocationCache.set(normalizedIp, {
+        value,
+        expiresAt: now + this.ipGeoCacheTtlMs
+      });
+      return value;
+    } catch (error) {
+      const value = localIpLocation(normalizedIp);
+      this.ipLocationCache.set(normalizedIp, {
+        value,
+        expiresAt: now + Math.min(this.ipGeoCacheTtlMs, 10 * 60 * 1000)
+      });
+      return value;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async enrichRowsWithIpLocation(rows) {
+    const byIp = new Map();
+    for (const row of rows) {
+      const ip = normalizeText(row.ip, 64) || "unknown";
+      if (!byIp.has(ip)) {
+        byIp.set(ip, await this.resolveIpLocation(ip));
+      }
+    }
+    return rows.map((row) => ({
+      ...row,
+      ...(byIp.get(normalizeText(row.ip, 64) || "unknown") || localIpLocation(row.ip))
+    }));
+  }
+
   async insertLogBatch(rows) {
     if (!rows.length || !this.db) {
       return;
     }
     await this.ready;
+    const enrichedRows = await this.enrichRowsWithIpLocation(rows);
     const db = this.db;
     await this.runImmediate("BEGIN TRANSACTION");
     try {
@@ -386,8 +543,9 @@ class AccessLogStore {
         const prepared = db.prepare(
           `INSERT INTO access_logs (
             user_id, session_id, ip, user_agent, browser, os, device_type, method, path, referer,
-            request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform,
+            ip_country, ip_region, ip_city, ip_location, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           (error) => {
             if (error) {
               reject(error);
@@ -398,7 +556,7 @@ class AccessLogStore {
         );
       });
       try {
-        for (const row of rows) {
+        for (const row of enrichedRows) {
           await new Promise((resolve, reject) => {
             stmt.run(
               [
@@ -419,6 +577,10 @@ class AccessLogStore {
                 row.screenResolution || null,
                 row.timezone || null,
                 row.platform || null,
+                row.ipCountry || null,
+                row.ipRegion || null,
+                row.ipCity || null,
+                row.ipLocation || ipAttribute(row.ip),
                 row.createdAt
               ],
               (error) => {
@@ -468,13 +630,14 @@ class AccessLogStore {
     return Number(result?.changes || 0);
   }
 
-  async getDashboardSummary() {
+  async getDashboardSummary(options = {}) {
+    const days = dashboardDays(options);
     if (!this.enabled) {
-      return createEmptySummary();
+      return createEmptySummary(days);
     }
     await this.ready;
     const today = Date.now() - 24 * 60 * 60 * 1000;
-    const sevenDaysAgo = dayStartTimestamp(6);
+    const rangeStart = dayStartTimestamp(days - 1);
     const totalsRow = await this.get(
       `SELECT
         SUM(CASE WHEN request_kind = 'page' THEN 1 ELSE 0 END) AS page_views,
@@ -485,6 +648,15 @@ class AccessLogStore {
       FROM access_logs`,
       [today, today]
     );
+    const rangeTotalsRow = await this.get(
+      `SELECT
+        COUNT(*) AS requests,
+        SUM(CASE WHEN status_code >= 500 OR status_code = 0 THEN 1 ELSE 0 END) AS errors,
+        AVG(CASE WHEN request_time_ms > 0 THEN request_time_ms ELSE NULL END) AS avg_request_time_ms
+      FROM access_logs
+      WHERE created_at >= ?`,
+      [rangeStart]
+    );
     const trend = await this.all(
       `SELECT
         strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS label,
@@ -494,36 +666,89 @@ class AccessLogStore {
       WHERE request_kind = 'page' AND created_at >= ?
       GROUP BY label
       ORDER BY label ASC`,
-      [sevenDaysAgo]
+      [rangeStart]
+    );
+    const requestTrend = await this.all(
+      `SELECT
+        strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS label,
+        COUNT(*) AS requests,
+        SUM(CASE WHEN status_code >= 500 OR status_code = 0 THEN 1 ELSE 0 END) AS errors,
+        AVG(CASE WHEN request_time_ms > 0 THEN request_time_ms ELSE NULL END) AS avg_request_time_ms
+      FROM access_logs
+      WHERE created_at >= ?
+      GROUP BY label
+      ORDER BY label ASC`,
+      [rangeStart]
     );
     const topPages = await this.all(
       `SELECT path, COUNT(*) AS pv
       FROM access_logs
-      WHERE request_kind = 'page'
+      WHERE request_kind = 'page' AND created_at >= ?
       GROUP BY path
       ORDER BY pv DESC, path ASC
-      LIMIT 8`
+      LIMIT 8`,
+      [rangeStart]
     );
     const topIps = await this.all(
-      `SELECT ip, COUNT(*) AS hits, COUNT(DISTINCT session_id) AS uv
+      `SELECT ip, COUNT(*) AS hits, COUNT(DISTINCT session_id) AS uv, MAX(ip_location) AS ip_location
       FROM access_logs
+      WHERE created_at >= ?
       GROUP BY ip
       ORDER BY hits DESC, ip ASC
-      LIMIT 8`
+      LIMIT 8`,
+      [rangeStart]
     );
+    const deviceBreakdown = await this.all(
+      `SELECT COALESCE(NULLIF(device_type, ''), 'unknown') AS label, COUNT(*) AS hits, COUNT(DISTINCT session_id) AS sessions
+      FROM access_logs
+      WHERE created_at >= ?
+      GROUP BY label
+      ORDER BY hits DESC, label ASC
+      LIMIT 6`,
+      [rangeStart]
+    );
+    const statusBreakdown = await this.all(
+      `SELECT
+        CASE
+          WHEN status_code >= 500 OR status_code = 0 THEN '5xx'
+          WHEN status_code >= 400 THEN '4xx'
+          WHEN status_code >= 300 THEN '3xx'
+          WHEN status_code >= 200 THEN '2xx'
+          ELSE 'other'
+        END AS label,
+        COUNT(*) AS hits
+      FROM access_logs
+      WHERE created_at >= ?
+      GROUP BY label
+      ORDER BY label ASC`,
+      [rangeStart]
+    );
+    const requestsInRange = Number(rangeTotalsRow?.requests || 0);
+    const errorsInRange = Number(rangeTotalsRow?.errors || 0);
     return {
       enabled: true,
+      days,
       totals: {
         pageViews: Number(totalsRow?.page_views || 0),
         uniqueVisitors: Number(totalsRow?.unique_visitors || 0),
         pageViews24h: Number(totalsRow?.page_views_24h || 0),
         uniqueVisitors24h: Number(totalsRow?.unique_visitors_24h || 0),
-        logRows: Number(totalsRow?.log_rows || 0)
+        logRows: Number(totalsRow?.log_rows || 0),
+        requestsInRange,
+        errorsInRange,
+        avgRequestTimeMs: Math.round(Number(rangeTotalsRow?.avg_request_time_ms || 0)),
+        errorRate: requestsInRange > 0 ? errorsInRange / requestsInRange : 0
       },
-      trend: trend.map((row) => ({
-        label: String(row.label || ""),
-        pv: Number(row.pv || 0),
-        uv: Number(row.uv || 0)
+      trend: fillDailyRows(days, trend, (label, row) => ({
+        label: String(row?.label || label),
+        pv: Number(row?.pv || 0),
+        uv: Number(row?.uv || 0)
+      })).map((row) => ({ ...row, label: row.label || "" })),
+      requestTrend: fillDailyRows(days, requestTrend, (label, row) => ({
+        label,
+        requests: Number(row?.requests || 0),
+        errors: Number(row?.errors || 0),
+        avgRequestTimeMs: Math.round(Number(row?.avg_request_time_ms || 0))
       })),
       topPages: topPages.map((row) => ({
         path: String(row.path || "/"),
@@ -533,7 +758,16 @@ class AccessLogStore {
         ip: String(row.ip || "unknown"),
         hits: Number(row.hits || 0),
         uv: Number(row.uv || 0),
-        attribution: ipAttribute(row.ip)
+        attribution: String(row.ip_location || "") || ipAttribute(row.ip)
+      })),
+      deviceBreakdown: deviceBreakdown.map((row) => ({
+        label: String(row.label || "unknown"),
+        hits: Number(row.hits || 0),
+        sessions: Number(row.sessions || 0)
+      })),
+      statusBreakdown: statusBreakdown.map((row) => ({
+        label: String(row.label || "other"),
+        hits: Number(row.hits || 0)
       }))
     };
   }
@@ -581,7 +815,8 @@ class AccessLogStore {
     const rows = await this.all(
       `SELECT
         id, user_id, session_id, ip, user_agent, browser, os, device_type, method, path, referer,
-        request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform, created_at
+        request_time_ms, status_code, request_kind, language, screen_resolution, timezone, platform,
+        ip_country, ip_region, ip_city, ip_location, created_at
       FROM access_logs
       ${whereSql}
       ORDER BY created_at DESC, id DESC
@@ -594,7 +829,15 @@ class AccessLogStore {
         userId: String(row.user_id || ""),
         sessionId: String(row.session_id || ""),
         ip: String(row.ip || "unknown"),
-        ipAttribution: ipAttribute(row.ip),
+        ipCountry: String(row.ip_country || ""),
+        ipRegion: String(row.ip_region || ""),
+        ipCity: String(row.ip_city || ""),
+        ipLocation: String(row.ip_location || ""),
+        ipAttribution: String(row.ip_location || "") || buildIpLocationLabel({
+          country: row.ip_country,
+          region: row.ip_region,
+          city: row.ip_city
+        }) || ipAttribute(row.ip),
         userAgent: String(row.user_agent || ""),
         browser: String(row.browser || ""),
         os: String(row.os || ""),
@@ -655,7 +898,8 @@ class AccessLogStore {
       params
     );
     const latestMeta = await this.get(
-      `SELECT language, screen_resolution, timezone, platform, browser, os, device_type
+      `SELECT language, screen_resolution, timezone, platform, browser, os, device_type,
+        ip_country, ip_region, ip_city, ip_location
       FROM access_logs
       ${whereSql}
       ORDER BY created_at DESC, id DESC
@@ -666,7 +910,15 @@ class AccessLogStore {
       userId: String(summary.user_id || ""),
       sessionId: String(summary.session_id || ""),
       ip: String(summary.ip || ""),
-      ipAttribution: ipAttribute(summary.ip),
+      ipCountry: String(latestMeta?.ip_country || ""),
+      ipRegion: String(latestMeta?.ip_region || ""),
+      ipCity: String(latestMeta?.ip_city || ""),
+      ipLocation: String(latestMeta?.ip_location || ""),
+      ipAttribution: String(latestMeta?.ip_location || "") || buildIpLocationLabel({
+        country: latestMeta?.ip_country,
+        region: latestMeta?.ip_region,
+        city: latestMeta?.ip_city
+      }) || ipAttribute(summary.ip),
       firstVisitAt: Number(summary.first_visit || 0),
       lastVisitAt: Number(summary.last_visit || 0),
       visits: Number(summary.visits || 0),
@@ -693,7 +945,9 @@ class AccessLogStore {
       dbBytes: this.enabled && fs.existsSync(this.dbFile) ? fs.statSync(this.dbFile).size : 0,
       pendingQueue: this.queue.length,
       droppedRows: this.droppedRows,
-      retentionDays: this.retentionDays
+      retentionDays: this.retentionDays,
+      ipGeoEnabled: this.enableIpGeo,
+      ipGeoCacheSize: this.ipLocationCache.size
     };
   }
 

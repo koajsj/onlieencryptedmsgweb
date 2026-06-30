@@ -46,6 +46,12 @@ const ACCESS_LOG_MAX_QUEUE = Math.max(
   100,
   Number.parseInt(process.env.ACCESS_LOG_MAX_QUEUE || "10000", 10) || 10000
 );
+const ENABLE_IP_GEO = process.env.ENABLE_IP_GEO !== "0";
+const IP_GEO_TIMEOUT_MS = Math.max(300, Number.parseInt(process.env.IP_GEO_TIMEOUT_MS || "1500", 10) || 1500);
+const IP_GEO_CACHE_TTL_MS = Math.max(
+  60 * 1000,
+  Number.parseInt(process.env.IP_GEO_CACHE_TTL_MS || `${24 * 60 * 60 * 1000}`, 10) || 24 * 60 * 60 * 1000
+);
 const ALLOW_BEARER_AUTH = process.env.ALLOW_BEARER_AUTH === "1";
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
@@ -149,6 +155,9 @@ module.exports = {
   ENABLE_ACCESS_LOG,
   ACCESS_LOG_RETENTION_DAYS,
   ACCESS_LOG_MAX_QUEUE,
+  ENABLE_IP_GEO,
+  IP_GEO_TIMEOUT_MS,
+  IP_GEO_CACHE_TTL_MS,
   ALLOW_BEARER_AUTH,
   USER_SESSION_COOKIE,
   ADMIN_SESSION_COOKIE,
