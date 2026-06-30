@@ -2071,6 +2071,94 @@ function setDetailsPanelOpen(force) {
   syncLayoutState();
 }
 
+function openActionDialog(options = {}) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "dialog-backdrop action-dialog-backdrop";
+    const card = document.createElement("section");
+    card.className = "dialog-card action-dialog-card";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-modal", "true");
+
+    const head = document.createElement("div");
+    head.className = "dialog-head";
+    const titleWrap = document.createElement("div");
+    const eyebrow = document.createElement("span");
+    eyebrow.textContent = options.eyebrow || "确认操作";
+    const title = document.createElement("h2");
+    title.textContent = options.title || "确认操作";
+    titleWrap.append(eyebrow, title);
+    head.append(titleWrap);
+
+    const body = document.createElement("div");
+    body.className = "dialog-body";
+    const note = document.createElement("div");
+    note.className = "dialog-note";
+    note.textContent = options.message || "";
+    body.append(note);
+
+    let input = null;
+    if (options.field) {
+      const form = document.createElement("div");
+      form.className = "dialog-form";
+      const label = document.createElement("label");
+      const labelText = document.createElement("span");
+      labelText.textContent = options.field.label || "输入内容";
+      input = document.createElement(options.field.multiline ? "textarea" : "input");
+      input.value = options.field.value || "";
+      input.placeholder = options.field.placeholder || "";
+      label.append(labelText, input);
+      form.append(label);
+      body.append(form);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "dialog-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost-button";
+    cancel.textContent = options.cancelLabel || "取消";
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "primary-button";
+    confirm.textContent = options.confirmLabel || "确认";
+    actions.append(cancel, confirm);
+    card.append(head, body, actions);
+    backdrop.append(card);
+
+    const cleanup = (result) => {
+      backdrop.remove();
+      document.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    };
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        cleanup({ confirmed: false, value: "" });
+      }
+    };
+    cancel.addEventListener("click", () => cleanup({ confirmed: false, value: "" }));
+    confirm.addEventListener("click", () => cleanup({ confirmed: true, value: String(input?.value || "").trim() }));
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) {
+        cleanup({ confirmed: false, value: "" });
+      }
+    });
+    document.addEventListener("keydown", onKeydown);
+    document.body.append(backdrop);
+    window.requestAnimationFrame(() => (input || confirm).focus());
+  });
+}
+
+async function confirmActionDialog(options) {
+  const result = await openActionDialog(options);
+  return Boolean(result.confirmed);
+}
+
+async function promptActionDialog(options) {
+  const result = await openActionDialog({ ...options, field: options.field || {} });
+  return result.confirmed ? result.value : null;
+}
+
 function openContactDetailsPanel() {
   if (isDetailsDrawerLayout()) {
     setDetailsPanelOpen(true);
@@ -4025,6 +4113,14 @@ function startEventStream(silent = false) {
   });
 }
 
+function parseSsePayload(event, fallback = {}) {
+  try {
+    return JSON.parse(event?.data || "{}");
+  } catch (error) {
+    return fallback;
+  }
+}
+
 async function openEventStream() {
   closeEventStream();
   state.connectionState = "connecting";
@@ -4047,54 +4143,54 @@ async function openEventStream() {
   });
 
   source.addEventListener("ready", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event, { onlineUsers: [] });
     for (const username of payload.onlineUsers || []) {
       mergePresence(username, true);
     }
   });
 
   source.addEventListener("presence", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     mergePresence(payload.username, payload.online);
   });
 
   source.addEventListener("user-renamed", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     void handleUserRenamed(payload);
   });
 
   source.addEventListener("message", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     void ingestEncryptedMessage(payload);
   });
 
   source.addEventListener("typing", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     handleIncomingTyping(payload);
   });
 
   source.addEventListener("message-recalled", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     handleRemoteRecall(payload);
   });
 
   source.addEventListener("message-deleted", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     handleRemoteDelete(payload);
   });
 
   source.addEventListener("message-delivered", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     applyReceiptUpdate(payload.peer, payload.messageIds, "delivered", payload.deliveredAt);
   });
 
   source.addEventListener("message-read", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     applyReceiptUpdate(payload.peer, payload.messageIds, "read", payload.readAt);
   });
 
   source.addEventListener("conversation-read", (event) => {
-    const payload = JSON.parse(event.data);
+    const payload = parseSsePayload(event);
     applyConversationReadUpdate(payload.peer, payload.messageIds, payload.readAt);
   });
 
@@ -4987,7 +5083,15 @@ function bindEvents() {
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
   elements.addContactButton?.addEventListener("click", async () => {
-    const username = window.prompt("输入要添加的用户 ID");
+    const username = await promptActionDialog({
+      title: "添加联系人",
+      message: "输入对方的用户 ID 后会建立端到端加密会话。",
+      field: {
+        label: "用户 ID",
+        placeholder: "例如 alice_01"
+      },
+      confirmLabel: "添加"
+    });
     if (username === null || !username.trim()) {
       return;
     }
@@ -5015,7 +5119,16 @@ function bindEvents() {
       return;
     }
     const currentNote = contactRecord(state.activePeer)?.note || "";
-    const nextNote = window.prompt("设置联系人备注", currentNote);
+    const nextNote = await promptActionDialog({
+      title: "设置备注",
+      message: `为 ${state.activePeer} 设置一个本地备注。`,
+      field: {
+        label: "备注",
+        value: currentNote,
+        placeholder: "输入备注"
+      },
+      confirmLabel: "保存"
+    });
     if (nextNote === null) {
       return;
     }
@@ -5043,7 +5156,11 @@ function bindEvents() {
     if (!peer || !observedKey || !state.peerKeyMismatches.has(peer)) {
       return;
     }
-    if (!window.confirm("仅在你已通过其他渠道确认对方身份后继续。是否信任这把新密钥？")) {
+    if (!await confirmActionDialog({
+      title: "信任新密钥",
+      message: "仅在你已通过其他渠道确认对方身份后继续。确认后会用这把新密钥继续加密会话。",
+      confirmLabel: "信任"
+    })) {
       return;
     }
     state.peerKeyPins[peer] = observedKey;
@@ -5060,7 +5177,11 @@ function bindEvents() {
     if (!state.activePeer) {
       return;
     }
-    if (!window.confirm(`确认删除联系人 ${state.activePeer} 吗？`)) {
+    if (!await confirmActionDialog({
+      title: "删除联系人",
+      message: `确认删除联系人 ${state.activePeer} 吗？本地会话列表会移除该联系人。`,
+      confirmLabel: "删除"
+    })) {
       return;
     }
     try {
@@ -5075,7 +5196,11 @@ function bindEvents() {
       return;
     }
     const blocked = Boolean(contactRecord(state.activePeer)?.blocked);
-    const confirmed = window.confirm(blocked ? `确认取消拉黑 ${state.activePeer} 吗？` : `确认拉黑 ${state.activePeer} 吗？`);
+    const confirmed = await confirmActionDialog({
+      title: blocked ? "解除拉黑" : "拉黑联系人",
+      message: blocked ? `确认取消拉黑 ${state.activePeer} 吗？` : `确认拉黑 ${state.activePeer} 吗？拉黑后双方将无法继续发送消息。`,
+      confirmLabel: blocked ? "解除拉黑" : "拉黑"
+    });
     if (!confirmed) {
       return;
     }

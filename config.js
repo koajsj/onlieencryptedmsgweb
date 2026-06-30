@@ -52,7 +52,6 @@ const IP_GEO_CACHE_TTL_MS = Math.max(
   60 * 1000,
   Number.parseInt(process.env.IP_GEO_CACHE_TTL_MS || `${24 * 60 * 60 * 1000}`, 10) || 24 * 60 * 60 * 1000
 );
-const ALLOW_BEARER_AUTH = process.env.ALLOW_BEARER_AUTH === "1";
 const USER_SESSION_COOKIE = "secure_chat_session";
 const ADMIN_SESSION_COOKIE = "secure_chat_admin_session";
 const DEFAULT_ADMIN_USERNAME_VALUE = "admin";
@@ -158,7 +157,6 @@ module.exports = {
   ENABLE_IP_GEO,
   IP_GEO_TIMEOUT_MS,
   IP_GEO_CACHE_TTL_MS,
-  ALLOW_BEARER_AUTH,
   USER_SESSION_COOKIE,
   ADMIN_SESSION_COOKIE,
   DEFAULT_ADMIN_USERNAME_VALUE,

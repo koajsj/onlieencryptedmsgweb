@@ -168,9 +168,11 @@ assert_public_ports_available_for_caddy() {
   local listeners=""
   listeners="$(ss -lntp 2>/dev/null | awk '$4 ~ /:80$/ || $4 ~ /:443$/ { print }' | grep -v caddy || true)"
   if [ -n "${listeners}" ]; then
-    echo "Port 80/443 is already used by a non-Caddy process:" >&2
+    echo "Port 80/443 is already used by a non-Caddy process, so Caddy cannot own the public HTTPS endpoint:" >&2
     echo "${listeners}" >&2
-    echo "Stop that service first, then rerun the update script." >&2
+    echo "This project is configured for the default 443 deployment: Caddy listens on 80/443 and proxies to ${APP_HOST}:${APP_PORT}." >&2
+    echo "Check the owner with: ss -lntp | grep -E ':80|:443'" >&2
+    echo "Stop or move the conflicting service first, for example mtproto-proxy, nginx, apache2, or a panel-managed web server, then rerun this update script." >&2
     exit 1
   fi
 }

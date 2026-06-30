@@ -39,7 +39,7 @@ const {
   HEARTBEAT_MS, EVENT_TICKET_TTL_MS, MESSAGE_PERSIST_DEBOUNCE_MS,
   HSTS_MAX_AGE_SECONDS, COOKIE_SECURE, ENABLE_ACCESS_LOG,
   ACCESS_LOG_RETENTION_DAYS, ACCESS_LOG_MAX_QUEUE, ENABLE_IP_GEO,
-  IP_GEO_TIMEOUT_MS, IP_GEO_CACHE_TTL_MS, ALLOW_BEARER_AUTH,
+  IP_GEO_TIMEOUT_MS, IP_GEO_CACHE_TTL_MS,
   USER_SESSION_COOKIE, ADMIN_SESSION_COOKIE,
   DEFAULT_ADMIN_USERNAME_VALUE,
   AUDIT_TEXT_RETENTION_DAYS, TRUST_PROXY, TRUSTED_ORIGINS,
@@ -101,6 +101,10 @@ function findAdminAccount(username) {
 function purgeStoredMessagePlaintext() {
   let changed = false;
   for (const message of messages) {
+    if ("text" in message) {
+      delete message.text;
+      changed = true;
+    }
     if ("auditText" in message) {
       delete message.auditText;
       changed = true;
@@ -901,17 +905,6 @@ function sessionCookieNameForPath(pathname) {
   return pathname.startsWith("/api/admin") ? ADMIN_SESSION_COOKIE : USER_SESSION_COOKIE;
 }
 
-function parseBearerToken(req) {
-  if (!ALLOW_BEARER_AUTH) {
-    return "";
-  }
-  const auth = String(req.headers.authorization || "");
-  if (!auth.startsWith("Bearer ")) {
-    return "";
-  }
-  return auth.slice(7).trim();
-}
-
 function getSessionFromRequest(req, url) {
   const cookies = parseCookies(req);
   const cookieToken = cookies.get(sessionCookieNameForPath(url.pathname)) || "";
@@ -921,11 +914,7 @@ function getSessionFromRequest(req, url) {
       return cookieSession;
     }
   }
-  const bearerToken = parseBearerToken(req);
-  if (!bearerToken) {
-    return null;
-  }
-  return sessions.get(bearerToken) || null;
+  return null;
 }
 
 function requireSession(req, res, url) {
@@ -1000,10 +989,6 @@ function createEventTicketForSession(session) {
     expiresAt: Date.now() + EVENT_TICKET_TTL_MS
   });
   return ticket;
-}
-
-function authResponseToken(token) {
-  return ALLOW_BEARER_AUTH ? { token } : {};
 }
 
 function consumeEventTicket(ticket) {
@@ -1126,13 +1111,13 @@ function buildUserDistribution(dayAgo) {
 
 function buildMessageSecurityDistribution() {
   let encrypted = 0;
-  let legacyPlaintext = 0;
+  let invalid = 0;
   let recalled = 0;
   for (const message of messages) {
     if (message.ciphertext) {
       encrypted += 1;
-    } else if (typeof message.text === "string" && message.text) {
-      legacyPlaintext += 1;
+    } else {
+      invalid += 1;
     }
     if (message.recalled) {
       recalled += 1;
@@ -1140,14 +1125,46 @@ function buildMessageSecurityDistribution() {
   }
   return {
     encrypted,
-    legacyPlaintext,
+    invalid,
     recalled,
     distribution: [
       { label: "端到端密文", value: encrypted },
-      { label: "历史明文", value: legacyPlaintext },
+      { label: "结构异常", value: invalid },
       { label: "已撤回", value: recalled }
     ]
   };
+}
+
+function messageDeliveryState(message) {
+  if (message?.recalled) {
+    return "recalled";
+  }
+  if (Number(message?.readAt || 0) > 0) {
+    return "read";
+  }
+  if (Number(message?.deliveredAt || 0) > 0) {
+    return "delivered";
+  }
+  return "pending";
+}
+
+function buildMessageDeliveryStats() {
+  const stats = {
+    total: messages.length,
+    pending: 0,
+    delivered: 0,
+    read: 0,
+    recalled: 0,
+    deletedForViewer: 0
+  };
+  for (const message of messages) {
+    const state = messageDeliveryState(message);
+    stats[state] = Number(stats[state] || 0) + 1;
+    if (Array.isArray(message.deletedFor) && message.deletedFor.length > 0) {
+      stats.deletedForViewer += 1;
+    }
+  }
+  return stats;
 }
 
 function buildDashboardTrends(days, auditEntries, accessSummary) {
@@ -1177,7 +1194,7 @@ function buildDashboardTrends(days, auditEntries, accessSummary) {
   return rows;
 }
 
-function buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecurity }) {
+function buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecurity, deliveryStats }) {
   const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
   const failedLogins24h = auditEntries.filter(
     (entry) =>
@@ -1190,11 +1207,18 @@ function buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecur
   const errorsInRange = Number(accessSummary?.totals?.errorsInRange || 0);
   const errorRate = Number(accessSummary?.totals?.errorRate || 0);
   const alerts = [];
-  if (messageSecurity.legacyPlaintext > 0) {
+  if (messageSecurity.invalid > 0) {
     alerts.push({
       level: "high",
-      title: "历史明文消息仍存在",
-      detail: `检测到 ${messageSecurity.legacyPlaintext} 条历史明文消息，建议保留只读审计并尽快完成迁移清理。`
+      title: "消息结构异常",
+      detail: `检测到 ${messageSecurity.invalid} 条没有密文载荷的历史消息，系统已停止展示明文并建议尽快完成数据清理。`
+    });
+  }
+  if (Number(deliveryStats?.pending || 0) > 0) {
+    alerts.push({
+      level: "medium",
+      title: "存在待投递消息",
+      detail: `当前还有 ${deliveryStats.pending} 条消息等待接收方重新上线投递，建议关注离线用户与连接稳定性。`
     });
   }
   if (adminFailed24h > 0) {
@@ -1223,6 +1247,13 @@ function buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecur
       level: "low",
       title: "访问日志仍在写入",
       detail: `访问日志队列还有 ${health.runtime.accessLogQueue} 条待处理记录。`
+    });
+  }
+  if (Number(health?.accessLogs?.droppedRows || 0) > 0) {
+    alerts.push({
+      level: "medium",
+      title: "访问日志发生丢弃",
+      detail: `访问日志队列曾丢弃 ${health.accessLogs.droppedRows} 条记录，建议调大 ACCESS_LOG_MAX_QUEUE 或检查磁盘/SQLite 写入性能。`
     });
   }
   if (!COOKIE_SECURE) {
@@ -1319,7 +1350,7 @@ function buildUserMessageStats(username) {
   let sent = 0;
   let received = 0;
   let encrypted = 0;
-  let legacyPlaintext = 0;
+  let invalid = 0;
   let lastMessageAt = 0;
   let firstMessageAt = 0;
   const peers = new Set();
@@ -1337,8 +1368,8 @@ function buildUserMessageStats(username) {
     }
     if (message.ciphertext) {
       encrypted += 1;
-    } else if (typeof message.text === "string" && message.text) {
-      legacyPlaintext += 1;
+    } else {
+      invalid += 1;
     }
     const createdAt = Number(message.createdAt || 0);
     if (!firstMessageAt || createdAt < firstMessageAt) {
@@ -1353,22 +1384,49 @@ function buildUserMessageStats(username) {
     received,
     total: sent + received,
     encrypted,
-    legacyPlaintext,
+    invalid,
     peers: peers.size,
     firstMessageAt,
     lastMessageAt
   };
 }
 
+function deliveryStateLabel(state) {
+  if (state === "read") {
+    return "已读";
+  }
+  if (state === "delivered") {
+    return "已投递";
+  }
+  if (state === "recalled") {
+    return "已撤回";
+  }
+  return "待投递";
+}
+
+function messageAuditLabel(message) {
+  if (message?.recalled) {
+    return "消息已撤回，后台不可读取原文";
+  }
+  if (message?.ciphertext) {
+    return "端到端加密密文，后台不可读取明文";
+  }
+  return "消息缺少密文载荷，已按异常历史数据处理";
+}
+
 function adminUserMessageView(message, username) {
   const peer = message.from === username ? message.to : message.from;
+  const deliveryState = messageDeliveryState(message);
   return {
     id: message.id,
     peer,
     direction: message.from === username ? "sent" : "received",
     from: message.from,
     to: message.to,
-    text: typeof message.text === "string" && !message.ciphertext ? message.text : null,
+    encrypted: Boolean(message.ciphertext),
+    deliveryState,
+    deliveryLabel: deliveryStateLabel(deliveryState),
+    auditLabel: messageAuditLabel(message),
     nonce: String(message.nonce || ""),
     ciphertext: String(message.ciphertext || ""),
     recalled: Boolean(message.recalled),
@@ -1535,6 +1593,7 @@ async function adminDashboardSnapshot(session, req, options = {}) {
   const health = adminHealthSnapshot();
   const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
   const messageSecurity = buildMessageSecurityDistribution();
+  const deliveryStats = buildMessageDeliveryStats();
   const trends = buildDashboardTrends(rangeDays, auditEntries, accessSummary);
   const requestTotals = accessSummary?.totals || {};
   return {
@@ -1549,13 +1608,20 @@ async function adminDashboardSnapshot(session, req, options = {}) {
     sessions: basicStats.sessions,
     messages: basicStats.messages,
     messagesToday: basicStats.messagesToday,
+    deliveryStats,
     conversations: messageBuckets.size,
     errorRate: Number(requestTotals.errorRate || 0),
-    securityAlerts: buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecurity }),
+    securityAlerts: buildSecurityAlerts({ accessSummary, auditEntries, health, messageSecurity, deliveryStats }),
     charts: {
       trends,
       userDistribution: buildUserDistribution(dayAgo),
       messageSecurity: messageSecurity.distribution,
+      deliveryDistribution: [
+        { label: "待投递", value: deliveryStats.pending },
+        { label: "已投递", value: deliveryStats.delivered },
+        { label: "已读", value: deliveryStats.read },
+        { label: "已撤回", value: deliveryStats.recalled }
+      ],
       deviceBreakdown: accessSummary?.deviceBreakdown || [],
       statusBreakdown: accessSummary?.statusBreakdown || []
     },
@@ -1575,13 +1641,18 @@ async function adminDashboardSnapshot(session, req, options = {}) {
 }
 
 function adminMessageView(message) {
+  const deliveryState = messageDeliveryState(message);
   return {
     id: message.id,
     from: message.from,
     to: message.to,
     nonce: message.nonce,
     ciphertext: message.ciphertext,
+    encrypted: Boolean(message.ciphertext),
     recalled: Boolean(message.recalled),
+    deliveryState,
+    deliveryLabel: deliveryStateLabel(deliveryState),
+    auditLabel: messageAuditLabel(message),
     auditText: null,
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     createdAt: message.createdAt
@@ -1640,7 +1711,7 @@ function createMessageView(message, viewer) {
     peer,
     mine: message.from === viewer,
     publicKey: peerUser?.publicKey || "",
-    text: typeof message.text === "string" && !message.ciphertext ? message.text : null,
+    text: null,
     recalled: Boolean(message.recalled),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     nonce: message.nonce,
@@ -1678,7 +1749,7 @@ function buildConversationSummary(viewer, peer) {
           id: latest.id,
           from: latest.from,
           to: latest.to,
-          text: typeof latest.text === "string" && !latest.ciphertext ? latest.text : null,
+          text: null,
           recalled: Boolean(latest.recalled),
           replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
           nonce: latest.nonce,
@@ -2162,7 +2233,6 @@ async function handleRegister(req, res) {
   const token = createSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 201, {
-    ...authResponseToken(token),
     user: publicUser(user),
     keyBundle: keyBundleForUser(user)
   }, {
@@ -2233,7 +2303,6 @@ async function handleLogin(req, res) {
   const token = createSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 200, {
-    ...authResponseToken(token),
     user: publicUser(user),
     keyBundle: keyBundleForUser(user)
   }, {
@@ -2480,8 +2549,7 @@ async function handleMePassword(req, res, url) {
   const token = createSession(user.username, "user", req);
   sendJson(res, 200, {
     ok: true,
-    revoked,
-    ...authResponseToken(token)
+    revoked
   }, {
     "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
   });
@@ -2767,7 +2835,6 @@ async function handleAdminLogin(req, res) {
   accessLogMiddleware.setUserId(req, account.username);
   recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
-    ...authResponseToken(token),
     admin: {
       username: account.username,
       role: "admin"

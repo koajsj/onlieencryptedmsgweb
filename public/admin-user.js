@@ -59,10 +59,6 @@ function parseUsernameFromQuery() {
 
 async function api(pathname, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
-  const bearerToken = options.auth === false ? "" : String(options.token || "");
-  if (bearerToken && !headers.Authorization) {
-    headers.Authorization = `Bearer ${bearerToken}`;
-  }
   let body = options.body;
   if (body && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -263,11 +259,7 @@ function renderMessages(detail) {
   }
   elements.messageList.innerHTML = rows
     .map((message) => {
-      const text = message.recalled
-        ? "消息已撤回"
-        : message.text
-          ? `历史明文：${message.text}`
-          : `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
+      const text = `${message.auditLabel || "端到端加密密文，后台不可读取明文"} | ${message.deliveryLabel || "未知状态"} | 密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
       return `
         <article class="msg-item">
           <div class="msg-meta">

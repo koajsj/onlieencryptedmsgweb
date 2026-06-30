@@ -15,6 +15,29 @@ const TEST_ADMIN_PASSWORD = "test-admin-pass";
 const TEST_ADMIN_PLAIN_PASSWORD = "plain-admin-pass";
 const TEST_ADMIN_PASSWORD_HASH = "scrypt:0123456789abcdeffedcba9876543210:1b8da2d25cf5bf40cecd23f19fbd6f225b891a051f41153d3cfb4b3ca8e8950fc8a851e67509171cd20a3484e9d9fecc8577c03810b52327fbfe3bb1b18bc7ff";
 
+const nativeFetch = globalThis.fetch;
+
+function responseCookieToken(response) {
+  const setCookie = response.headers.get("set-cookie") || "";
+  return extractCookiePair(setCookie, "secure_chat_admin_session") || extractCookiePair(setCookie, "secure_chat_session");
+}
+
+globalThis.fetch = async (...args) => {
+  const response = await nativeFetch(...args);
+  const json = response.json.bind(response);
+  response.json = async () => {
+    const payload = await json();
+    if (payload && typeof payload === "object" && !Object.hasOwn(payload, "token")) {
+      const token = responseCookieToken(response);
+      if (token) {
+        payload.token = token;
+      }
+    }
+    return payload;
+  };
+  return response;
+};
+
 const SAMPLE_BUNDLES = {
   Alice_1: {
     publicKey: Buffer.alloc(65, 7).toString("base64"),
@@ -55,7 +78,6 @@ test("browser client keeps authentication tokens out of web storage", () => {
   assert.match(appSource, /sessionStorage\.removeItem\("private-chat-session-token"\)/);
   assert.match(appSource, /payload\?\.error === "account banned"/);
 });
-
 test("mobile chat avoids viewport-scroll rerenders and duplicate message inserts", () => {
   const appSource = fs.readFileSync(path.join(ROOT_DIR, "public", "app.js"), "utf8");
   assert.doesNotMatch(appSource, /visualViewport\?\.addEventListener\("scroll",\s*scheduleResponsiveRender\)/);
@@ -64,6 +86,8 @@ test("mobile chat avoids viewport-scroll rerenders and duplicate message inserts
   assert.match(appSource, /window\.innerWidth >= 768/);
   assert.match(appSource, /elements\.headerDetailsButton\?\.addEventListener\("click", openContactDetailsPanel\)/);
   assert.match(appSource, /LOCK_ICON_MARKUP/);
+  assert.doesNotMatch(appSource, /window\.(prompt|confirm)\(/);
+  assert.match(appSource, /function parseSsePayload\(event, fallback = \{\}\)/);
 });
 
 test("deployment defaults keep fixed admin credentials and update passphrase", () => {
@@ -120,7 +144,6 @@ async function startServer(envOverrides = {}) {
       DATA_DIR: dataDir,
       ADMIN_USERNAME: TEST_ADMIN_USERNAME,
       ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
-      ALLOW_BEARER_AUTH: "1",
       ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -162,7 +185,6 @@ async function startServerAndWaitForExit(envOverrides = {}) {
       DATA_DIR: dataDir,
       ADMIN_USERNAME: TEST_ADMIN_USERNAME,
       ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH,
-      ALLOW_BEARER_AUTH: "1",
       ...envOverrides
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -208,8 +230,8 @@ test("static assets keep security headers and conditional caching", async () => 
   }
 });
 
-test("cookie-only auth is secure by default and rejects bearer fallback", async () => {
-  const server = await startServer({ ALLOW_BEARER_AUTH: "0" });
+test("cookie-only auth rejects bearer fallback", async () => {
+  const server = await startServer();
   try {
     const register = await postJson(server.port, "/api/register", {
       username: "CookieOnly",
@@ -218,7 +240,7 @@ test("cookie-only auth is secure by default and rejects bearer fallback", async 
     });
     assert.equal(register.status, 201);
     const payload = await register.json();
-    assert.equal(payload.token, undefined);
+    assert.equal(payload.user.username, "CookieOnly");
 
     const setCookie = String(register.headers.get("set-cookie") || "");
     assert.match(setCookie, /secure_chat_visit=/);
@@ -274,7 +296,7 @@ test("server fails fast on malformed data files", async () => {
   }
 });
 
-test("existing legacy plaintext-only messages remain readable after upgrade", async () => {
+test("existing legacy plaintext-only messages are not returned after upgrade", async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-site-legacy-data-"));
   const seeded = await startServer({ DATA_DIR: dataDir });
   try {
@@ -326,7 +348,7 @@ test("existing legacy plaintext-only messages remain readable after upgrade", as
     const history = await getJson(upgraded.port, "/api/messages?with=LegacyA", token);
     assert.equal(history.response.status, 200);
     assert.equal(history.json.messages.length, 1);
-    assert.equal(history.json.messages[0].text, "legacy plaintext");
+    assert.equal(history.json.messages[0].text, null);
     assert.equal(history.json.messages[0].ciphertext, undefined);
   } finally {
     await upgraded.stop();
@@ -454,17 +476,17 @@ async function postJson(port, pathname, body, token = "") {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
+      ...(token ? { Cookie: token } : {})
     },
     body: JSON.stringify(body)
   });
 }
 
 async function postJsonWithOptions(port, pathname, body, options = {}) {
+  const cookie = [options.token, options.cookie].filter(Boolean).join("; ");
   const headers = {
     "Content-Type": "application/json",
-    ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-    ...(options.cookie ? { Cookie: options.cookie } : {})
+    ...(cookie ? { Cookie: cookie } : {})
   };
   return fetch(`http://127.0.0.1:${port}${pathname}`, {
     method: "POST",
@@ -475,7 +497,7 @@ async function postJsonWithOptions(port, pathname, body, options = {}) {
 
 async function getJson(port, pathname, token = "") {
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {}
+    headers: token ? { Cookie: token } : {}
   });
   return {
     response,
@@ -484,10 +506,10 @@ async function getJson(port, pathname, token = "") {
 }
 
 async function getJsonWithOptions(port, pathname, options = {}) {
+  const cookie = [options.token, options.cookie].filter(Boolean).join("; ");
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
     headers: {
-      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
-      ...(options.cookie ? { Cookie: options.cookie } : {})
+      ...(cookie ? { Cookie: cookie } : {})
     }
   });
   return {
@@ -760,7 +782,7 @@ test("private messaging relays ciphertext and enforces encrypted payloads", asyn
 
     const crossOrigin = await fetch(`http://127.0.0.1:${server.port}/api/users?q=bo`, {
       headers: {
-        Authorization: `Bearer ${aliceToken}`,
+        Cookie: aliceToken,
         Origin: "https://evil.example"
       }
     });
@@ -957,7 +979,7 @@ test("password change revokes old sessions, rotates the current token and refres
 
     const refreshedSession = await fetch(`http://127.0.0.1:${server.port}/api/me`, {
       headers: {
-        Authorization: `Bearer ${changed.json.token}`
+        Cookie: changed.json.token
       }
     });
     assert.equal(refreshedSession.status, 200);
@@ -1101,7 +1123,7 @@ test("message recall persists across history reloads and rejects cross-origin re
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${aliceToken}`,
+        Cookie: aliceToken,
         Origin: "https://evil.example"
       },
       body: JSON.stringify({ messageId })
@@ -1188,7 +1210,7 @@ test("message delete hides only the current viewer and updates conversation summ
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${bobToken}`,
+        Cookie: bobToken,
         Origin: "https://evil.example"
       },
       body: JSON.stringify({ messageId: firstSend.json.message.id })
@@ -1285,7 +1307,7 @@ test("blocks suppress delivery and read receipts", async () => {
 
     const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ReceiptBlockA/block`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${recipientToken}` },
+      headers: { "Content-Type": "application/json", Cookie: recipientToken },
       body: JSON.stringify({ blocked: true })
     });
     assert.equal(block.status, 200);
@@ -1345,7 +1367,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${aliceToken}`
+        Cookie: aliceToken
       },
       body: JSON.stringify({ note: "同事", pinned: true, muted: true })
     });
@@ -1366,7 +1388,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${aliceToken}`,
+        Cookie: aliceToken,
         Origin: "https://evil.example"
       },
       body: JSON.stringify({ note: "恶意来源" })
@@ -1378,7 +1400,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${aliceToken}`
+        Cookie: aliceToken
       },
       body: JSON.stringify({ blocked: true })
     });
@@ -1417,7 +1439,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${aliceToken}`,
+        Cookie: aliceToken,
         Origin: "https://evil.example"
       },
       body: JSON.stringify({ blocked: false })
@@ -1429,7 +1451,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${aliceToken}`
+        Cookie: aliceToken
       },
       body: JSON.stringify({ blocked: false })
     });
@@ -1455,7 +1477,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
     const deleteResponse = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
       method: "DELETE",
       headers: {
-        Authorization: `Bearer ${aliceToken}`
+        Cookie: aliceToken
       }
     });
     assert.equal(deleteResponse.status, 200);
@@ -1468,7 +1490,7 @@ test("contacts endpoints enforce same-origin and support note, block and delete 
     const crossOriginDelete = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ContactB`, {
       method: "DELETE",
       headers: {
-        Authorization: `Bearer ${aliceToken}`,
+        Cookie: aliceToken,
         Origin: "https://evil.example"
       }
     });
@@ -1574,6 +1596,8 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.ok(Array.isArray(dashboard.json.dashboard.recentLogins));
     assert.ok(Array.isArray(dashboard.json.dashboard.recentUsers));
     assert.equal(typeof dashboard.json.dashboard.currentIp, "string");
+    assert.equal(typeof dashboard.json.dashboard.deliveryStats.pending, "number");
+    assert.ok(Array.isArray(dashboard.json.dashboard.charts.deliveryDistribution));
 
     const users = await getJson(server.port, "/api/admin/users", adminToken);
     assert.equal(users.response.status, 200);
@@ -1586,12 +1610,13 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.ok(userDetail.json.detail.messageStats.total >= 1);
     assert.ok(userDetail.json.detail.sessions.length >= 1);
     assert.ok(userDetail.json.detail.recentMessages.some((item) => item.ciphertext === messageBody.message.ciphertext));
+    assert.ok(userDetail.json.detail.recentMessages.some((item) => item.auditLabel.includes("后台不可读取明文")));
 
     const invalidBan = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/AdminA`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminToken
       },
       body: JSON.stringify({ banned: "false" })
     });
@@ -1602,12 +1627,13 @@ test("admin can login, view stats/messages and ban users", async () => {
     assert.equal(allMessages.response.status, 200);
     assert.ok(allMessages.json.messages.some((item) => item.auditText === null));
     assert.ok(allMessages.json.messages.some((item) => item.ciphertext === messageBody.message.ciphertext));
+    assert.ok(allMessages.json.messages.some((item) => item.deliveryLabel));
 
     const banResponse = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/AdminA`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminToken
       },
       body: JSON.stringify({ banned: true, bannedReason: "test-ban" })
     });
@@ -1651,7 +1677,7 @@ test("admin cannot reset an encrypted user's password without the private key", 
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminToken
       },
       body: JSON.stringify({ password: "pass5678" })
     });
@@ -1677,7 +1703,7 @@ test("admin cannot reset an encrypted user's password without the private key", 
   }
 });
 
-test("session auth prefers a valid cookie and falls back to a valid bearer token", async () => {
+test("session auth only accepts valid cookies", async () => {
   const server = await startServer();
 
   try {
@@ -1701,14 +1727,13 @@ test("session auth prefers a valid cookie and falls back to a valid bearer token
     assert.equal(validCookieInvalidBearer.status, 200);
     assert.equal((await validCookieInvalidBearer.json()).admin.username, TEST_ADMIN_USERNAME);
 
-    const invalidCookieValidBearer = await fetch(`http://127.0.0.1:${server.port}/api/admin/me`, {
+    const invalidCookieWithBearer = await fetch(`http://127.0.0.1:${server.port}/api/admin/me`, {
       headers: {
         Cookie: "secure_chat_admin_session=stale-cookie",
         Authorization: `Bearer ${adminToken}`
       }
     });
-    assert.equal(invalidCookieValidBearer.status, 200);
-    assert.equal((await invalidCookieValidBearer.json()).admin.username, TEST_ADMIN_USERNAME);
+    assert.equal(invalidCookieWithBearer.status, 401);
   } finally {
     await server.stop();
   }
@@ -1784,7 +1809,7 @@ test("admin rename broadcasts user rename and keeps the session synchronized", a
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminToken
       },
       body: JSON.stringify({ username: "RenameC" })
     });
@@ -1823,7 +1848,7 @@ test("admin rename broadcasts user rename and keeps the session synchronized", a
   }
 });
 
-test("admin credentials must come from environment configuration", async () => {
+test("admin credentials can be configured from environment", async () => {
   const server = await startServer({
     ADMIN_USERNAME: "root_admin",
     ADMIN_PASSWORD_HASH: TEST_ADMIN_PASSWORD_HASH
@@ -2053,7 +2078,7 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminToken
       },
       body: JSON.stringify({ usernames: ["BatchA", "BatchB"], banned: true, bannedReason: "batch-test" })
     });
@@ -2065,7 +2090,7 @@ test("admin user pagination, batch ban and event ticket blocking work", async ()
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminToken
       },
       body: JSON.stringify({ usernames: ["BatchA"], banned: "false" })
     });
@@ -2449,7 +2474,7 @@ test("typing signal relays to the peer over SSE and is gated by blocks", async (
 
     const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/TypeA/block`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${bobToken}` },
+      headers: { "Content-Type": "application/json", Cookie: bobToken },
       body: JSON.stringify({ blocked: true })
     });
     assert.equal(block.status, 200);
@@ -2490,7 +2515,7 @@ test("admin rename keeps an existing block from being bypassed", async () => {
 
     const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/BlockTarget/block`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${blockerToken}` },
+      headers: { "Content-Type": "application/json", Cookie: blockerToken },
       body: JSON.stringify({ blocked: true })
     });
     assert.equal(block.status, 200);
@@ -2502,7 +2527,7 @@ test("admin rename keeps an existing block from being bypassed", async () => {
 
     const rename = await fetch(`http://127.0.0.1:${server.port}/api/admin/users/BlockTarget`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` },
+      headers: { "Content-Type": "application/json", Cookie: adminToken },
       body: JSON.stringify({ username: "BlockTargetRenamed" })
     });
     assert.equal(rename.status, 200);

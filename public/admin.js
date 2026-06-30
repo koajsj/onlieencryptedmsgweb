@@ -100,7 +100,6 @@ const adminMenuRefreshButton = document.querySelector("#adminMenuRefreshButton")
 const adminMenuLogoutButton = document.querySelector("#adminMenuLogoutButton");
 
 const state = {
-  token: "",
   admin: { username: "", role: "admin" },
   dashboard: null,
   dashboardRangeDays: 7,
@@ -132,7 +131,6 @@ function hasPermission(permission) {
 }
 
 function resetAdminState(showLogin = false) {
-  state.token = "";
   state.dashboard = null;
   state.dashboardRangeDays = 7;
   state.stats = {};
@@ -278,13 +276,6 @@ async function promptDialog(options) {
 
 async function api(pathname, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
-  const bearerToken =
-    options.auth === false
-      ? ""
-      : String(options.token || "");
-  if (bearerToken && !headers.Authorization) {
-    headers.Authorization = `Bearer ${bearerToken}`;
-  }
   let body = options.body;
   if (body && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -442,6 +433,17 @@ function renderDetailList(container, rows, emptyText) {
 
 const chartColors = ["#2f8f5b", "#5979d7", "#b55044", "#a26a23", "#7a6cc9", "#5d7568"];
 
+function renderChartLegend(items) {
+  const legend = document.createElement("div");
+  legend.className = "chart-legend";
+  for (const item of items) {
+    const row = document.createElement("span");
+    row.innerHTML = `<i class="legend-dot ${escapeHtml(item.className || "")}"></i>${escapeHtml(item.label || "")}`;
+    legend.append(row);
+  }
+  return legend;
+}
+
 function renderEmptyBlock(container, text) {
   container.textContent = "";
   const empty = document.createElement("article");
@@ -541,13 +543,10 @@ function renderActivityLineChart(rows) {
     svg.append(line);
   }
   container.append(svg);
-  const legend = document.createElement("div");
-  legend.className = "chart-legend";
-  legend.innerHTML = `
-    <span><i class="legend-dot active"></i>活跃用户</span>
-    <span><i class="legend-dot error"></i>错误请求</span>
-  `;
-  container.append(legend);
+  container.append(renderChartLegend([
+    { className: "active", label: "活跃用户" },
+    { className: "error", label: "错误请求" }
+  ]));
 }
 
 function renderDonutChart(container, rows, emptyText) {
@@ -642,11 +641,13 @@ function renderDashboardPanel() {
   }
   setRangeLabels(state.dashboardRangeDays);
   const alertCount = (dashboard.securityAlerts || []).filter((alert) => alert.level !== "ok").length;
+  const deliveryStats = dashboard.deliveryStats || {};
   const overviewCards = [
     ["在线人数", dashboard.onlineUsers || 0, `${dashboard.sessions || 0} 个会话`],
     ["24h 活跃用户", dashboard.activeUsers || 0, `${dashboard.userTotal || 0} 个总用户`],
     ["今日消息", dashboard.messagesToday || 0, `${dashboard.messages || 0} 条总消息`],
-    ["会话数量", dashboard.conversations || 0, "按双方会话聚合"],
+    ["待投递消息", deliveryStats.pending || 0, `${deliveryStats.delivered || 0} 条已投递`],
+    ["已读消息", deliveryStats.read || 0, `${deliveryStats.recalled || 0} 条已撤回`],
     ["错误率", formatPercent(dashboard.errorRate || 0), "当前时间范围"],
     ["安全告警", alertCount, alertCount ? "需要处理" : "暂无高优先级"]
   ];
@@ -980,9 +981,9 @@ function renderMessages() {
       </div>
       <div class="msg-text"></div>
     `;
-    article.querySelector(".msg-text").textContent = message.recalled
-      ? "消息已撤回"
-      : `密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
+    const status = message.deliveryLabel || "未知状态";
+    const auditLabel = message.auditLabel || (message.encrypted ? "端到端加密密文，后台不可读取明文" : "消息结构异常");
+    article.querySelector(".msg-text").textContent = `${auditLabel} | ${status} | 密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
     elements.messagesList.append(article);
   }
   elements.loadMoreMessagesButton.disabled = !state.hasMoreMessages || state.loadingMessages;
