@@ -581,6 +581,16 @@ function isUserBlocked(user, candidateUsername) {
   return Boolean(user && candidateUsername && Array.isArray(user.blockedUsers) && user.blockedUsers.includes(candidateUsername));
 }
 
+function isBlockedBetween(leftUsername, rightUsername) {
+  const leftUser = findUserByUsername(leftUsername);
+  const rightUser = findUserByUsername(rightUsername);
+  return Boolean(
+    leftUser &&
+    rightUser &&
+    (isUserBlocked(leftUser, rightUser.username) || isUserBlocked(rightUser, leftUser.username))
+  );
+}
+
 function isPresenceVisibleTo(viewerUsername, targetUsername) {
   if (!targetUsername) {
     return false;
@@ -1574,6 +1584,9 @@ function markPendingDeliveries(recipient) {
     if (isMessageDeletedFor(message, recipient)) {
       continue;
     }
+    if (isBlockedBetween(message.from, recipient)) {
+      continue;
+    }
     message.deliveredAt = now;
     const ids = bySender.get(message.from) || [];
     ids.push(message.id);
@@ -1858,11 +1871,18 @@ async function handleRegister(req, res) {
     return;
   }
 
+  const passwordHash = await hashPassword(password);
+  // Hashing yields to the event loop; re-check before committing the username.
+  if (findUserByKey(normalizedUsername.key)) {
+    sendJson(res, 409, { error: "username already exists" });
+    return;
+  }
+
   const user = {
     id: crypto.randomUUID(),
     username: normalizedUsername.value,
     usernameKey: normalizedUsername.key,
-    passwordHash: await hashPassword(password),
+    passwordHash,
     publicKey,
     privateKeySalt,
     privateKeyIv,
@@ -3512,6 +3532,10 @@ async function handleMarkRead(req, res, url) {
   const peer = findUserByUsername(body.peer);
   if (!peer || peer.username === session.username) {
     sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  if (isBlockedBetween(session.username, peer.username)) {
+    sendJson(res, 200, { ok: true, count: 0 });
     return;
   }
 

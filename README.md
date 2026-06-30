@@ -149,13 +149,16 @@ sudo bash scripts/update-debian.sh
 - `npm ci --include=dev`
 - `npm run build`
 - `systemctl restart secure-chat`
-- 如果服务器装了 Caddy，再自动 `validate + reload`
+- 写回默认 443/Caddy 配置：应用监听 `127.0.0.1:3000`，Caddy 占用 `80/443`
+- 自动 `validate + reload/restart caddy`
 
 它不会删除 `/var/lib/secure-chat/data` 里的生产数据，也不会重置你手工维护的 Caddy 证书状态。
 
 如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
 如果 `/etc/default/secure-chat` 里已经有管理员口令，脚本不会重新写入。
+
+如果你之前临时改成 `PORT=3001` 或 `MANAGE_CADDY=0`，新版更新脚本会恢复默认 Caddy/443 部署方式。运行前要确保没有 `mtproto-proxy`、Nginx、Apache 等非 Caddy 服务占用 `80/443`。
 
 ## 5. 常用检查命令
 

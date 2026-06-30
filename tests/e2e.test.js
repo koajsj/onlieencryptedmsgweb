@@ -544,6 +544,44 @@ test("register and login require unique usernames and return encrypted key bundl
   }
 });
 
+test("concurrent registration keeps username unique", async () => {
+  const server = await startServer();
+
+  try {
+    const responses = await Promise.all([
+      postJson(server.port, "/api/register", {
+        username: "ConcurrentUser",
+        password: "pass1234",
+        publicKey: Buffer.alloc(65, 121).toString("base64"),
+        privateKeySalt: Buffer.alloc(16, 122).toString("base64"),
+        privateKeyIv: Buffer.alloc(12, 123).toString("base64"),
+        encryptedPrivateKey: Buffer.alloc(160, 124).toString("base64")
+      }),
+      postJson(server.port, "/api/register", {
+        username: "concurrentuser",
+        password: "pass5678",
+        publicKey: Buffer.alloc(65, 125).toString("base64"),
+        privateKeySalt: Buffer.alloc(16, 126).toString("base64"),
+        privateKeyIv: Buffer.alloc(12, 127).toString("base64"),
+        encryptedPrivateKey: Buffer.alloc(160, 128).toString("base64")
+      })
+    ]);
+    const statuses = responses.map((response) => response.status).sort((left, right) => left - right);
+    assert.deepEqual(statuses, [201, 409]);
+    await Promise.all(responses.map((response) => response.json().catch(() => null)));
+
+    const adminToken = (await postJsonAndRead(server.port, "/api/admin/login", {
+      username: TEST_ADMIN_USERNAME,
+      password: TEST_ADMIN_PASSWORD
+    })).json.token;
+    const users = await getJson(server.port, "/api/admin/users?q=concurrentuser", adminToken);
+    assert.equal(users.response.status, 200);
+    assert.equal(users.json.total, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("private messaging relays ciphertext and enforces encrypted payloads", async () => {
   const server = await startServer();
 
@@ -1173,6 +1211,61 @@ test("read receipts clear server unread counts and persist for both sides", asyn
     const senderHistory = await getJson(server.port, "/api/messages?with=ReadRight", leftToken);
     assert.ok(senderHistory.json.messages[0].readAt > 0);
     rightMirror.close();
+  } finally {
+    await server.stop();
+  }
+});
+
+test("blocks suppress delivery and read receipts", async () => {
+  const server = await startServer();
+  try {
+    const sender = await postJsonAndRead(server.port, "/api/register", {
+      username: "ReceiptBlockA",
+      password: "hello123",
+      publicKey: Buffer.alloc(65, 131).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 132).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 133).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 134).toString("base64")
+    });
+    const recipient = await postJsonAndRead(server.port, "/api/register", {
+      username: "ReceiptBlockB",
+      password: "world123",
+      publicKey: Buffer.alloc(65, 135).toString("base64"),
+      privateKeySalt: Buffer.alloc(16, 136).toString("base64"),
+      privateKeyIv: Buffer.alloc(12, 137).toString("base64"),
+      encryptedPrivateKey: Buffer.alloc(160, 138).toString("base64")
+    });
+    const senderToken = sender.json.token;
+    const recipientToken = recipient.json.token;
+
+    const sent = await postJsonAndRead(server.port, "/api/messages", {
+      to: "ReceiptBlockB",
+      clientId: "blocked-receipt-1",
+      ...makeEncryptedPayload(139)
+    }, senderToken);
+    assert.equal(sent.response.status, 201);
+    assert.equal(sent.json.message.deliveredAt, 0);
+
+    const block = await fetch(`http://127.0.0.1:${server.port}/api/contacts/ReceiptBlockA/block`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${recipientToken}` },
+      body: JSON.stringify({ blocked: true })
+    });
+    assert.equal(block.status, 200);
+
+    const recipientEvents = await openEvents(server.port, recipientToken);
+    await recipientEvents.ready;
+    await delay(200);
+    recipientEvents.close();
+
+    const marked = await postJsonAndRead(server.port, "/api/messages/read", { peer: "ReceiptBlockA" }, recipientToken);
+    assert.equal(marked.response.status, 200);
+    assert.equal(marked.json.count, 0);
+
+    const senderHistory = await getJson(server.port, "/api/messages?with=ReceiptBlockB", senderToken);
+    assert.equal(senderHistory.response.status, 200);
+    assert.equal(senderHistory.json.messages[0].deliveredAt, 0);
+    assert.equal(senderHistory.json.messages[0].readAt, 0);
   } finally {
     await server.stop();
   }

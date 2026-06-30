@@ -17,7 +17,7 @@ REPO_URL="${REPO_URL:-https://github.com/koajsj/onlieencryptedmsgweb.git}"
 APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-3000}"
 DOMAIN="${DOMAIN:-257823.xyz}"
-WWW_DOMAIN="${WWW_DOMAIN:-www.257823.xyz}"
+WWW_DOMAIN="${WWW_DOMAIN:-}"
 SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 ENV_FILE="/etc/default/${APP_NAME}"
 CADDYFILE="/etc/caddy/Caddyfile"
@@ -262,6 +262,20 @@ ${DOMAIN}, ${WWW_DOMAIN} {
 EOF
 }
 
+assert_public_ports_available_for_caddy() {
+  if ! command -v ss >/dev/null 2>&1; then
+    return
+  fi
+  local listeners=""
+  listeners="$(ss -lntp 2>/dev/null | awk '$4 ~ /:80$/ || $4 ~ /:443$/ { print }' | grep -v caddy || true)"
+  if [ -n "${listeners}" ]; then
+    echo "Port 80/443 is already used by a non-Caddy process:" >&2
+    echo "${listeners}" >&2
+    echo "Stop that service first, then rerun the deploy script." >&2
+    exit 1
+  fi
+}
+
 restart_services() {
   systemctl enable "${APP_NAME}"
   systemctl restart "${APP_NAME}"
@@ -273,6 +287,7 @@ restart_services() {
 
   caddy validate --config "${CADDYFILE}"
   systemctl enable caddy
+  assert_public_ports_available_for_caddy
   systemctl restart caddy
   if ! systemctl is-active --quiet caddy; then
     echo "caddy failed to start. Recent logs:" >&2

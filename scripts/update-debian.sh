@@ -12,6 +12,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${APP_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 APP_BRANCH="${APP_BRANCH:-main}"
 ENV_FILE="${ENV_FILE:-/etc/default/${APP_NAME}}"
+APP_HOST="${APP_HOST:-127.0.0.1}"
+APP_PORT="${APP_PORT:-3000}"
+DOMAIN="${DOMAIN:-257823.xyz}"
+WWW_DOMAIN="${WWW_DOMAIN:-}"
+CADDYFILE="${CADDYFILE:-/etc/caddy/Caddyfile}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SAFE_RESET_PATHS=(
@@ -65,6 +70,16 @@ remove_line() {
   fi
 }
 
+ensure_domains() {
+  if [ -n "${DOMAIN}" ] && [ -z "${WWW_DOMAIN}" ]; then
+    WWW_DOMAIN="www.${DOMAIN}"
+  fi
+  if [ -z "${DOMAIN}" ] || [ -z "${WWW_DOMAIN}" ]; then
+    echo "DOMAIN and WWW_DOMAIN are required for the default Caddy/443 deployment." >&2
+    exit 1
+  fi
+}
+
 normalize_environment_file() {
   if [ ! -f "${ENV_FILE}" ]; then
     return
@@ -79,11 +94,19 @@ normalize_environment_file() {
   if [ -n "${existing_username}" ]; then
     ADMIN_USERNAME="${existing_username}"
   fi
+  ensure_line "HOST" "${APP_HOST}"
+  ensure_line "PORT" "${APP_PORT}"
+  ensure_line "NODE_ENV" "production"
+  ensure_line "COOKIE_SECURE" "1"
+  ensure_line "TRUST_PROXY" "1"
+  ensure_line "TRUSTED_ORIGINS" "https://${DOMAIN},https://${WWW_DOMAIN}"
+  ensure_line "HSTS_MAX_AGE_SECONDS" "31536000"
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
   ensure_line_if_missing "TRUSTED_PROXY_ADDRESSES" "127.0.0.1,::1,::ffff:127.0.0.1"
   ensure_line_if_missing "ALLOW_BEARER_AUTH" "0"
   ensure_line_if_missing "ACCESS_LOG_RETENTION_DAYS" "30"
   ensure_line_if_missing "ACCESS_LOG_MAX_QUEUE" "10000"
+  remove_line "MANAGE_CADDY"
 
   if [ -n "${existing_hash}" ]; then
     ensure_line "ADMIN_PASSWORD_HASH" "${existing_hash}"
@@ -143,20 +166,63 @@ restart_application() {
   fi
 }
 
-reload_caddy_if_present() {
-  if ! command -v caddy >/dev/null 2>&1 || [ ! -f /etc/caddy/Caddyfile ]; then
+assert_caddy_available() {
+  if ! command -v caddy >/dev/null 2>&1; then
+    echo "Caddy is required for the default 443 deployment, but it is not installed." >&2
+    echo "Run scripts/deploy-debian.sh or install Caddy before running this update." >&2
+    exit 1
+  fi
+}
+
+assert_public_ports_available_for_caddy() {
+  if ! command -v ss >/dev/null 2>&1; then
     return
   fi
-  caddy validate --config /etc/caddy/Caddyfile
-  systemctl reload caddy || systemctl restart caddy
+  local listeners=""
+  listeners="$(ss -lntp 2>/dev/null | awk '$4 ~ /:80$/ || $4 ~ /:443$/ { print }' | grep -v caddy || true)"
+  if [ -n "${listeners}" ]; then
+    echo "Port 80/443 is already used by a non-Caddy process:" >&2
+    echo "${listeners}" >&2
+    echo "Stop that service first, then rerun the update script." >&2
+    exit 1
+  fi
+}
+
+write_caddy_config() {
+  install -d -m 0755 "$(dirname "${CADDYFILE}")"
+  cat > "${CADDYFILE}" <<EOF
+${DOMAIN}, ${WWW_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy ${APP_HOST}:${APP_PORT}
+}
+EOF
+}
+
+restart_caddy() {
+  assert_caddy_available
+  write_caddy_config
+  caddy validate --config "${CADDYFILE}"
+  systemctl enable caddy
+  assert_public_ports_available_for_caddy
+  if systemctl is-active --quiet caddy; then
+    systemctl reload caddy || systemctl restart caddy
+  else
+    systemctl restart caddy
+  fi
+  if ! systemctl is-active --quiet caddy; then
+    echo "caddy failed to start. Recent logs:" >&2
+    journalctl -u caddy -n 60 --no-pager >&2 || true
+    exit 1
+  fi
 }
 
 main() {
+  ensure_domains
   normalize_environment_file
   update_repository
   build_application
   restart_application
-  reload_caddy_if_present
+  restart_caddy
   echo "Update complete."
 }
 
