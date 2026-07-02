@@ -12,12 +12,19 @@ const SESSION_TTL_MS = Math.max(
   1000,
   Number.parseInt(process.env.SESSION_TTL_MS || `${7 * 24 * 60 * 60 * 1000}`, 10) || 7 * 24 * 60 * 60 * 1000
 );
+const SESSION_ABSOLUTE_TTL_MS = Math.max(
+  SESSION_TTL_MS,
+  Number.parseInt(process.env.SESSION_ABSOLUTE_TTL_MS || `${30 * 24 * 60 * 60 * 1000}`, 10) || 30 * 24 * 60 * 60 * 1000
+);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 const MESSAGES_LOG_FILE = path.join(DATA_DIR, "messages.jsonl");
 const ADMIN_AUDIT_FILE = path.join(DATA_DIR, "admin_audit.jsonl");
+const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
+const ERROR_LOG_FILE = path.join(DATA_DIR, "errors.log");
+const SESSION_SECRET_FILE = path.join(DATA_DIR, "session-secret.txt");
 
 const MAX_BODY_BYTES = 128 * 1024;
 const MAX_MESSAGE_BODY_BYTES = 8 * 1024 * 1024;
@@ -33,6 +40,10 @@ const EVENT_TICKET_TTL_MS = 15000;
 const MESSAGE_PERSIST_DEBOUNCE_MS = Math.max(
   10,
   Number.parseInt(process.env.MESSAGE_PERSIST_DEBOUNCE_MS || "180", 10) || 180
+);
+const MESSAGE_RECALL_WINDOW_MS = Math.max(
+  1000,
+  Number.parseInt(process.env.MESSAGE_RECALL_WINDOW_MS || `${2 * 60 * 1000}`, 10) || 2 * 60 * 1000
 );
 const HSTS_MAX_AGE_SECONDS = Math.max(0, Number.parseInt(process.env.HSTS_MAX_AGE_SECONDS || "0", 10) || 0);
 const COOKIE_SECURE =
@@ -134,12 +145,16 @@ module.exports = {
   HOST,
   PORT,
   SESSION_TTL_MS,
+  SESSION_ABSOLUTE_TTL_MS,
   PUBLIC_DIR,
   DATA_DIR,
   USERS_FILE,
   MESSAGES_FILE,
   MESSAGES_LOG_FILE,
   ADMIN_AUDIT_FILE,
+  SESSIONS_FILE,
+  ERROR_LOG_FILE,
+  SESSION_SECRET_FILE,
   MAX_BODY_BYTES,
   MAX_MESSAGE_BODY_BYTES,
   RATE_WINDOW_MS,
@@ -149,6 +164,7 @@ module.exports = {
   HEARTBEAT_MS,
   EVENT_TICKET_TTL_MS,
   MESSAGE_PERSIST_DEBOUNCE_MS,
+  MESSAGE_RECALL_WINDOW_MS,
   HSTS_MAX_AGE_SECONDS,
   COOKIE_SECURE,
   ENABLE_ACCESS_LOG,

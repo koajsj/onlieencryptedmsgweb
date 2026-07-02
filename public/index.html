@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#111512" media="(prefers-color-scheme: dark)" />
     <meta name="color-scheme" content="light dark" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=eca2a0d66d" />
+    <link rel="stylesheet" href="./styles.min.css?v=b4ce9f2c6c" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -261,6 +261,7 @@
                 <button class="emoji-chip" type="button" data-emoji-value="&#10084;&#65039;">&#10084;&#65039;</button>
               </div>
 
+              <div class="attachment-transfer-list" id="attachmentTransferList" aria-live="polite"></div>
               <input id="attachmentInput" type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar,.7z,.mp4,.mp3" multiple hidden />
             </form>
           </section>
@@ -306,7 +307,10 @@
                   <div class="detail-info-row"><span>最后在线</span><strong id="detailsLastSeen">刚刚</strong></div>
                   <div class="detail-info-row detail-info-row-stacked"><span>安全码</span><strong id="detailsSafetyCode">计算中</strong><small>首次看到联系人密钥或密钥变化时，请先线下核对安全码，再手动信任后继续发送。</small></div>
                 </div>
-                <button class="ghost-button compact" id="detailsTrustKeyButton" type="button" hidden>确认新密钥</button>
+                <div class="detail-inline-actions">
+                  <button class="ghost-button compact" id="detailsVerifyCodeButton" type="button">核对安全码</button>
+                  <button class="ghost-button compact" id="detailsTrustKeyButton" type="button" hidden>确认新密钥</button>
+                </div>
               </section>
               <section class="detail-block"><div class="detail-block-head"><h3>联系人简介</h3></div><p id="detailsAbout"></p></section>
               <section class="detail-block">
@@ -451,6 +455,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="./ui-utils.min.js?v=cd59756d46" defer></script>
-    <script src="./app.min.js?v=c5fed1ffa1" defer></script>
+    <script src="./app.min.js?v=5681c6b2ca" defer></script>
   </body>
 </html>

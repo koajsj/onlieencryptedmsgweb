@@ -461,6 +461,65 @@ test("password change no longer sends or requires private key material", async (
   }
 });
 
+test("session management can revoke another active device without logging out the current one", async () => {
+  const server = await startServer();
+  try {
+    const identity = await createIdentity();
+    const register = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "SessionRevokeUser",
+        password: "hello123",
+        publicKey: identity.publicKeyBase64
+      }
+    });
+    assert.equal(register.status, 201);
+
+    const secondLogin = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: {
+        username: "SessionRevokeUser",
+        password: "hello123"
+      }
+    });
+    assert.equal(secondLogin.status, 200);
+
+    const sessionsBefore = await requestJson(server.port, "/api/me/sessions", {
+      session: register.session
+    });
+    assert.equal(sessionsBefore.status, 200);
+    assert.equal(sessionsBefore.json.sessions.length, 2);
+    assert.equal(sessionsBefore.json.sessions.filter((item) => item.current).length, 1);
+
+    const otherSession = sessionsBefore.json.sessions.find((item) => !item.current);
+    assert.ok(otherSession?.id);
+
+    const revoked = await requestJson(server.port, "/api/me/sessions/revoke", {
+      method: "POST",
+      session: register.session,
+      body: {
+        sessionId: otherSession.id
+      }
+    });
+    assert.equal(revoked.status, 200);
+    assert.equal(revoked.json.revokedSessionId, otherSession.id);
+    assert.equal(revoked.json.sessions.length, 1);
+    assert.equal(revoked.json.sessions[0].current, true);
+
+    const currentStillWorks = await requestJson(server.port, "/api/me", {
+      session: register.session
+    });
+    assert.equal(currentStillWorks.status, 200);
+
+    const revokedSession = await requestJson(server.port, "/api/me", {
+      session: secondLogin.session
+    });
+    assert.equal(revokedSession.status, 401);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("public key rotation endpoint accepts only public key material", async () => {
   const server = await startServer();
   try {

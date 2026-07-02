@@ -9,6 +9,7 @@ const STORAGE = {
   deviceIdentities: "private-chat-device-identities",
   drafts: "private-chat-drafts",
   pendingOutbox: "private-chat-pending-outbox",
+  peerSecurityMeta: "private-chat-peer-security-meta",
   peerKeyPins: "private-chat-peer-key-pins",
   sessionIdentity: "private-chat-session-identity"
 };
@@ -115,6 +116,7 @@ const elements = {
   messageInput: document.querySelector("#messageInput"),
   sendButton: document.querySelector("#sendButton"),
   attachmentInput: document.querySelector("#attachmentInput"),
+  attachmentTransferList: document.querySelector("#attachmentTransferList"),
   emojiPanel: document.querySelector("#emojiPanel"),
   toast: document.querySelector("#toast"),
   messageContextMenu: document.querySelector("#messageContextMenu"),
@@ -137,6 +139,7 @@ const elements = {
   detailsAccountId: document.querySelector("#detailsAccountId"),
   detailsLastSeen: document.querySelector("#detailsLastSeen"),
   detailsSafetyCode: document.querySelector("#detailsSafetyCode"),
+  detailsVerifyCodeButton: document.querySelector("#detailsVerifyCodeButton"),
   detailsTrustKeyButton: document.querySelector("#detailsTrustKeyButton"),
   detailsAbout: document.querySelector("#detailsAbout"),
   notificationsToggle: document.querySelector("#notificationsToggle"),
@@ -198,11 +201,13 @@ const state = {
   contactProfiles: {},
   contacts: [],
   deviceSessions: [],
+  peerSecurityMeta: {},
   securitySettings: {
     showOnlineStatus: true,
     allowUserSearch: true,
     blockedUsers: []
   },
+  attachmentTransfers: [],
   outboxFlushing: false,
   searchTimer: 0,
   searchRequestId: 0,
@@ -377,6 +382,16 @@ function normalizeContactProfile(profile) {
   };
 }
 
+function normalizePeerSecurityMeta(meta) {
+  return {
+    firstTrustedAt: Number.parseInt(String(meta?.firstTrustedAt || "0"), 10) || 0,
+    lastVerifiedAt: Number.parseInt(String(meta?.lastVerifiedAt || "0"), 10) || 0,
+    lastKeyChangeAt: Number.parseInt(String(meta?.lastKeyChangeAt || "0"), 10) || 0,
+    pinnedKey: String(meta?.pinnedKey || ""),
+    observedKey: String(meta?.observedKey || "")
+  };
+}
+
 function currentStorageOwner() {
   return String(state.me?.username || "");
 }
@@ -436,12 +451,29 @@ function loadEditableProfiles() {
   state.contactProfiles = normalized;
 }
 
+function loadPeerSecurityMeta() {
+  const owner = currentStorageOwner();
+  const raw = readScopedStorageRecord(STORAGE.peerSecurityMeta, owner);
+  const normalized = {};
+  for (const [username, meta] of Object.entries(raw)) {
+    if (!username) {
+      continue;
+    }
+    normalized[username] = normalizePeerSecurityMeta(meta);
+  }
+  state.peerSecurityMeta = normalized;
+}
+
 function saveAccountProfile() {
   writeScopedStorageRecord(STORAGE.accountProfile, currentStorageOwner(), state.accountProfile);
 }
 
 function saveContactProfiles() {
   writeScopedStorageRecord(STORAGE.contactProfiles, currentStorageOwner(), state.contactProfiles);
+}
+
+function savePeerSecurityMeta() {
+  writeScopedStorageRecord(STORAGE.peerSecurityMeta, currentStorageOwner(), state.peerSecurityMeta);
 }
 
 function accountDisplayName() {
@@ -932,6 +964,70 @@ async function validateAttachmentFile(file) {
   }
 }
 
+function renderAttachmentTransfers() {
+  if (!elements.attachmentTransferList) {
+    return;
+  }
+  elements.attachmentTransferList.textContent = "";
+  const visibleTransfers = state.attachmentTransfers.slice(-3);
+  for (const transfer of visibleTransfers) {
+    const row = document.createElement("div");
+    row.className = `attachment-transfer is-${transfer.stage}`;
+    row.innerHTML = `
+      <div class="attachment-transfer-copy">
+        <strong>${escapeHtml(transfer.name)}</strong>
+        <span>${escapeHtml(transfer.note || formatBytes(transfer.size || 0))}</span>
+      </div>
+      <span class="attachment-transfer-state">${escapeHtml(transfer.label)}</span>
+    `;
+    elements.attachmentTransferList.append(row);
+  }
+  elements.attachmentTransferList.hidden = visibleTransfers.length === 0;
+}
+
+function upsertAttachmentTransfer(transferId, patch) {
+  const index = state.attachmentTransfers.findIndex((item) => item.id === transferId);
+  const existing = index >= 0 ? state.attachmentTransfers[index] : { id: transferId };
+  const next = {
+    ...existing,
+    ...patch
+  };
+  if (index >= 0) {
+    state.attachmentTransfers[index] = next;
+  } else {
+    state.attachmentTransfers.push(next);
+  }
+  renderAttachmentTransfers();
+}
+
+function finishAttachmentTransfer(transferId, success = true) {
+  renderAttachmentTransfers();
+  window.setTimeout(() => {
+    state.attachmentTransfers = state.attachmentTransfers.filter((item) => item.id !== transferId);
+    renderAttachmentTransfers();
+  }, success ? 2400 : 4200);
+}
+
+function setAttachmentTransferForTempId(tempId, stage, note = "") {
+  const transfer = state.attachmentTransfers.find((item) => item.tempId === tempId);
+  if (!transfer) {
+    return;
+  }
+  const labels = {
+    encrypting: "加密中",
+    sending: "发送中",
+    done: "已发送",
+    failed: "发送失败"
+  };
+  upsertAttachmentTransfer(transfer.id, {
+    stage,
+    label: labels[stage] || transfer.label || "处理中",
+    note: note || transfer.note
+  });
+  if (stage === "done" || stage === "failed") {
+    finishAttachmentTransfer(transfer.id, stage === "done");
+  }
+}
 async function buildAttachmentMessageText(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   return `${ATTACHMENT_MARKER}${JSON.stringify({
@@ -965,19 +1061,51 @@ async function sendAttachmentFiles(fileList) {
   }
   const files = Array.from(fileList || []).filter(Boolean).slice(0, 3);
   for (const file of files) {
+    const transferId = crypto.randomUUID();
+    upsertAttachmentTransfer(transferId, {
+      id: transferId,
+      name: sanitizeAttachmentName(file.name),
+      size: Number(file.size || 0),
+      stage: "validating",
+      label: "校验中",
+      note: "检查文件类型与大小"
+    });
     if (file.size > MAX_ATTACHMENT_BYTES) {
+      upsertAttachmentTransfer(transferId, {
+        stage: "failed",
+        label: "发送失败",
+        note: "超过 4MB，已拒绝发送"
+      });
+      finishAttachmentTransfer(transferId, false);
       showToast(`${file.name} 超过 4MB，未发送`, "error");
       continue;
     }
     try {
       await validateAttachmentFile(file);
+      upsertAttachmentTransfer(transferId, {
+        stage: "encrypting",
+        label: "加密中",
+        note: "正在生成端到端密文"
+      });
       const text = await buildAttachmentMessageText(file);
       const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
       const tempId = addPendingMessage(state.activePeer, text, replyTo);
+      upsertAttachmentTransfer(transferId, {
+        tempId,
+        stage: "sending",
+        label: "发送中",
+        note: "正在上传密文附件"
+      });
       renderSidebar();
       renderThread({ scrollBehavior: "bottom" });
       await sendMessageWithRetry(tempId, state.activePeer, text, tempId, false, replyTo?.id || "");
     } catch (error) {
+      upsertAttachmentTransfer(transferId, {
+        stage: "failed",
+        label: "发送失败",
+        note: error?.message || "读取或发送失败"
+      });
+      finishAttachmentTransfer(transferId, false);
       showToast(error?.message || `${file.name} 读取或发送失败`, "error");
     }
   }
@@ -1358,6 +1486,7 @@ function resetLocalConversationState() {
   state.peerKeyMismatches.clear();
   state.peerKeyUnverified.clear();
   loadEditableProfiles();
+  loadPeerSecurityMeta();
   loadPendingOutbox();
 }
 
@@ -1714,20 +1843,47 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     return;
   }
   if (!peer) {
-    elements.securityStatus.textContent = "\u8bf7\u9009\u62e9\u4f1a\u8bdd\u67e5\u770b\u52a0\u5bc6\u72b6\u6001\u3002";
+    elements.securityStatus.className = "security-status is-idle";
+    elements.securityStatus.innerHTML = `
+      <div class="security-status-copy">
+        <strong>请选择会话查看加密状态</strong>
+        <span>打开任意会话后，这里会显示密钥固定、连接和核验状态。</span>
+      </div>
+    `;
     return;
   }
   const parts = [];
+  const actions = ['<button class="ghost-button compact" type="button" data-security-card-action="verify">核对安全码</button>'];
+  const securityMeta = peerSecurityMetaFor(peer.username);
+  let headline = "端到端会话已建立";
+  let tone = "ok";
   if (state.peerKeyMismatches.has(peer.username)) {
-    elements.securityStatus.textContent = "安全警告：联系人密钥已变化，发送已暂停，请核对安全码后确认新密钥。";
-    return;
+    headline = "检测到联系人密钥变化";
+    tone = "warn";
+    parts.push("发送已暂停");
+    parts.push("请先线下核验对方身份");
+    actions.push('<button class="primary-button compact security-status-cta" type="button" data-security-card-action="trust">信任新密钥</button>');
+  } else if (!state.peerKeys.has(peer.username)) {
+    headline = "等待联系人公钥";
+    tone = "idle";
+    parts.push("首次会话将自动固定对方密钥");
   }
   if (state.peerKeyUnverified.has(peer.username)) {
-    elements.securityStatus.textContent = "安全提示：这是首次看到该联系人的密钥，发送已暂停，请先核对安全码并手动信任。";
+    elements.securityStatus.className = "security-status is-warn";
+    elements.securityStatus.innerHTML = `
+      <div class="security-status-copy">
+        <strong>首次看到该联系人的密钥</strong>
+        <span>发送已暂停，请先核对安全码，再手动信任这把密钥。</span>
+      </div>
+      <div class="security-status-actions">
+        <button class="ghost-button compact" type="button" data-security-card-action="verify">核对安全码</button>
+        <button class="primary-button compact security-status-cta" type="button" data-security-card-action="trust">验证并信任</button>
+      </div>
+    `;
     return;
   }
   parts.push(state.identity?.privateKey ? "\u5bc6\u94a5\u5df2\u5c31\u7eea" : "\u5bc6\u94a5\u5df2\u9501\u5b9a");
-  parts.push(state.peerKeys.has(peer.username) ? "\u5bf9\u7aef\u5bc6\u94a5\u5df2\u540c\u6b65" : "\u7b49\u5f85\u5bf9\u7aef\u5bc6\u94a5");
+  parts.push(state.peerKeys.has(peer.username) ? "\u5df2\u56fa\u5b9a\u8054\u7cfb\u4eba\u5bc6\u94a5" : "\u7b49\u5f85\u5bf9\u7aef\u5bc6\u94a5");
   if (state.connectionState === "online") {
     parts.push("\u5b9e\u65f6\u8fde\u63a5\u6b63\u5e38");
   } else if (state.connectionState === "reconnecting") {
@@ -1741,12 +1897,28 @@ function updateSecurityStatus(peer = activePeerMeta()) {
   if (pendingCount > 0) {
     parts.push(`\u5f85\u53d1\u9001 ${pendingCount}`);
   }
+  if (securityMeta.firstTrustedAt) {
+    parts.push(`首次信任 ${formatDateTime(securityMeta.firstTrustedAt)}`);
+  }
+  if (securityMeta.lastKeyChangeAt) {
+    parts.push(`最近变更 ${formatDateTime(securityMeta.lastKeyChangeAt)}`);
+  }
+  if (securityMeta.lastVerifiedAt) {
+    parts.push(`最近核验 ${formatDateTime(securityMeta.lastVerifiedAt)}`);
+  }
   if (contactRecord(peer.username)?.blocked) {
     parts.push("您已拉黑对方，解除后才能继续互动");
   } else if (contactRecord(peer.username)?.blockedByPeer) {
     parts.push("对方已将您拉黑，暂时无法发送消息");
   }
-  elements.securityStatus.textContent = parts.join(" \u00b7 ");
+  elements.securityStatus.className = `security-status is-${tone}`;
+  elements.securityStatus.innerHTML = `
+    <div class="security-status-copy">
+      <strong>${escapeHtml(headline)}</strong>
+      <span>${escapeHtml(parts.join(" · "))}</span>
+    </div>
+    <div class="security-status-actions">${actions.join("")}</div>
+  `;
 }
 
 function setAuthBusy(busy) {
@@ -1951,6 +2123,8 @@ function translateApiError(pathname, status, payload) {
     "relationship is blocked": "当前关系处于拉黑状态，无法直接切换免打扰。",
     "already a contact": "该用户已经是好友",
     "user not found": "用户不存在",
+    "session not found": "未找到该设备会话",
+    "current session cannot be revoked here": "当前设备请使用退出登录",
     unauthorized: "请先登录",
     "session expired": "登录已过期，请重新登录"
   };
@@ -2079,11 +2253,13 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.contactProfiles = {};
   state.contacts = [];
   state.deviceSessions = [];
+  state.peerSecurityMeta = {};
   state.securitySettings = {
     showOnlineStatus: true,
     allowUserSearch: true,
     blockedUsers: []
   };
+  state.attachmentTransfers = [];
   state.outboxFlushing = false;
   state.searchRequestId += 1;
   state.openConversationRequest += 1;
@@ -2155,31 +2331,90 @@ function cachePeerInfo(item) {
     return;
   }
   state.peerObservedKeys.set(username, observedKey);
+  const securityMeta = normalizePeerSecurityMeta(state.peerSecurityMeta[username]);
   const pinnedKey = String(state.peerKeyPins[username] || "");
   if (!pinnedKey) {
     state.peerKeys.set(username, observedKey);
     state.peerKeyMismatches.delete(username);
     state.peerKeyUnverified.add(username);
+    state.peerSecurityMeta[username] = normalizePeerSecurityMeta({
+      ...securityMeta,
+      pinnedKey: observedKey,
+      observedKey
+    });
+    savePeerSecurityMeta();
     return;
   }
   state.peerKeyUnverified.delete(username);
   state.peerKeys.set(username, pinnedKey);
   if (pinnedKey === observedKey) {
     state.peerKeyMismatches.delete(username);
+    if (securityMeta.pinnedKey !== pinnedKey || securityMeta.observedKey !== observedKey) {
+      state.peerSecurityMeta[username] = normalizePeerSecurityMeta({
+        ...securityMeta,
+        pinnedKey,
+        observedKey
+      });
+      savePeerSecurityMeta();
+    }
   } else {
     state.peerKeyMismatches.add(username);
+    if (securityMeta.observedKey !== observedKey) {
+      state.peerSecurityMeta[username] = normalizePeerSecurityMeta({
+        ...securityMeta,
+        pinnedKey,
+        observedKey,
+        lastKeyChangeAt: Date.now()
+      });
+      savePeerSecurityMeta();
+    }
   }
 }
 
 async function safetyCodeForPeer(username) {
+  const material = await safetyMaterialForPeer(username);
+  return material ? material.fullCode : "不可用";
+}
+
+function peerSecurityMetaFor(username) {
+  return normalizePeerSecurityMeta(state.peerSecurityMeta[username]);
+}
+
+async function safetyMaterialForPeer(username) {
   const peerKey = state.peerKeys.get(username);
   if (!peerKey || !state.identity?.publicKeyBase64) {
-    return "不可用";
+    return null;
   }
   const keys = [state.identity.publicKeyBase64, peerKey].sort().join(":");
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", textEncoder.encode(keys)));
   const digits = Array.from(digest.slice(0, 10), (value) => String(value).padStart(3, "0")).join("");
-  return digits.match(/.{1,5}/g).join(" ");
+  const shortCode = Array.from(digest.slice(0, 6), (value) => value.toString(16).padStart(2, "0"))
+    .join("")
+    .match(/.{1,4}/g)
+    .join("-");
+  const owner = [state.me?.username || "", username].filter(Boolean).sort().join(":");
+  return {
+    digest,
+    shortCode,
+    fullCode: digits.match(/.{1,5}/g).join(" "),
+    shareText: `echo-verify:${owner}:${shortCode}:${digits}`
+  };
+}
+
+function safetyPatternMarkup(digest) {
+  const cells = [];
+  const size = 9;
+  let bitIndex = 0;
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      const mirroredCol = col < Math.ceil(size / 2) ? col : (size - 1 - col);
+      const digestIndex = (row * Math.ceil(size / 2) + mirroredCol) % digest.length;
+      const bit = (digest[digestIndex] >> (bitIndex % 8)) & 1;
+      cells.push(`<span class="safety-pattern-cell${bit ? " is-on" : ""}"></span>`);
+      bitIndex += 1;
+    }
+  }
+  return cells.join("");
 }
 
 function getConversation(username) {
@@ -2415,6 +2650,125 @@ async function promptActionDialog(options) {
   return result.confirmed ? result.value : null;
 }
 
+async function openSafetyCodeDialog(peerUsername = state.activePeer) {
+  if (!peerUsername) {
+    return;
+  }
+  const material = await safetyMaterialForPeer(peerUsername);
+  if (!material) {
+    showToast("当前安全码不可用", "error");
+    return;
+  }
+  const meta = peerSecurityMetaFor(peerUsername);
+  const hasMismatch = state.peerKeyMismatches.has(peerUsername);
+  const needsFirstTrust = state.peerKeyUnverified.has(peerUsername);
+  const backdrop = document.createElement("div");
+  backdrop.className = "dialog-backdrop safety-dialog-backdrop";
+  const card = document.createElement("section");
+  card.className = "dialog-card safety-dialog-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.innerHTML = `
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">安全核验</p>
+        <h2>@${escapeHtml(peerUsername)} 的安全码</h2>
+      </div>
+      <button class="icon-button" type="button" data-safety-close aria-label="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
+    </div>
+    <div class="dialog-body">
+      <div class="dialog-note${hasMismatch || needsFirstTrust ? " is-warning" : ""}">
+        <strong>${hasMismatch ? "检测到联系人密钥变化" : needsFirstTrust ? "请先完成首次信任" : "请与对方在线下逐项比对"}</strong>
+        <span>${hasMismatch ? "核对无误后再信任新密钥，避免误把中间人密钥当成联系人密钥。" : needsFirstTrust ? "这是首次看到该联系人的密钥，核对一致后再手动固定，避免错误信任。" : "双方短码、完整安全码和核验图样一致时，可确认当前会话密钥未被替换。"}</span>
+      </div>
+      <div class="safety-code-grid">
+        <div class="safety-code-panel">
+          <span class="safety-code-label">短码</span>
+          <strong class="safety-code-short">${escapeHtml(material.shortCode)}</strong>
+          <span class="safety-code-label">完整安全码</span>
+          <strong class="safety-code-full">${escapeHtml(material.fullCode)}</strong>
+          <span class="safety-code-label">核验串</span>
+          <code class="safety-code-share">${escapeHtml(material.shareText)}</code>
+        </div>
+        <div class="safety-code-panel">
+          <span class="safety-code-label">核验图样</span>
+          <div class="safety-pattern" aria-hidden="true">${safetyPatternMarkup(material.digest)}</div>
+          <div class="safety-code-history">
+            <span>首次信任：${escapeHtml(meta.firstTrustedAt ? formatDateTime(meta.firstTrustedAt) : "未记录")}</span>
+            <span>最近核验：${escapeHtml(meta.lastVerifiedAt ? formatDateTime(meta.lastVerifiedAt) : "未记录")}</span>
+            <span>最近变更：${escapeHtml(meta.lastKeyChangeAt ? formatDateTime(meta.lastKeyChangeAt) : "未记录")}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button class="ghost-button" type="button" data-safety-copy="share">复制核验串</button>
+      <div class="security-status-actions">
+        ${hasMismatch || needsFirstTrust ? `<button class="primary-button" type="button" data-safety-trust>${hasMismatch ? "信任新密钥" : "验证并信任"}</button>` : ""}
+        <button class="ghost-button" type="button" data-safety-verified>已核对一致</button>
+        <button class="primary-button" type="button" data-safety-copy="code">复制安全码</button>
+      </div>
+    </div>
+  `;
+  backdrop.append(card);
+
+  const cleanup = () => {
+    document.removeEventListener("keydown", onKeydown);
+    backdrop.remove();
+  };
+  const onKeydown = (event) => {
+    if (event.key === "Escape") {
+      cleanup();
+    }
+  };
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop || event.target.closest("[data-safety-close]")) {
+      cleanup();
+    }
+  });
+  card.addEventListener("click", async (event) => {
+    if (!isElementNode(event.target)) {
+      return;
+    }
+    const copyTarget = event.target.closest("[data-safety-copy]");
+    if (copyTarget) {
+      const type = copyTarget.dataset.safetyCopy || "code";
+      try {
+        await navigator.clipboard.writeText(type === "share" ? material.shareText : material.fullCode);
+        showToast(type === "share" ? "核验串已复制" : "安全码已复制");
+      } catch (error) {
+        showToast("复制失败", "error");
+      }
+      return;
+    }
+    if (event.target.closest("[data-safety-verified]")) {
+      state.peerSecurityMeta[peerUsername] = normalizePeerSecurityMeta({
+        ...meta,
+        lastVerifiedAt: Date.now(),
+        pinnedKey: state.peerKeys.get(peerUsername) || meta.pinnedKey,
+        observedKey: state.peerObservedKeys.get(peerUsername) || meta.observedKey
+      });
+      savePeerSecurityMeta();
+      renderThread({ scrollBehavior: "preserve" });
+      showToast("已记录本次核验");
+      cleanup();
+      return;
+    }
+    const trustButton = event.target.closest("[data-safety-trust]");
+    if (trustButton) {
+      cleanup();
+      await trustObservedPeerKey(peerUsername);
+    }
+  });
+  document.addEventListener("keydown", onKeydown);
+  document.body.append(backdrop);
+  window.requestAnimationFrame(() => {
+    card.querySelector("[data-safety-copy='code']")?.focus();
+  });
+}
+
 function openContactDetailsPanel() {
   if (isDetailsDrawerLayout()) {
     setDetailsPanelOpen(true);
@@ -2446,6 +2800,20 @@ function renderSimpleDetailRow(title, meta, actionLabel = "", action = "") {
   return wrapper;
 }
 
+function sessionActivityLabel(sessionItem) {
+  if (sessionItem.current) {
+    return "当前设备";
+  }
+  const age = Date.now() - Number(sessionItem.lastSeenAt || 0);
+  if (age <= 10 * 60 * 1000) {
+    return "最近活跃";
+  }
+  if (age >= 14 * 24 * 60 * 60 * 1000) {
+    return "长期未活动";
+  }
+  return "其他设备";
+}
+
 function renderSecurityLists(deviceSessions = state.deviceSessions) {
   if (elements.presenceVisibleToggle) {
     elements.presenceVisibleToggle.checked = state.securitySettings.showOnlineStatus !== false;
@@ -2463,8 +2831,20 @@ function renderSecurityLists(deviceSessions = state.deviceSessions) {
     } else {
       for (const sessionItem of deviceSessions) {
         const title = [sessionItem.device || "设备", sessionItem.browser || "浏览器"].filter(Boolean).join(" · ");
-        const meta = [sessionItem.os || "系统", `最近活动 ${formatDateTime(sessionItem.lastSeenAt)}`].filter(Boolean).join(" · ");
-        elements.deviceSessionsList.append(renderSimpleDetailRow(title, meta));
+        const meta = [
+          sessionActivityLabel(sessionItem),
+          sessionItem.os || "系统",
+          `登录 ${formatDateTime(sessionItem.createdAt)}`,
+          `最近活动 ${formatDateTime(sessionItem.lastSeenAt)}`
+        ].filter(Boolean).join(" · ");
+        elements.deviceSessionsList.append(
+          renderSimpleDetailRow(
+            title,
+            meta,
+            sessionItem.current ? "" : "撤销",
+            sessionItem.current ? "" : `revoke-session:${sessionItem.id || ""}`
+          )
+        );
       }
     }
   }
@@ -2483,6 +2863,15 @@ function renderSecurityLists(deviceSessions = state.deviceSessions) {
       }
     }
   }
+}
+
+async function revokeDeviceSession(sessionId) {
+  const payload = await api("/api/me/sessions/revoke", {
+    method: "POST",
+    body: { sessionId }
+  });
+  state.deviceSessions = Array.isArray(payload?.sessions) ? payload.sessions : [];
+  renderSecurityLists();
 }
 
 async function refreshSecuritySettingsPanel() {
@@ -2559,6 +2948,45 @@ async function setBlockedContact(username, blocked) {
   }
 }
 
+async function trustObservedPeerKey(peer = state.activePeer) {
+  const observedKey = state.peerObservedKeys.get(peer);
+  const mismatch = state.peerKeyMismatches.has(peer);
+  const unverified = state.peerKeyUnverified.has(peer);
+  if (!peer || !observedKey || (!mismatch && !unverified)) {
+    return false;
+  }
+  if (!await confirmActionDialog({
+    title: mismatch ? "信任新密钥" : "验证并信任密钥",
+    message: mismatch
+      ? "仅在你已通过其他渠道确认对方身份后继续。确认后会用这把新密钥继续加密会话。"
+      : "请先通过其他渠道核对安全码。确认后会把这把首次见到的密钥固定为联系人身份。",
+    confirmLabel: "信任"
+  })) {
+    return false;
+  }
+  const previousMeta = peerSecurityMetaFor(peer);
+  state.peerKeyPins[peer] = observedKey;
+  state.peerKeys.set(peer, observedKey);
+  state.peerKeyMismatches.delete(peer);
+  state.peerKeyUnverified.delete(peer);
+  state.conversationKeys.clear();
+  state.importedPeerKeys.clear();
+  savePeerKeyPins();
+  state.peerSecurityMeta[peer] = normalizePeerSecurityMeta({
+    ...previousMeta,
+    pinnedKey: observedKey,
+    observedKey,
+    lastVerifiedAt: Date.now(),
+    lastKeyChangeAt: mismatch ? (previousMeta.lastKeyChangeAt || Date.now()) : previousMeta.lastKeyChangeAt,
+    firstTrustedAt: previousMeta.firstTrustedAt || Date.now()
+  });
+  savePeerSecurityMeta();
+  render();
+  showToast(mismatch ? "已信任新密钥" : "已验证并信任联系人密钥");
+  await openConversation(peer);
+  return true;
+}
+
 function renderContactDetails(peer) {
   if (!elements.contactDetailsEmpty || !elements.contactDetailsContent) {
     return;
@@ -2568,6 +2996,9 @@ function renderContactDetails(peer) {
     elements.contactDetailsContent.hidden = true;
     if (elements.editContactButton) {
       elements.editContactButton.disabled = true;
+    }
+    if (elements.detailsVerifyCodeButton) {
+      elements.detailsVerifyCodeButton.disabled = true;
     }
     if (isDetailsDrawerLayout()) {
       setDetailsPanelOpen(false);
@@ -2600,6 +3031,9 @@ function renderContactDetails(peer) {
         elements.detailsSafetyCode.textContent = code;
       }
     });
+  }
+  if (elements.detailsVerifyCodeButton) {
+    elements.detailsVerifyCodeButton.disabled = !state.peerKeys.has(peer.username);
   }
   if (elements.detailsTrustKeyButton) {
     const mismatch = state.peerKeyMismatches.has(peer.username);
@@ -3125,6 +3559,7 @@ function render() {
   elements.workspace?.classList.toggle("is-loading", state.workspaceLoading);
   setActiveNavSection(state.activeNavSection);
   renderThread();
+  renderAttachmentTransfers();
   if (state.settingsDialogOpen) {
     populateSettingsDialog();
   }
@@ -4566,6 +5001,7 @@ async function logoutAllDevices() {
 async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silent = false, replyToId = "") {
   if (state.connectionState !== "online") {
     setPendingMessageState(tempId, "queued");
+    setAttachmentTransferForTempId(tempId, "failed", "离线状态下不支持附件发送");
     renderThread({ scrollBehavior: "bottom" });
     if (!silent) {
       showToast("当前离线，消息已加入待发送队列");
@@ -4573,6 +5009,7 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     return false;
   }
   setPendingMessageState(tempId, "sending");
+  setAttachmentTransferForTempId(tempId, "sending", "正在上传密文附件");
   try {
     const encrypted = await encryptOutboundMessage(peer, text);
     const payload = await api(parseAttachmentMessage(text) ? "/api/messages/attachment" : "/api/messages", {
@@ -4597,12 +5034,14 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
     if (state.replyTarget?.id === replyToId) {
       clearReplyTarget();
     }
+    setAttachmentTransferForTempId(tempId, "done", "密文附件已送达服务器");
     if (!silent) {
       showToast("\u5df2\u53d1\u9001");
     }
     return true;
   } catch (error) {
     setPendingMessageState(tempId, "failed", error.message);
+    setAttachmentTransferForTempId(tempId, "failed", error.message || "发送失败");
     renderThread();
     if (!silent) {
       showToast(error.message);
@@ -5368,33 +5807,11 @@ function bindEvents() {
       showToast("复制失败", "error");
     }
   });
-  elements.detailsTrustKeyButton?.addEventListener("click", async () => {
-    const peer = state.activePeer;
-    const observedKey = state.peerObservedKeys.get(peer);
-    const mismatch = state.peerKeyMismatches.has(peer);
-    const unverified = state.peerKeyUnverified.has(peer);
-    if (!peer || !observedKey || (!mismatch && !unverified)) {
-      return;
-    }
-    if (!await confirmActionDialog({
-      title: mismatch ? "信任新密钥" : "验证并信任密钥",
-      message: mismatch
-        ? "仅在你已通过其他渠道确认对方身份后继续。确认后会用这把新密钥继续加密会话。"
-        : "请先通过其他渠道核对安全码。确认后会把这把首次见到的密钥固定为联系人身份。",
-      confirmLabel: "信任"
-    })) {
-      return;
-    }
-    state.peerKeyPins[peer] = observedKey;
-    state.peerKeys.set(peer, observedKey);
-    state.peerKeyMismatches.delete(peer);
-    state.peerKeyUnverified.delete(peer);
-    state.conversationKeys.clear();
-    state.importedPeerKeys.clear();
-    savePeerKeyPins();
-    render();
-    showToast(mismatch ? "已信任新密钥" : "已验证并信任联系人密钥");
-    await openConversation(peer);
+  elements.detailsVerifyCodeButton?.addEventListener("click", () => {
+    void openSafetyCodeDialog();
+  });
+  elements.detailsTrustKeyButton?.addEventListener("click", () => {
+    void trustObservedPeerKey();
   });
   elements.deleteContactButton?.addEventListener("click", async () => {
     if (!state.activePeer) {
@@ -5478,6 +5895,49 @@ function bindEvents() {
     void setBlockedContact(username, false)
       .then(() => showToast("已解除拉黑"))
       .catch((error) => showToast(error.message || "解除失败", "error"));
+  });
+  elements.deviceSessionsList?.addEventListener("click", (event) => {
+    if (!isElementNode(event.target)) {
+      return;
+    }
+    const button = event.target.closest("[data-security-action]");
+    if (!button) {
+      return;
+    }
+    const raw = button.dataset.securityAction || "";
+    if (!raw.startsWith("revoke-session:")) {
+      return;
+    }
+    const sessionId = raw.slice("revoke-session:".length);
+    void confirmActionDialog({
+      title: "撤销设备登录",
+      message: "撤销后，该设备会立即退出，需重新登录后才能继续同步消息。",
+      confirmLabel: "撤销"
+    }).then((confirmed) => {
+      if (!confirmed) {
+        return;
+      }
+      return revokeDeviceSession(sessionId)
+        .then(() => showToast("已撤销该设备"))
+        .catch((error) => showToast(error.message || "撤销失败", "error"));
+    });
+  });
+  elements.securityStatus?.addEventListener("click", (event) => {
+    if (!isElementNode(event.target)) {
+      return;
+    }
+    const button = event.target.closest("[data-security-card-action]");
+    if (!button) {
+      return;
+    }
+    const action = button.dataset.securityCardAction || "";
+    if (action === "verify") {
+      void openSafetyCodeDialog();
+      return;
+    }
+    if (action === "trust") {
+      void trustObservedPeerKey();
+    }
   });
   elements.settingsDialogCloseButton?.addEventListener("click", closeSettingsDialog);
   elements.settingsDialogTabs?.addEventListener("click", (event) => {

@@ -781,8 +781,63 @@ img {
 }
 
 .security-status {
-  padding: 0 8px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
   font-size: 13px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: rgba(248, 248, 245, 0.92);
+}
+
+.security-status.is-ok {
+  background: rgba(245, 248, 244, 0.96);
+}
+
+.security-status.is-warn {
+  border-color: rgba(163, 88, 32, 0.22);
+  background: rgba(255, 246, 236, 0.96);
+}
+
+.security-status.is-idle {
+  background: rgba(248, 248, 245, 0.72);
+}
+
+.security-status-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.security-status-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.security-status-copy span {
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.security-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.security-status .ghost-button,
+.security-status .primary-button {
+  min-height: 38px;
+}
+
+.detail-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .message-stream-shell {
@@ -924,6 +979,51 @@ img {
 .composer-hint {
   font-size: 12px;
   color: var(--text-soft);
+}
+
+.attachment-transfer-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.attachment-transfer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(248, 248, 245, 0.92);
+}
+
+.attachment-transfer-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.attachment-transfer-copy strong,
+.attachment-transfer-copy span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attachment-transfer-copy span,
+.attachment-transfer-state {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.attachment-transfer.is-failed {
+  border-color: rgba(161, 60, 60, 0.2);
+  background: rgba(255, 243, 243, 0.96);
+}
+
+.attachment-transfer.is-done {
+  background: rgba(244, 248, 243, 0.96);
 }
 
 .primary-button {
@@ -1915,6 +2015,91 @@ img {
   border-radius: 20px;
   border: 1px solid var(--line);
   background: rgba(248, 248, 245, 0.92);
+}
+
+.dialog-note.is-warning {
+  border-color: rgba(163, 88, 32, 0.22);
+  background: rgba(255, 246, 236, 0.96);
+}
+
+.safety-code-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.safety-code-panel {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--line);
+  background: rgba(252, 252, 250, 0.92);
+}
+
+.safety-code-label {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.safety-code-short,
+.safety-code-full {
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+}
+
+.safety-code-share {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(246, 246, 242, 0.92);
+  word-break: break-all;
+}
+
+.safety-code-history {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.safety-pattern {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 6px;
+  width: min(220px, 100%);
+}
+
+.safety-pattern-cell {
+  aspect-ratio: 1;
+  border-radius: 6px;
+  background: rgba(17, 17, 17, 0.08);
+}
+
+.safety-pattern-cell.is-on {
+  background: #111111;
+}
+
+@media (max-width: 767px) {
+  .security-status {
+    flex-direction: column;
+  }
+
+  .security-status-actions {
+    justify-content: flex-start;
+  }
+
+  .safety-code-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .safety-code-short,
+  .safety-code-full {
+    font-size: 18px;
+    letter-spacing: 0.06em;
+  }
 }
 
 .dialog-note strong {

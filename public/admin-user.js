@@ -58,6 +58,13 @@ function parseUsernameFromQuery() {
   return String(url.searchParams.get("username") || "").trim();
 }
 
+function formatCiphertextMeta(message) {
+  const bytes = Number(message?.ciphertextBytes || 0);
+  const sha256 = String(message?.ciphertextSha256 || "");
+  const nonce = String(message?.nonce || "-");
+  return `长度 ${bytes} bytes | ${sha256 ? `sha256 ${sha256}` : "sha256 -"} | nonce ${nonce}`;
+}
+
 async function api(pathname, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   let body = options.body;
@@ -68,6 +75,7 @@ async function api(pathname, options = {}) {
   if (!["GET", "HEAD"].includes((options.method || "GET").toUpperCase()) && state.csrfToken) {
     headers["X-CSRF-Token"] = state.csrfToken;
   }
+
   let response;
   try {
     response = await fetch(pathname, {
@@ -123,14 +131,12 @@ function renderOverview(detail) {
     { label: "会话对象", value: `${messageStats.peers || 0}` },
     { label: "访问日志", value: `${access.totalLogs || 0}` }
   ];
-  elements.overviewGrid.innerHTML = cards
-    .map((card) => `
+  elements.overviewGrid.innerHTML = cards.map((card) => `
       <article class="overview-card">
         <span>${escapeHtml(card.label)}</span>
         <strong>${escapeHtml(card.value)}</strong>
       </article>
-    `)
-    .join("");
+    `).join("");
 }
 
 function renderIdentity(detail) {
@@ -147,50 +153,48 @@ function renderIdentity(detail) {
     { title: "首条消息时间", meta: formatDateTime(detail.messageStats?.firstMessageAt) },
     { title: "最后消息时间", meta: formatDateTime(detail.messageStats?.lastMessageAt) }
   ];
-  elements.identityList.innerHTML = rows
-    .map((row) => `
+  elements.identityList.innerHTML = rows.map((row) => `
       <article class="detail-item">
         <strong>${escapeHtml(row.title)}</strong>
         <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
       </article>
-    `)
-    .join("");
+    `).join("");
 }
 
 function renderCrypto(detail) {
   const rows = [
-    { title: "公钥", value: detail.crypto?.publicKey },
-    { title: "服务端私钥状态", value: detail.crypto?.privateKeyStoredOnServer ? { present: true, bytes: 0, preview: "unexpected" } : { present: false, bytes: 0, preview: "仅客户端本地保存" } }
+    { title: "公钥", field: "publicKey", value: detail.crypto?.publicKey },
+    { title: "私钥盐", field: "privateKeySalt", value: detail.crypto?.privateKeySalt },
+    { title: "私钥 IV", field: "privateKeyIv", value: detail.crypto?.privateKeyIv },
+    { title: "加密私钥包", field: "encryptedPrivateKey", value: detail.crypto?.encryptedPrivateKey }
   ];
-  elements.cryptoList.innerHTML = rows
-    .map((row) => {
-      const item = row.value || {};
-      const summary = item.present
+  elements.cryptoList.innerHTML = rows.map((row) => {
+    const item = row.value || {};
+    const summary = row.field === "encryptedPrivateKey"
+      ? (item.present ? "已保存密钥包" : "缺失")
+      : item.present
         ? `${item.bytes || 0} bytes · ${item.preview || "-"}`
-        : item.preview || "历史数据未提供";
-      return `
-        <article class="detail-item">
-          <strong>${escapeHtml(row.title)}</strong>
-          <div class="detail-item-meta">${escapeHtml(summary)}</div>
-        </article>
-      `;
-    })
-    .join("");
+        : "历史数据未提供";
+    return `
+      <article class="detail-item">
+        <strong>${escapeHtml(row.title)}</strong>
+        <div class="detail-item-meta">${escapeHtml(summary)}</div>
+      </article>
+    `;
+  }).join("");
 }
 
 function renderSessions(detail) {
   const sessions = detail.sessions || [];
   elements.sessionList.innerHTML = sessions.length > 0
-    ? sessions
-        .map((sessionItem) => `
+    ? sessions.map((sessionItem) => `
           <article class="detail-item">
             <strong>活跃会话</strong>
             <div class="detail-item-meta">创建时间 ${escapeHtml(formatDateTime(sessionItem.createdAt))}</div>
             <div class="detail-item-meta">最近活动 ${escapeHtml(formatDateTime(sessionItem.lastSeenAt))}</div>
             <div class="detail-item-meta">过期时间 ${escapeHtml(formatDateTime(sessionItem.expiresAt))}</div>
           </article>
-        `)
-        .join("")
+        `).join("")
     : `<article class="empty-state">当前没有活跃会话</article>`;
 }
 
@@ -198,8 +202,9 @@ function renderAccess(detail) {
   const profile = detail.access?.profile;
   const logs = detail.access?.recentLogs || [];
   elements.accessBadge.textContent = `最近 ${logs.length} 条日志`;
+
   if (!profile) {
-    elements.accessProfileList.innerHTML = `<article class="empty-state">没有该用户的访问日志，兼容老数据时这里会为空。</article>`;
+    elements.accessProfileList.innerHTML = `<article class="empty-state">没有该用户的访问画像</article>`;
   } else {
     const rows = [
       { title: "首次访问", meta: formatDateTime(profile.firstVisitAt) },
@@ -215,29 +220,25 @@ function renderAccess(detail) {
         meta: `${profile.clientMeta?.language || "-"} · ${profile.clientMeta?.timezone || "-"} · ${profile.clientMeta?.screenResolution || "-"}`
       }
     ];
-    elements.accessProfileList.innerHTML = rows
-      .map((row) => `
+    elements.accessProfileList.innerHTML = rows.map((row) => `
         <article class="detail-item">
           <strong>${escapeHtml(row.title)}</strong>
           <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
         </article>
-      `)
-      .join("");
+      `).join("");
   }
 
   if (logs.length === 0) {
     elements.accessLogsList.innerHTML = `<article class="empty-state">暂无可展示的访问明细</article>`;
     return;
   }
-  elements.accessLogsList.innerHTML = logs
-    .map((row) => `
+  elements.accessLogsList.innerHTML = logs.map((row) => `
       <article class="detail-item">
         <strong>${escapeHtml(`${row.method || "GET"} ${row.path || "/"}`)}</strong>
         <div class="detail-item-meta">${escapeHtml(formatDateTime(row.createdAt))}</div>
         <div class="detail-item-meta">${escapeHtml(`${formatIpLocation(row)} · ${row.browser || "-"} · ${row.os || "-"}`)}</div>
       </article>
-    `)
-    .join("");
+    `).join("");
 }
 
 function renderConversations(detail) {
@@ -246,16 +247,14 @@ function renderConversations(detail) {
     elements.conversationList.innerHTML = `<article class="empty-state">该用户还没有会话关系</article>`;
     return;
   }
-  elements.conversationList.innerHTML = rows
-    .map((row) => `
+  elements.conversationList.innerHTML = rows.map((row) => `
       <article class="detail-item">
         <strong>${escapeHtml(row.username)}</strong>
         <div class="detail-item-meta">${escapeHtml(`${row.online ? "在线" : "离线"} · 总消息 ${row.totalMessages || 0}`)}</div>
         <div class="detail-item-meta">${escapeHtml(`发送 ${row.sentMessages || 0} / 接收 ${row.receivedMessages || 0}`)}</div>
         <div class="detail-item-meta">${escapeHtml(`最后互动 ${formatDateTime(row.lastAt)}`)}</div>
       </article>
-    `)
-    .join("");
+    `).join("");
 }
 
 function renderMessages(detail) {
@@ -264,20 +263,18 @@ function renderMessages(detail) {
     elements.messageList.innerHTML = `<article class="empty-state">暂无消息记录</article>`;
     return;
   }
-  elements.messageList.innerHTML = rows
-    .map((message) => {
-      const text = `${message.auditLabel || "端到端加密密文，后台不可读取明文"} | ${message.deliveryLabel || "未知状态"} | 密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
-      return `
-        <article class="msg-item">
-          <div class="msg-meta">
-            <span>${escapeHtml(`${message.direction === "sent" ? "发送给" : "收到自"} ${message.peer}`)}</span>
-            <span>${escapeHtml(formatDateTime(message.createdAt))}</span>
-          </div>
-          <div class="msg-text">${escapeHtml(text)}</div>
-        </article>
-      `;
-    })
-    .join("");
+  elements.messageList.innerHTML = rows.map((message) => {
+    const text = `${message.auditLabel || "端到端加密密文，后台不可读取明文"} | ${message.deliveryLabel || "未知状态"} | ${formatCiphertextMeta(message)}`;
+    return `
+      <article class="msg-item">
+        <div class="msg-meta">
+          <span>${escapeHtml(`${message.direction === "sent" ? "发送给" : "收到自"} ${message.peer}`)}</span>
+          <span>${escapeHtml(formatDateTime(message.createdAt))}</span>
+        </div>
+        <div class="msg-text">${escapeHtml(text)}</div>
+      </article>
+    `;
+  }).join("");
 }
 
 function renderAudit(detail) {
@@ -286,8 +283,7 @@ function renderAudit(detail) {
     elements.auditList.innerHTML = `<article class="empty-state">暂无与该用户相关的管理员审计记录</article>`;
     return;
   }
-  elements.auditList.innerHTML = rows
-    .map((item) => `
+  elements.auditList.innerHTML = rows.map((item) => `
       <article class="msg-item">
         <div class="msg-meta">
           <span>${escapeHtml(item.action || "-")}</span>
@@ -295,8 +291,7 @@ function renderAudit(detail) {
         </div>
         <div class="msg-text">${escapeHtml(JSON.stringify(item.details || {}, null, 2))}</div>
       </article>
-    `)
-    .join("");
+    `).join("");
 }
 
 function renderDetail(detail) {

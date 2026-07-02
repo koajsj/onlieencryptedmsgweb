@@ -101,6 +101,7 @@ const adminMenuLogoutButton = document.querySelector("#adminMenuLogoutButton");
 
 const state = {
   admin: { username: "", role: "admin" },
+  csrfToken: "",
   dashboard: null,
   dashboardRangeDays: 7,
   stats: {},
@@ -126,11 +127,19 @@ const state = {
   dialogOptions: null
 };
 
+function formatCiphertextMeta(message) {
+  const bytes = Number(message?.ciphertextBytes || 0);
+  const sha256 = String(message?.ciphertextSha256 || "");
+  const nonce = String(message?.nonce || "-");
+  return `长度 ${bytes} bytes | ${sha256 ? `sha256 ${sha256}` : "sha256 -"} | nonce ${nonce}`;
+}
+
 function hasPermission(permission) {
   return Boolean(permission && state.admin?.role === "admin");
 }
 
 function resetAdminState(showLogin = false) {
+  state.csrfToken = "";
   state.dashboard = null;
   state.dashboardRangeDays = 7;
   state.stats = {};
@@ -173,6 +182,7 @@ function translateAdminError(pathname, status, payload) {
     "管理员配置写入失败": "管理员配置写入失败",
     unauthorized: "请先登录管理员账号",
     "session expired": "管理员登录已过期，请重新登录",
+    "invalid csrf token": "当前后台安全令牌已失效，请重新登录",
     "too many auth requests": "请求过于频繁，请稍后再试",
     "too many failed attempts, try again later": "失败次数过多，请稍后再试"
   };
@@ -281,6 +291,9 @@ async function api(pathname, options = {}) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(body);
   }
+  if (!["GET", "HEAD"].includes((options.method || "GET").toUpperCase()) && state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
   let response;
   try {
     response = await fetch(pathname, { method: options.method || "GET", headers, credentials: "same-origin", body });
@@ -292,6 +305,9 @@ async function api(pathname, options = {}) {
     payload = await response.json();
   } catch (error) {
     payload = null;
+  }
+  if (payload?.csrfToken) {
+    state.csrfToken = String(payload.csrfToken);
   }
   if (!response.ok) {
     if (response.status === 401 && String(pathname || "").split("?")[0] !== "/api/admin/login") {
@@ -983,7 +999,7 @@ function renderMessages() {
     `;
     const status = message.deliveryLabel || "未知状态";
     const auditLabel = message.auditLabel || (message.encrypted ? "端到端加密密文，后台不可读取明文" : "消息结构异常");
-    article.querySelector(".msg-text").textContent = `${auditLabel} | ${status} | 密文 ${message.ciphertext || "-"} | nonce ${message.nonce || "-"}`;
+    article.querySelector(".msg-text").textContent = `${auditLabel} | ${status} | ${formatCiphertextMeta(message)}`;
     elements.messagesList.append(article);
   }
   elements.loadMoreMessagesButton.disabled = !state.hasMoreMessages || state.loadingMessages;

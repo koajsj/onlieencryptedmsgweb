@@ -38,9 +38,23 @@ function rewriteJsonLinesFile(filePath, rows) {
   fs.renameSync(tempPath, filePath);
 }
 
+function appendJsonLinesFile(filePath, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return;
+  }
+  const body = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
+  fs.appendFileSync(filePath, body, "utf8");
+}
+
+function appendTextFileSync(filePath, text) {
+  fs.appendFileSync(filePath, String(text || ""), "utf8");
+}
+
 module.exports = {
   readJsonFile,
   readJsonLinesFile,
   writeJsonFile,
-  rewriteJsonLinesFile
+  rewriteJsonLinesFile,
+  appendJsonLinesFile,
+  appendTextFileSync
 };

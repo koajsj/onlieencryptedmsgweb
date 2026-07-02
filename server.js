@@ -1207,6 +1207,29 @@ function prekeyBundleForUser(user) {
   };
 }
 
+function publicKeyBundleForUser(user) {
+  return {
+    userId: user.username,
+    username: user.username,
+    usernameKey: user.usernameKey,
+    algorithm: "ECDH-P256+HKDF-SHA256+AES-256-GCM",
+    identityKey: user.publicKey,
+    publicKey: user.publicKey
+  };
+}
+
+function prekeyBundleForUser(user) {
+  return {
+    ...publicKeyBundleForUser(user),
+    preKeyBundleVersion: 1,
+    signedPreKey: {
+      keyId: `identity:${user.usernameKey}`,
+      publicKey: user.publicKey
+    },
+    oneTimePreKeys: []
+  };
+}
+
 function summarizeEncodedBlob(value) {
   const raw = String(value || "");
   const bytes = decodeBase64Blob(raw);
@@ -1809,11 +1832,13 @@ function readRecentAdminAuditEntries(limit = 80) {
   return adminAuditEntries.slice(Math.max(0, adminAuditEntries.length - limit));
 }
 
-function listUserSessions(username) {
+function listUserSessions(username, currentSessionId = "") {
   return [...sessions.values()]
     .filter((sessionRecord) => sessionRecord.role === "user" && sessionRecord.username === username)
     .sort((left, right) => Number(right.lastSeenAt) - Number(left.lastSeenAt))
     .map((sessionRecord) => ({
+      id: String(sessionRecord.id || ""),
+      current: Boolean(currentSessionId) && sessionRecord.id === currentSessionId,
       createdAt: Number(sessionRecord.createdAt || 0),
       lastSeenAt: Number(sessionRecord.lastSeenAt || 0),
       expiresAt: Number(sessionRecord.expiresAt || 0),
@@ -1892,9 +1917,31 @@ function messageAuditLabel(message) {
   return "消息缺少密文载荷，已按异常历史数据处理";
 }
 
+function wrappedPrivateKeyPresence(value) {
+  return {
+    present: String(value || "").length > 0
+  };
+}
+
+function ciphertextAdminMetadata(value) {
+  const raw = String(value || "");
+  const bytes = decodeBase64Blob(raw);
+  if (!bytes) {
+    return {
+      bytes: 0,
+      sha256: ""
+    };
+  }
+  return {
+    bytes: bytes.length,
+    sha256: crypto.createHash("sha256").update(bytes).digest("hex")
+  };
+}
+
 function adminUserMessageView(message, username) {
   const peer = message.from === username ? message.to : message.from;
   const deliveryState = messageDeliveryState(message);
+  const ciphertextMeta = ciphertextAdminMetadata(message.ciphertext);
   return {
     id: message.id,
     peer,
@@ -1906,7 +1953,8 @@ function adminUserMessageView(message, username) {
     deliveryLabel: deliveryStateLabel(deliveryState),
     auditLabel: messageAuditLabel(message),
     nonce: String(message.nonce || ""),
-    ciphertext: String(message.ciphertext || ""),
+    ciphertextBytes: ciphertextMeta.bytes,
+    ciphertextSha256: ciphertextMeta.sha256,
     recalled: Boolean(message.recalled),
     replyToId: String(message.replyToId || ""),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
@@ -2119,12 +2167,14 @@ async function adminDashboardSnapshot(session, req, options = {}) {
 
 function adminMessageView(message) {
   const deliveryState = messageDeliveryState(message);
+  const ciphertextMeta = ciphertextAdminMetadata(message.ciphertext);
   return {
     id: message.id,
     from: message.from,
     to: message.to,
     nonce: message.nonce,
-    ciphertext: message.ciphertext,
+    ciphertextBytes: ciphertextMeta.bytes,
+    ciphertextSha256: ciphertextMeta.sha256,
     encrypted: Boolean(message.ciphertext),
     recalled: Boolean(message.recalled),
     deliveryState,
@@ -3095,7 +3145,64 @@ function handleMeSessions(req, res, url) {
     return;
   }
   sendJson(res, 200, {
-    sessions: listUserSessions(user.username)
+    sessions: listUserSessions(user.username, session.id)
+  });
+}
+
+async function handleMeSessionRevoke(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    revokeSession(session);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:me:sessions:revoke:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  const targetSessionId = normalizeBoundedText(body?.sessionId || "", 128);
+  if (!targetSessionId) {
+    sendJson(res, 400, { error: "sessionId is required" });
+    return;
+  }
+  if (targetSessionId === session.id) {
+    sendJson(res, 409, { error: "current session cannot be revoked here" });
+    return;
+  }
+  const targetSession = sessions.get(targetSessionId) || null;
+  if (!targetSession || targetSession.role !== "user" || targetSession.username !== session.username) {
+    sendJson(res, 404, { error: "session not found" });
+    return;
+  }
+  revokeSession(targetSession);
+  purgeSessionEventTickets(targetSession.id);
+  disconnectSessionRealtime(targetSession.id, "revoked by user");
+  recordAdminAction("user_revoke_session", session, req, {
+    revokedSessionId: targetSession.id
+  });
+  sendJson(res, 200, {
+    ok: true,
+    revokedSessionId: targetSession.id,
+    sessions: listUserSessions(user.username, session.id)
   });
 }
 
@@ -4778,6 +4885,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && pathname === "/api/me/sessions") {
     handleMeSessions(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/me/sessions/revoke") {
+    runAsyncRoute(handleMeSessionRevoke(req, res, url), res);
     return;
   }
   const contactPath = parseContactPath(pathname);
