@@ -23,11 +23,12 @@ ENV_FILE="/etc/default/${APP_NAME}"
 CADDYFILE="/etc/caddy/Caddyfile"
 DATA_DIR="${DATA_DIR:-/var/lib/${APP_NAME}/data}"
 NODE_MAJOR="20"
-ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
-ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-admin}"
+ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
 SAFE_RESET_PATHS=(
+  "public/ui-utils.min.js"
   "public/app.min.js"
   "public/admin.min.js"
   "public/admin-user.min.js"
@@ -106,7 +107,9 @@ assert_clean_worktree_for_pull() {
 install_dependencies_and_build() {
   cd "${APP_DIR}"
   npm ci --include=dev
+  npm run lint
   npm run build
+  npm run verify:build
 }
 
 prepare_data_dir() {
@@ -148,19 +151,35 @@ ensure_domains() {
 }
 
 ensure_admin_credentials() {
+  if [ -z "${ADMIN_USERNAME}" ]; then
+    ADMIN_USERNAME="$(read_env_value "ADMIN_USERNAME" 2>/dev/null || true)"
+  fi
+  if [ -z "${ADMIN_USERNAME}" ]; then
+    ADMIN_USERNAME="admin"
+  fi
   if ! [[ "${ADMIN_USERNAME}" =~ ^[A-Za-z0-9_]{3,24}$ ]]; then
     echo "ADMIN_USERNAME must match ^[A-Za-z0-9_]{3,24}$" >&2
     exit 1
   fi
 
   if [ -z "${ADMIN_PASSWORD_HASH}" ]; then
-    if [ -n "${ADMIN_PASSWORD}" ]; then
-      if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
-        echo "ADMIN_PASSWORD must be 4-72 characters" >&2
-        exit 1
-      fi
-      ADMIN_PASSWORD_HASH="$(hash_password "${ADMIN_PASSWORD}")"
+    ADMIN_PASSWORD_HASH="$(read_env_value "ADMIN_PASSWORD_HASH" 2>/dev/null || true)"
+  fi
+  if [ -z "${ADMIN_PASSWORD_HASH}" ] && [ -z "${ADMIN_PASSWORD}" ]; then
+    ADMIN_PASSWORD="qwer@1234"
+  fi
+  if [ -z "${ADMIN_PASSWORD_HASH}" ] && [ -n "${ADMIN_PASSWORD}" ]; then
+    if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
+      echo "ADMIN_PASSWORD must be 4-72 characters" >&2
+      exit 1
     fi
+    ADMIN_PASSWORD_HASH="$(hash_password "${ADMIN_PASSWORD}")"
+  fi
+  if [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+    ADMIN_UPDATE_PASSPHRASE="$(read_env_value "ADMIN_UPDATE_PASSPHRASE" 2>/dev/null || true)"
+  fi
+  if [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+    ADMIN_UPDATE_PASSPHRASE="admin"
   fi
 }
 
@@ -280,9 +299,7 @@ print_summary() {
   echo "Public URL: https://${DOMAIN}"
   echo "Public URL: https://${WWW_DOMAIN}"
   echo "Admin username: ${ADMIN_USERNAME}"
-  echo "Admin password: qwer@1234"
-  echo "Admin update passphrase: ${ADMIN_UPDATE_PASSPHRASE}"
-  echo "Admin password is stored as a hash in ${ENV_FILE}."
+  echo "Admin credentials were preserved or written to ${ENV_FILE}."
 }
 
 main() {

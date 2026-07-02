@@ -2,8 +2,26 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const sqlite3 = require("sqlite3");
 const { UAParser } = require("ua-parser-js");
+
+let sqlite3Module = null;
+let sqlite3LoadError = null;
+
+function getSqlite3() {
+  if (sqlite3Module) {
+    return sqlite3Module;
+  }
+  if (sqlite3LoadError) {
+    throw sqlite3LoadError;
+  }
+  try {
+    sqlite3Module = require("sqlite3");
+    return sqlite3Module;
+  } catch (error) {
+    sqlite3LoadError = error;
+    throw error;
+  }
+}
 
 const ACCESS_DB_FILE = "access_logs.sqlite";
 const DEFAULT_BATCH_SIZE = 80;
@@ -187,12 +205,20 @@ class AccessLogStore {
     this.droppedRows = 0;
     this.lastPrunedAt = 0;
     this.db = null;
-    this.ready = this.enabled ? this.initialize() : Promise.resolve();
     this.queue = [];
     this.processing = false;
     this.closing = false;
     this.clientMetaBySession = new Map();
     this.ipLocationCache = new Map();
+    if (this.enabled) {
+      try {
+        getSqlite3();
+      } catch (error) {
+        this.enabled = false;
+        this.logger(`[access-log] sqlite3 unavailable, access logs disabled: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    this.ready = this.enabled ? this.initialize() : Promise.resolve();
   }
 
   async initialize() {
@@ -200,6 +226,7 @@ class AccessLogStore {
       return;
     }
     fs.mkdirSync(this.dataDir, { recursive: true });
+    const sqlite3 = getSqlite3();
     this.db = await new Promise((resolve, reject) => {
       const db = new sqlite3.Database(this.dbFile, (error) => {
         if (error) {
@@ -210,7 +237,7 @@ class AccessLogStore {
       });
     });
     await this.execImmediate("PRAGMA journal_mode = WAL;");
-    await this.execImmediate("PRAGMA synchronous = NORMAL;");
+    await this.execImmediate("PRAGMA synchronous = FULL;");
     await this.execImmediate(`
       CREATE TABLE IF NOT EXISTS access_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

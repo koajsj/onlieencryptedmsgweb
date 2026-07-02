@@ -17,13 +17,15 @@ APP_PORT="${APP_PORT:-3000}"
 DOMAIN="${DOMAIN:-257823.xyz}"
 WWW_DOMAIN="${WWW_DOMAIN:-}"
 CADDYFILE="${CADDYFILE:-/etc/caddy/Caddyfile}"
-ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-qwer@1234}"
-ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-admin}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
+ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
 SAFE_RESET_PATHS=(
   "public/index.html"
   "public/admin.html"
   "public/admin-user.html"
+  "public/ui-utils.min.js"
   "public/app.min.js"
   "public/admin.min.js"
   "public/admin-user.min.js"
@@ -85,6 +87,31 @@ normalize_environment_file() {
   if [ ! -f "${ENV_FILE}" ]; then
     return
   fi
+  if [ -z "${ADMIN_USERNAME}" ]; then
+    ADMIN_USERNAME="$(read_env_value "ADMIN_USERNAME" 2>/dev/null || true)"
+  fi
+  if [ -z "${ADMIN_USERNAME}" ]; then
+    ADMIN_USERNAME="admin"
+  fi
+  if [ -z "${ADMIN_PASSWORD_HASH}" ]; then
+    ADMIN_PASSWORD_HASH="$(read_env_value "ADMIN_PASSWORD_HASH" 2>/dev/null || true)"
+  fi
+  if [ -z "${ADMIN_PASSWORD_HASH}" ] && [ -z "${ADMIN_PASSWORD}" ]; then
+    ADMIN_PASSWORD="qwer@1234"
+  fi
+  if [ -z "${ADMIN_PASSWORD_HASH}" ] && [ -n "${ADMIN_PASSWORD}" ]; then
+    if [ "${#ADMIN_PASSWORD}" -lt 4 ] || [ "${#ADMIN_PASSWORD}" -gt 72 ]; then
+      echo "ADMIN_PASSWORD must be 4-72 characters" >&2
+      exit 1
+    fi
+    ADMIN_PASSWORD_HASH="$(hash_password "${ADMIN_PASSWORD}")"
+  fi
+  if [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+    ADMIN_UPDATE_PASSPHRASE="$(read_env_value "ADMIN_UPDATE_PASSPHRASE" 2>/dev/null || true)"
+  fi
+  if [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
+    ADMIN_UPDATE_PASSPHRASE="admin"
+  fi
   ensure_line "HOST" "${APP_HOST}"
   ensure_line "PORT" "${APP_PORT}"
   ensure_line "NODE_ENV" "production"
@@ -93,7 +120,7 @@ normalize_environment_file() {
   ensure_line "TRUSTED_ORIGINS" "https://${DOMAIN},https://${WWW_DOMAIN}"
   ensure_line "HSTS_MAX_AGE_SECONDS" "31536000"
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
-  ensure_line "ADMIN_PASSWORD_HASH" "$(hash_password "${ADMIN_PASSWORD}")"
+  ensure_line "ADMIN_PASSWORD_HASH" "${ADMIN_PASSWORD_HASH}"
   ensure_line "ADMIN_UPDATE_PASSPHRASE" "${ADMIN_UPDATE_PASSPHRASE}"
   remove_line "ADMIN_PASSWORD"
   ensure_line_if_missing "TRUSTED_PROXY_ADDRESSES" "127.0.0.1,::1,::ffff:127.0.0.1"
@@ -141,7 +168,9 @@ update_repository() {
 build_application() {
   cd "${APP_DIR}"
   npm ci --include=dev
+  npm run lint
   npm run build
+  npm run verify:build
 }
 
 restart_application() {

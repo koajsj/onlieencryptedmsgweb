@@ -14,10 +14,10 @@
 
 账号与密钥安全约束：
 
-- 用户修改密码时，浏览器会用新密码重新加密私钥包，服务端同时轮换密码哈希并撤销其他会话。
+- 用户私钥只在浏览器本地生成并保存在本机安全存储中；修改密码只会轮换服务端密码哈希并撤销其他会话，不会触碰私钥。
 - 管理员不能直接重置用户密码，因为管理员不持有用户私钥；用户需在聊天设置中自行修改。
 - 管理员账号或密码重置后，所有已有管理员会话都会失效，需要使用新凭据重新登录。
-- 联系人公钥采用首次信任并本地固定；后续公钥变化会暂停发送，需核对安全码后手动确认。
+- 联系人公钥需要先核对安全码并手动信任后才能开始发送；后续公钥变化也会暂停发送，直到再次确认。
 - 系统仅使用同站 HttpOnly Cookie 认证，不再支持 Bearer Token 兼容模式，避免令牌进入脚本可读内存、日志或外部客户端。
 - 开启 `TRUST_PROXY=1` 时，只接受 `TRUSTED_PROXY_ADDRESSES` 中代理发送的转发头，防止伪造客户端 IP 绕过限流。
 - 访问日志默认保留 30 天，并限制待写队列，避免长期磁盘增长或数据库变慢时耗尽内存。
@@ -33,7 +33,7 @@
 - `ADMIN_PASSWORD_HASH`：`scrypt:salt:hash` 形式的预生成哈希，直接喂入。
 - `ADMIN_UPDATE_PASSPHRASE`：管理员账号热更新验证口令，默认是 `admin`。
 
-部署和更新脚本会把最终凭据写入 `/etc/default/secure-chat`，默认会写入 `ADMIN_USERNAME=admin`、`ADMIN_PASSWORD_HASH=<qwer@1234 的哈希>` 和 `ADMIN_UPDATE_PASSPHRASE=admin`。
+部署脚本会把最终凭据写入 `/etc/default/secure-chat`；更新脚本会保留已有凭据，除非你显式传入新的管理员变量。
 
 后台地址：
 
@@ -156,7 +156,7 @@ sudo bash scripts/update-debian.sh
 
 如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
-更新脚本会把管理员账号恢复为 `admin`，密码恢复为 `qwer@1234`（写入哈希），并把热更新验证口令恢复为 `admin`。
+更新脚本默认会保留现有管理员用户名、密码哈希和热更新验证口令；只有你显式传入新的 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_PASSWORD_HASH` 或 `ADMIN_UPDATE_PASSPHRASE` 时才会覆盖。
 
 如果你之前临时改成 `PORT=3001` 或 `MANAGE_CADDY=0`，新版更新脚本会恢复默认 Caddy/443 部署方式。运行前要确保没有 `mtproto-proxy`、Nginx、Apache 等非 Caddy 服务占用 `80/443`。
 
@@ -298,4 +298,26 @@ npm test
 
 ```bash
 npm run check
+```
+
+## E2E zero-knowledge model
+
+The chat path is client-encrypted and server zero-knowledge:
+
+- Browser clients generate a long-lived P-256 ECDH identity key pair.
+- The private identity key is wrapped in the browser with PBKDF2 + AES-GCM before upload; the server stores only the wrapped blob and cannot decrypt it.
+- Public identity keys are published through `GET /public-key/:userId` and `GET /prekey-bundle/:userId`.
+- Clients derive a non-extractable session message key with ECDH shared secret + HKDF-SHA256.
+- Every message uses AES-GCM with a fresh nonce and non-null AAD bound to `{ from, to }`.
+- `POST /api/messages` accepts only `ciphertext` and `nonce`; plaintext message bodies are rejected and never stored.
+- The server stores message ciphertext, nonce, sender, recipient, id, and timestamp metadata only.
+- The server keeps a per-sender/per-recipient nonce replay index and rejects duplicate nonces with `409 duplicate message nonce`.
+- There is no base64 plaintext fallback and no server-side message decrypt path.
+
+Key exchange endpoints:
+
+```text
+GET  /public-key/:userId
+POST /upload-public-key
+GET  /prekey-bundle/:userId
 ```

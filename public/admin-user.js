@@ -34,6 +34,7 @@ const elements = {
 const state = {
   username: "",
   detail: null,
+  csrfToken: "",
   loading: false,
   lastRefreshAt: 0
 };
@@ -64,6 +65,9 @@ async function api(pathname, options = {}) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(body);
   }
+  if (!["GET", "HEAD"].includes((options.method || "GET").toUpperCase()) && state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
   let response;
   try {
     response = await fetch(pathname, {
@@ -81,6 +85,9 @@ async function api(pathname, options = {}) {
     payload = await response.json();
   } catch (error) {
     payload = null;
+  }
+  if (payload?.csrfToken) {
+    state.csrfToken = String(payload.csrfToken);
   }
 
   if (!response.ok) {
@@ -153,14 +160,14 @@ function renderIdentity(detail) {
 function renderCrypto(detail) {
   const rows = [
     { title: "公钥", value: detail.crypto?.publicKey },
-    { title: "私钥盐值", value: detail.crypto?.privateKeySalt },
-    { title: "私钥 IV", value: detail.crypto?.privateKeyIv },
-    { title: "加密私钥", value: detail.crypto?.encryptedPrivateKey }
+    { title: "服务端私钥状态", value: detail.crypto?.privateKeyStoredOnServer ? { present: true, bytes: 0, preview: "unexpected" } : { present: false, bytes: 0, preview: "仅客户端本地保存" } }
   ];
   elements.cryptoList.innerHTML = rows
     .map((row) => {
       const item = row.value || {};
-      const summary = item.present ? `${item.bytes || 0} bytes · ${item.preview || "-"}` : "历史数据未提供";
+      const summary = item.present
+        ? `${item.bytes || 0} bytes · ${item.preview || "-"}`
+        : item.preview || "历史数据未提供";
       return `
         <article class="detail-item">
           <strong>${escapeHtml(row.title)}</strong>

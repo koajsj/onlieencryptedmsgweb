@@ -6,6 +6,7 @@ const STORAGE = {
   authMode: "private-chat-auth-mode",
   contactProfiles: "private-chat-contact-profiles",
   conversationPrefs: "private-chat-conversation-prefs",
+  deviceIdentities: "private-chat-device-identities",
   drafts: "private-chat-drafts",
   pendingOutbox: "private-chat-pending-outbox",
   peerKeyPins: "private-chat-peer-key-pins",
@@ -13,12 +14,36 @@ const STORAGE = {
 };
 
 const AVATAR_TONES = 6;
-const PRIVATE_KEY_ITERATIONS = 150000;
+const DEVICE_VAULT_DB = "private-chat-device-vault";
+const DEVICE_VAULT_STORE = "identities";
+const DEVICE_VAULT_VERSION = 1;
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
 const MESSAGE_VIRTUAL_THRESHOLD = 140;
 const MESSAGE_VIRTUAL_OVERSCAN = 480;
 const ATTACHMENT_MARKER = "[[echo-attachment-v1]]";
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+const DANGEROUS_ATTACHMENT_TYPES = new Set([
+  "text/html",
+  "application/xhtml+xml",
+  "image/svg+xml",
+  "application/javascript",
+  "text/javascript"
+]);
+const DANGEROUS_ATTACHMENT_EXTENSIONS = new Set([
+  "html",
+  "htm",
+  "svg",
+  "js",
+  "mjs",
+  "cjs",
+  "bat",
+  "cmd",
+  "com",
+  "exe",
+  "msi",
+  "ps1",
+  "sh"
+]);
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const { escapeHtml, isElementNode, scheduleClientMetaReport } = window.EchoUi;
@@ -140,6 +165,7 @@ const state = {
   authenticated: false,
   me: null,
   identity: null,
+  csrfToken: "",
   authMode: localStorage.getItem(STORAGE.authMode) || "login",
   searchQuery: "",
   threadSearchQuery: "",
@@ -154,6 +180,7 @@ const state = {
   peerKeyPins: {},
   peerObservedKeys: new Map(),
   peerKeyMismatches: new Set(),
+  peerKeyUnverified: new Set(),
   importedPeerKeys: new Map(),
   conversationKeys: new Map(),
   previewCache: new Map(),
@@ -246,6 +273,85 @@ function writeJsonSessionStorage(key, value) {
   sessionStorage.setItem(key, JSON.stringify(value));
 }
 
+function requestToPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("本地安全存储不可用"));
+  });
+}
+
+function transactionToPromise(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error || new Error("本地安全存储不可用"));
+    transaction.onerror = () => reject(transaction.error || new Error("本地安全存储不可用"));
+  });
+}
+
+let deviceVaultPromise = null;
+
+function openDeviceVault() {
+  if (deviceVaultPromise) {
+    return deviceVaultPromise;
+  }
+  deviceVaultPromise = new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error("当前浏览器不支持安全本地密钥存储，请使用新版浏览器"));
+      return;
+    }
+    const request = window.indexedDB.open(DEVICE_VAULT_DB, DEVICE_VAULT_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DEVICE_VAULT_STORE)) {
+        db.createObjectStore(DEVICE_VAULT_STORE, { keyPath: "username" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("无法打开本地安全存储"));
+  }).catch((error) => {
+    deviceVaultPromise = null;
+    throw error;
+  });
+  return deviceVaultPromise;
+}
+
+async function readDeviceVaultRecord(username) {
+  if (!username) {
+    return null;
+  }
+  const db = await openDeviceVault();
+  const transaction = db.transaction(DEVICE_VAULT_STORE, "readonly");
+  const request = transaction.objectStore(DEVICE_VAULT_STORE).get(username);
+  const result = await requestToPromise(request);
+  await transactionToPromise(transaction);
+  return result && typeof result === "object" ? result : null;
+}
+
+async function writeDeviceVaultRecord(record) {
+  const db = await openDeviceVault();
+  const transaction = db.transaction(DEVICE_VAULT_STORE, "readwrite");
+  transaction.objectStore(DEVICE_VAULT_STORE).put(record);
+  await transactionToPromise(transaction);
+}
+
+async function renameDeviceVaultRecord(previousUsername, nextUsername) {
+  if (!previousUsername || !nextUsername || previousUsername === nextUsername) {
+    return;
+  }
+  const db = await openDeviceVault();
+  const transaction = db.transaction(DEVICE_VAULT_STORE, "readwrite");
+  const store = transaction.objectStore(DEVICE_VAULT_STORE);
+  const current = await requestToPromise(store.get(previousUsername));
+  if (current && typeof current === "object") {
+    store.put({
+      ...current,
+      username: nextUsername
+    });
+    store.delete(previousUsername);
+  }
+  await transactionToPromise(transaction);
+}
+
 function clearLegacySessionToken() {
   try {
     sessionStorage.removeItem("private-chat-session-token");
@@ -288,6 +394,18 @@ function writeScopedStorageRecord(key, owner, value) {
   const storedValue = readJsonStorage(key, {});
   const store = Array.isArray(storedValue) ? {} : storedValue;
   store[owner] = value;
+  writeJsonStorage(key, store);
+}
+
+function deleteScopedStorageRecord(key, owner) {
+  if (!owner) {
+    return;
+  }
+  const store = readJsonStorage(key, {});
+  if (!store || typeof store !== "object" || !Object.prototype.hasOwnProperty.call(store, owner)) {
+    return;
+  }
+  delete store[owner];
   writeJsonStorage(key, store);
 }
 
@@ -766,6 +884,54 @@ function parseAttachmentMessage(text) {
   }
 }
 
+function attachmentExtension(name) {
+  const value = String(name || "");
+  const index = value.lastIndexOf(".");
+  return index >= 0 ? value.slice(index + 1).trim().toLowerCase() : "";
+}
+
+function detectAttachmentMagic(bytes) {
+  if (!bytes || bytes.length < 4) {
+    return "";
+  }
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "image/png";
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) {
+    return "image/gif";
+  }
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+  if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) {
+    return "application/pdf";
+  }
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04) {
+    return "application/zip";
+  }
+  return "";
+}
+
+async function validateAttachmentFile(file) {
+  const type = String(file?.type || "").trim().toLowerCase();
+  const ext = attachmentExtension(file?.name || "");
+  if (DANGEROUS_ATTACHMENT_TYPES.has(type) || DANGEROUS_ATTACHMENT_EXTENSIONS.has(ext)) {
+    throw new Error("为避免脚本或可执行文件传播，禁止发送该附件类型");
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const magicType = detectAttachmentMagic(bytes);
+  if (magicType && type && magicType !== type) {
+    throw new Error("附件类型与文件头不匹配，已拒绝发送");
+  }
+}
+
 async function buildAttachmentMessageText(file) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   return `${ATTACHMENT_MARKER}${JSON.stringify({
@@ -784,6 +950,10 @@ async function sendAttachmentFiles(fileList) {
     showToast("联系人密钥已变化，请先在联系人详情中确认", "error");
     return;
   }
+  if (state.peerKeyUnverified.has(state.activePeer)) {
+    showToast("请先在联系人详情中核对安全码并信任该密钥", "error");
+    return;
+  }
   if (state.connectionState !== "online") {
     showToast("附件需联网发送，避免大文件占满本地存储", "error");
     return;
@@ -800,6 +970,7 @@ async function sendAttachmentFiles(fileList) {
       continue;
     }
     try {
+      await validateAttachmentFile(file);
       const text = await buildAttachmentMessageText(file);
       const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
       const tempId = addPendingMessage(state.activePeer, text, replyTo);
@@ -807,7 +978,7 @@ async function sendAttachmentFiles(fileList) {
       renderThread({ scrollBehavior: "bottom" });
       await sendMessageWithRetry(tempId, state.activePeer, text, tempId, false, replyTo?.id || "");
     } catch (error) {
-      showToast(`${file.name} 读取或发送失败`, "error");
+      showToast(error?.message || `${file.name} 读取或发送失败`, "error");
     }
   }
   if (elements.attachmentInput) {
@@ -1051,6 +1222,34 @@ function buildReplyTarget(message) {
   };
 }
 
+function resolveReplyTargetText(replyTo, peer, knownMessages = []) {
+  const target = buildReplyTarget(replyTo);
+  if (!target) {
+    return null;
+  }
+  if (target.text) {
+    return target;
+  }
+  const candidates = [...knownMessages, ...(state.messageCache.get(peer) || [])];
+  const source = candidates.find((message) => {
+    const id = String(message?.id || message?.tempId || "").trim();
+    return id && id === target.id;
+  });
+  return {
+    ...target,
+    from: target.from || String(source?.from || ""),
+    text: source ? String(source.text || "") : "",
+    createdAt: target.createdAt || Number(source?.createdAt) || Date.now()
+  };
+}
+
+function hydrateReplyTargets(messages, peer) {
+  return messages.map((message) => ({
+    ...message,
+    replyTo: resolveReplyTargetText(message.replyTo, peer, messages)
+  }));
+}
+
 function messagePlaintext(message) {
   return typeof message?.text === "string" ? message.text : "";
 }
@@ -1139,13 +1338,6 @@ function resetLocalConversationState() {
   if (Object.values(legacyPrefs).some((value) => value && typeof value === "object" && ("pinned" in value || "muted" in value))) {
     writeJsonStorage(STORAGE.conversationPrefs, {});
   }
-  const legacyDrafts = readJsonStorage(STORAGE.drafts, {});
-  if (Object.values(legacyDrafts).some((value) => typeof value === "string")) {
-    writeJsonStorage(STORAGE.drafts, {});
-  }
-  if (Array.isArray(readJsonStorage(STORAGE.pendingOutbox, {}))) {
-    writeJsonStorage(STORAGE.pendingOutbox, {});
-  }
   const rawPrefs = readScopedStorageRecord(STORAGE.conversationPrefs, owner);
   const normalizedPrefs = {};
   for (const [username, prefs] of Object.entries(rawPrefs)) {
@@ -1158,10 +1350,13 @@ function resetLocalConversationState() {
     };
   }
   state.conversationPrefs = normalizedPrefs;
-  state.drafts = readScopedStorageRecord(STORAGE.drafts, owner);
+  deleteScopedStorageRecord(STORAGE.drafts, owner);
+  deleteScopedStorageRecord(STORAGE.pendingOutbox, owner);
+  state.drafts = {};
   state.peerKeyPins = readScopedStorageRecord(STORAGE.peerKeyPins, owner);
   state.peerObservedKeys.clear();
   state.peerKeyMismatches.clear();
+  state.peerKeyUnverified.clear();
   loadEditableProfiles();
   loadPendingOutbox();
 }
@@ -1171,7 +1366,7 @@ function saveConversationPrefs() {
 }
 
 function saveDrafts() {
-  writeScopedStorageRecord(STORAGE.drafts, currentStorageOwner(), state.drafts);
+  // Drafts stay in-memory only to avoid persisting plaintext locally.
 }
 
 function savePeerKeyPins() {
@@ -1194,44 +1389,88 @@ function clearSessionIdentityCache() {
   }
 }
 
+function normalizeStoredIdentity(value) {
+  return {
+    publicKeyBase64: String(value?.publicKeyBase64 || ""),
+    privateKeyPkcs8Base64: String(value?.privateKeyPkcs8Base64 || "")
+  };
+}
+
+function normalizeVaultIdentityRecord(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const publicKeyBase64 = String(record.publicKeyBase64 || "").trim();
+  if (!publicKeyBase64 || !record.privateKey || !record.storageKey) {
+    return null;
+  }
+  return {
+    publicKeyBase64,
+    privateKey: record.privateKey,
+    storageKey: record.storageKey
+  };
+}
+
+async function createDeviceStorageKey() {
+  return crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function migrateLegacyStoredIdentity(username) {
+  if (!username) {
+    return null;
+  }
+  const legacy = normalizeStoredIdentity(readScopedStorageRecord(STORAGE.deviceIdentities, username));
+  if (!legacy.publicKeyBase64 || !legacy.privateKeyPkcs8Base64) {
+    return null;
+  }
+  const migratedPrivateKey = await importPrivateKey(legacy.privateKeyPkcs8Base64, false);
+  const migratedStorageKey = await createDeviceStorageKey();
+  await writeDeviceVaultRecord({
+    username,
+    publicKeyBase64: legacy.publicKeyBase64,
+    privateKey: migratedPrivateKey,
+    storageKey: migratedStorageKey
+  });
+  deleteScopedStorageRecord(STORAGE.deviceIdentities, username);
+  return {
+    publicKeyBase64: legacy.publicKeyBase64,
+    privateKey: migratedPrivateKey,
+    storageKey: migratedStorageKey
+  };
+}
+
+async function readStoredIdentity(username) {
+  if (!username) {
+    return null;
+  }
+  const stored = normalizeVaultIdentityRecord(await readDeviceVaultRecord(username));
+  if (stored) {
+    return stored;
+  }
+  return migrateLegacyStoredIdentity(username);
+}
+
 async function persistSessionIdentity(identity, username = state.me?.username || "") {
-  if (!identity?.publicKeyBase64 || !identity?.privateKeyPkcs8Base64 || !username) {
-    clearSessionIdentityCache();
+  clearSessionIdentityCache();
+  if (!username || !identity?.publicKeyBase64 || !identity?.privateKey) {
     return;
   }
-  writeJsonSessionStorage(STORAGE.sessionIdentity, {
+  await writeDeviceVaultRecord({
     username,
-    publicKeyBase64: identity.publicKeyBase64,
-    privateKeyPkcs8Base64: identity.privateKeyPkcs8Base64
+    publicKeyBase64: String(identity.publicKeyBase64 || ""),
+    privateKey: identity.privateKey,
+    storageKey: identity.storageKey || await createDeviceStorageKey()
   });
+  deleteScopedStorageRecord(STORAGE.deviceIdentities, username);
 }
 
 async function restoreIdentityFromSessionCache(user) {
-  const cached = readJsonSessionStorage(STORAGE.sessionIdentity, null);
-  if (!cached || cached.username !== user?.username || cached.publicKeyBase64 !== user?.publicKey) {
-    return null;
-  }
-  try {
-    const publicKey = await importPublicKey(cached.publicKeyBase64);
-    const privateKey = await crypto.subtle.importKey(
-      "pkcs8",
-      base64ToBytes(cached.privateKeyPkcs8Base64),
-      { name: "ECDH", namedCurve: "P-256" },
-      false,
-      ["deriveBits"]
-    );
-    state.importedPeerKeys.delete(cached.publicKeyBase64);
-    return {
-      username: user.username,
-      publicKey,
-      privateKey,
-      publicKeyBase64: cached.publicKeyBase64,
-      privateKeyPkcs8Base64: cached.privateKeyPkcs8Base64
-    };
-  } catch (error) {
-    clearSessionIdentityCache();
-    return null;
-  }
+  clearSessionIdentityCache();
+  return restoreIdentity(String(user?.username || ""), String(user?.publicKey || ""));
 }
 
 function rebuildConversationSearchIndex(username) {
@@ -1283,7 +1522,7 @@ function normalizePendingOutboxEntry(entry) {
 }
 
 function savePendingOutbox() {
-  writeScopedStorageRecord(STORAGE.pendingOutbox, currentStorageOwner(), state.pendingOutbox);
+  // Offline retries stay in-memory only to avoid persisting plaintext locally.
 }
 
 function syncPendingMessagesFromOutbox() {
@@ -1308,10 +1547,7 @@ function syncPendingMessagesFromOutbox() {
 }
 
 function loadPendingOutbox() {
-  const rawEntries = readScopedStorageRecord(STORAGE.pendingOutbox, currentStorageOwner());
-  state.pendingOutbox = Array.isArray(rawEntries)
-    ? rawEntries.map(normalizePendingOutboxEntry).filter(Boolean)
-    : [];
+  state.pendingOutbox = [];
   syncPendingMessagesFromOutbox();
 }
 
@@ -1423,8 +1659,8 @@ function setAuthMode(mode) {
   elements.authSubmitButton.textContent = state.authMode === "login" ? "登录" : "注册";
   setAuthFeedback(
     state.authMode === "login"
-      ? "同一账号可多端进入，消息密钥由浏览器自动处理。"
-      : "注册后自动生成本地密钥，服务端只保存必要的账号资料。"
+      ? "登录需使用当前设备保存的本地私钥，新设备不会自动同步私钥。"
+      : "注册后会在本机生成并保存私钥，服务端只保存公钥和必要账号资料。"
   );
   elements.authPasswordInput.autocomplete = state.authMode === "login" ? "current-password" : "new-password";
   setPasswordVisibility(false);
@@ -1486,6 +1722,10 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     elements.securityStatus.textContent = "安全警告：联系人密钥已变化，发送已暂停，请核对安全码后确认新密钥。";
     return;
   }
+  if (state.peerKeyUnverified.has(peer.username)) {
+    elements.securityStatus.textContent = "安全提示：这是首次看到该联系人的密钥，发送已暂停，请先核对安全码并手动信任。";
+    return;
+  }
   parts.push(state.identity?.privateKey ? "\u5bc6\u94a5\u5df2\u5c31\u7eea" : "\u5bc6\u94a5\u5df2\u9501\u5b9a");
   parts.push(state.peerKeys.has(peer.username) ? "\u5bf9\u7aef\u5bc6\u94a5\u5df2\u540c\u6b65" : "\u7b49\u5f85\u5bf9\u7aef\u5bc6\u94a5");
   if (state.connectionState === "online") {
@@ -1528,7 +1768,8 @@ function setComposerBusy(busy) {
   const blocked = Boolean(
     activeContact?.blocked ||
     activeContact?.blockedByPeer ||
-    state.peerKeyMismatches.has(state.activePeer)
+    state.peerKeyMismatches.has(state.activePeer) ||
+    state.peerKeyUnverified.has(state.activePeer)
   );
   elements.sendButton.disabled = busy || !state.activePeer || blocked;
   elements.messageInput.disabled = busy || !state.activePeer || blocked;
@@ -1676,7 +1917,7 @@ function clearStoredSessionArtifacts(owner, clearIdentity = true, clearActivePee
     writeScopedStorageRecord(STORAGE.activePeer, owner, {});
   }
   if (clearPending) {
-    writeScopedStorageRecord(STORAGE.pendingOutbox, owner, []);
+    deleteScopedStorageRecord(STORAGE.pendingOutbox, owner);
   }
   if (clearIdentity) {
     clearSessionIdentityCache();
@@ -1694,15 +1935,20 @@ function translateApiError(pathname, status, payload) {
     "username already exists": "用户名已存在",
     "username is reserved": "该用户名不可使用",
     "account banned": "账号已被禁用",
-    "account key material is missing": "账号密钥异常，请重新登录或重新注册",
+    "account key material is missing": "账号缺少公钥，请在原设备重新登录或重新注册",
     "too many auth requests": "请求过于频繁，请稍后再试",
     "current password invalid": "当前密码不正确",
-    "invalid private key bundle": "本地密钥更新失败，请重新登录后再试",
-    "public key cannot be changed with password": "账号公钥不匹配，请重新登录后再试",
-    "encrypted account password must be changed by the user": "加密账号只能由用户本人修改密码",
+    "invalid private key bundle": "服务端不再接受私钥材料",
+    "public key cannot be changed with password": "修改密码不会变更本地设备密钥",
+    "encrypted account password must be changed by the user": "账号密码只能由用户本人修改",
+    "private key bundles are not available in zero-knowledge mode": "服务端不保存私钥包，请使用本地设备私钥",
     "peer unavailable": "对方当前不可接收消息",
     "you blocked peer": "您已拉黑对方，解除后才能继续互动",
     "blocked by peer": "对方已将您拉黑，暂时无法发送消息",
+    "invalid csrf token": "当前页面安全令牌已失效，请重新登录。",
+    "clientId already used": "消息幂等编号重复，请勿重复提交。",
+    "recall window expired": "撤回时间窗口已过。",
+    "relationship is blocked": "当前关系处于拉黑状态，无法直接切换免打扰。",
     "already a contact": "该用户已经是好友",
     "user not found": "用户不存在",
     unauthorized: "请先登录",
@@ -1734,6 +1980,9 @@ async function api(pathname, options = {}) {
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(body);
   }
+  if (!["GET", "HEAD"].includes((options.method || "GET").toUpperCase()) && state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
 
   let response;
   try {
@@ -1755,6 +2004,9 @@ async function api(pathname, options = {}) {
     } catch (error) {
       payload = null;
     }
+  }
+  if (payload?.csrfToken) {
+    state.csrfToken = String(payload.csrfToken);
   }
 
   if (!response.ok) {
@@ -1801,6 +2053,7 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.authenticated = false;
   state.me = null;
   state.identity = null;
+  state.csrfToken = "";
   state.searchQuery = "";
   state.threadSearchQuery = "";
   state.replyTarget = null;
@@ -1812,12 +2065,14 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.peerKeyPins = {};
   state.peerObservedKeys.clear();
   state.peerKeyMismatches.clear();
+  state.peerKeyUnverified.clear();
   state.importedPeerKeys.clear();
   state.conversationKeys.clear();
   state.previewCache.clear();
   state.conversationSearchIndex.clear();
   state.pendingMessages.clear();
   state.pendingOutbox = [];
+  state.drafts = {};
   state.messagePageState.clear();
   state.pendingSequence = 0;
   state.accountProfile = {};
@@ -1902,11 +2157,12 @@ function cachePeerInfo(item) {
   state.peerObservedKeys.set(username, observedKey);
   const pinnedKey = String(state.peerKeyPins[username] || "");
   if (!pinnedKey) {
-    state.peerKeyPins[username] = observedKey;
     state.peerKeys.set(username, observedKey);
-    savePeerKeyPins();
+    state.peerKeyMismatches.delete(username);
+    state.peerKeyUnverified.add(username);
     return;
   }
+  state.peerKeyUnverified.delete(username);
   state.peerKeys.set(username, pinnedKey);
   if (pinnedKey === observedKey) {
     state.peerKeyMismatches.delete(username);
@@ -2346,7 +2602,10 @@ function renderContactDetails(peer) {
     });
   }
   if (elements.detailsTrustKeyButton) {
-    elements.detailsTrustKeyButton.hidden = !state.peerKeyMismatches.has(peer.username);
+    const mismatch = state.peerKeyMismatches.has(peer.username);
+    const unverified = state.peerKeyUnverified.has(peer.username);
+    elements.detailsTrustKeyButton.hidden = !mismatch && !unverified;
+    elements.detailsTrustKeyButton.textContent = mismatch ? "信任新密钥" : "验证并信任密钥";
   }
   elements.detailsAbout.textContent = contactAboutText(peer.username);
   elements.notificationsToggle.checked = !prefs.muted;
@@ -2910,54 +3169,6 @@ function setThreadSearchQuery(value) {
   renderThread({ scrollBehavior: "preserve" });
 }
 
-async function derivePasswordKey(password, saltBytes) {
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    textEncoder.encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-  return crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: saltBytes,
-      iterations: PRIVATE_KEY_ITERATIONS,
-      hash: "SHA-256"
-    },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt", "decrypt"]
-  );
-}
-
-async function encryptPrivateKeyBundle(privateKeyBytes, password) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const wrappingKey = await derivePasswordKey(password, salt);
-  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, wrappingKey, privateKeyBytes);
-
-  return {
-    privateKeySalt: bytesToBase64(salt),
-    privateKeyIv: bytesToBase64(iv),
-    encryptedPrivateKey: bytesToBase64(new Uint8Array(ciphertext))
-  };
-}
-
-async function decryptPrivateKeyBundle(password, keyBundle) {
-  const salt = base64ToBytes(keyBundle.privateKeySalt);
-  const iv = base64ToBytes(keyBundle.privateKeyIv);
-  const encryptedPrivateKey = base64ToBytes(keyBundle.encryptedPrivateKey);
-  const wrappingKey = await derivePasswordKey(password, salt);
-  const decrypted = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
-    wrappingKey,
-    encryptedPrivateKey
-  );
-  return new Uint8Array(decrypted);
-}
-
 async function importPublicKey(publicKeyBase64) {
   if (state.importedPeerKeys.has(publicKeyBase64)) {
     return state.importedPeerKeys.get(publicKeyBase64);
@@ -2973,7 +3184,17 @@ async function importPublicKey(publicKeyBase64) {
   return imported;
 }
 
-async function createIdentity(password) {
+async function importPrivateKey(privateKeyPkcs8Base64, extractable = false) {
+  return crypto.subtle.importKey(
+    "pkcs8",
+    base64ToBytes(privateKeyPkcs8Base64),
+    { name: "ECDH", namedCurve: "P-256" },
+    Boolean(extractable),
+    ["deriveBits"]
+  );
+}
+
+async function createIdentity() {
   const keyPair = await crypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
     true,
@@ -2982,46 +3203,48 @@ async function createIdentity(password) {
   const publicKeyRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
   const privateKeyPkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", keyPair.privateKey));
   const publicKeyBase64 = bytesToBase64(publicKeyRaw);
-  const privateKeyPkcs8Base64 = bytesToBase64(privateKeyPkcs8);
-  const keyBundle = await encryptPrivateKeyBundle(privateKeyPkcs8, password);
+  const privateKey = await importPrivateKey(bytesToBase64(privateKeyPkcs8), false);
+  const storageKey = await createDeviceStorageKey();
 
   return {
     publicKey: keyPair.publicKey,
-    privateKey: keyPair.privateKey,
+    privateKey,
     publicKeyBase64,
-    privateKeyPkcs8Base64,
-    keyBundle: {
-      publicKey: publicKeyBase64,
-      ...keyBundle
-    }
+    storageKey
   };
 }
 
-async function restoreIdentity(username, password, keyBundle) {
+async function restoreIdentity(username, expectedPublicKeyBase64 = "") {
+  const stored = await readStoredIdentity(username);
+  if (!stored) {
+    return null;
+  }
+  if (expectedPublicKeyBase64 && stored.publicKeyBase64 !== expectedPublicKeyBase64) {
+    throw new Error("当前设备私钥与服务器公钥不匹配，请使用原设备登录或重新核对安全码");
+  }
   try {
-    const privateKeyBytes = await decryptPrivateKeyBundle(password, keyBundle);
-    const privateKeyPkcs8Base64 = bytesToBase64(privateKeyBytes);
-    const publicKey = await importPublicKey(keyBundle.publicKey);
-    const privateKey = await crypto.subtle.importKey(
-      "pkcs8",
-      privateKeyBytes,
-      { name: "ECDH", namedCurve: "P-256" },
-      false,
-      ["deriveBits"]
-    );
-
-    state.importedPeerKeys.delete(keyBundle.publicKey);
-
+    const publicKey = await importPublicKey(stored.publicKeyBase64);
+    state.importedPeerKeys.delete(stored.publicKeyBase64);
     return {
       username,
       publicKey,
-      privateKey,
-      publicKeyBase64: keyBundle.publicKey,
-      privateKeyPkcs8Base64
+      privateKey: stored.privateKey,
+      publicKeyBase64: stored.publicKeyBase64,
+      storageKey: stored.storageKey
     };
   } catch (error) {
-    throw new Error("无法解锁该账号的本地密钥");
+    throw new Error("当前设备本地私钥不可用，请使用原设备登录");
   }
+}
+
+async function loadPeerPrekeyBundle(peerUsername) {
+  const bundle = await api(`/prekey-bundle/${encodeURIComponent(peerUsername)}`);
+  const publicKey = String(bundle.identityKey || bundle.publicKey || "");
+  if (!publicKey) {
+    throw new Error("对端没有可用公钥");
+  }
+  cachePeerInfo({ username: bundle.username || peerUsername, publicKey });
+  return state.peerKeys.get(peerUsername) || publicKey;
 }
 
 async function getConversationKey(peerUsername, peerPublicKeyBase64) {
@@ -3035,7 +3258,10 @@ async function getConversationKey(peerUsername, peerPublicKeyBase64) {
   if (state.peerKeyMismatches.has(peerUsername)) {
     throw new Error("联系人安全密钥已改变，请确认后再继续聊天");
   }
-  const rawPeerKey = state.peerKeys.get(peerUsername);
+  let rawPeerKey = state.peerKeys.get(peerUsername);
+  if (!rawPeerKey) {
+    rawPeerKey = await loadPeerPrekeyBundle(peerUsername);
+  }
   if (!rawPeerKey) {
     throw new Error("缺少对端公钥");
   }
@@ -3122,35 +3348,16 @@ async function decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPe
   const conversationKey = await getConversationKey(peerUsername, peerPublicKeyBase64);
   const iv = base64ToBytes(message.nonce);
   const payload = base64ToBytes(message.ciphertext);
-  const aadCandidates = [
-    aadBytes(message.from, message.to),
-    aadBytes(message.to, message.from),
-    null
-  ];
-
-  let lastError = null;
-  for (const aad of aadCandidates) {
-    try {
-      const plaintext = await crypto.subtle.decrypt(
-        aad
-          ? {
-              name: "AES-GCM",
-              iv,
-              additionalData: aad
-            }
-          : {
-              name: "AES-GCM",
-              iv
-            },
-        conversationKey,
-        payload
-      );
-      return textDecoder.decode(plaintext);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError || new Error("消息解密失败");
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv,
+      additionalData: aadBytes(message.from, message.to)
+    },
+    conversationKey,
+    payload
+  );
+  return textDecoder.decode(plaintext);
 }
 
 async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "") {
@@ -3159,7 +3366,7 @@ async function decryptMessageView(message, peerPublicKeyBase64, fallbackPeer = "
   if (recalled) {
     text = message.from === state.me?.username ? "你撤回了一条消息" : "对方撤回了一条消息";
   } else if (!message?.ciphertext || !message?.nonce) {
-    text = messagePlaintext(message);
+    text = "[无法解密]";
   } else {
     try {
       text = await decryptCiphertextMessage(message, peerPublicKeyBase64, fallbackPeer);
@@ -3665,12 +3872,12 @@ async function openConversation(username) {
     }
 
     cachePeerInfo(payload.peer);
-    const decryptedMessages = await Promise.all(
+    const decryptedMessages = hydrateReplyTargets(await Promise.all(
       payload.messages.map(async (message) => {
         const peerPublicKey = message.publicKey || payload.peer.publicKey;
         return decryptMessageView(message, peerPublicKey, payload.peer.username);
       })
-    );
+    ), username);
 
     state.messageCache.set(username, decryptedMessages);
     state.messagePageState.set(username, {
@@ -3724,12 +3931,12 @@ async function loadOlderMessages(peer) {
       return;
     }
     cachePeerInfo(payload.peer);
-    const olderMessages = await Promise.all(
+    const olderMessages = hydrateReplyTargets(await Promise.all(
       payload.messages.map(async (message) => {
         const peerPublicKey = message.publicKey || payload.peer.publicKey;
         return decryptMessageView(message, peerPublicKey, payload.peer.username);
       })
-    );
+    ), peer);
     const knownIds = new Set(previous.map((message) => message.id));
     const merged = [...olderMessages.filter((message) => !knownIds.has(message.id)), ...previous];
     merged.sort((left, right) => left.createdAt - right.createdAt);
@@ -3827,6 +4034,7 @@ async function handleUserRenamed(payload) {
     ]) {
       renameScopedStorageOwner(key, previousUsername, nextUsername);
     }
+    await renameDeviceVaultRecord(previousUsername, nextUsername);
     state.me = {
       ...state.me,
       username: nextUsername
@@ -3858,6 +4066,9 @@ async function handleUserRenamed(payload) {
   }
   if (state.peerKeyMismatches.delete(previousUsername)) {
     state.peerKeyMismatches.add(nextUsername);
+  }
+  if (state.peerKeyUnverified.delete(previousUsername)) {
+    state.peerKeyUnverified.add(nextUsername);
   }
   if (Object.prototype.hasOwnProperty.call(state.contactProfiles, previousUsername)) {
     state.contactProfiles[nextUsername] = state.contactProfiles[previousUsername];
@@ -3959,6 +4170,7 @@ async function ingestEncryptedMessage(message) {
       createdAt: message.createdAt
     };
   }
+  decrypted.replyTo = resolveReplyTargetText(decrypted.replyTo, peer);
 
   if (decrypted.mine) {
     decrypted.sendStatus = "sent";
@@ -4292,35 +4504,37 @@ async function submitAuth(event) {
   }
 
   setAuthBusy(true);
-  setAuthFeedback(state.authMode === "login" ? "正在验证账号并解锁密钥..." : "正在创建账号和本地密钥...");
+  setAuthFeedback(state.authMode === "login" ? "正在验证账号并加载本地设备密钥..." : "正在创建账号和本地设备密钥...");
   try {
     let payload;
     let identity;
 
     if (state.authMode === "register") {
-      identity = await createIdentity(password);
+      identity = await createIdentity();
       payload = await api("/api/register", {
         method: "POST",
         body: {
           username,
           password,
-          ...identity.keyBundle
+          publicKey: identity.publicKeyBase64
         }
       });
-      identity.publicKeyBase64 = payload.keyBundle.publicKey;
     } else {
       payload = await api("/api/login", {
         method: "POST",
         body: { username, password }
       });
-      identity = await restoreIdentity(payload.user.username, password, payload.keyBundle);
+      identity = await restoreIdentity(payload.user.username, payload.user.publicKey);
+      if (!identity) {
+        throw new Error("当前设备不存在该账号私钥，服务端不保存私钥，请使用原设备登录");
+      }
     }
 
     setSession(payload.user, identity);
     await persistSessionIdentity(identity, payload.user.username);
     elements.authPasswordInput.value = "";
     await afterLogin();
-    showToast(state.authMode === "login" ? "登录成功，已自动解锁加密会话" : "注册成功，已自动创建加密会话");
+    showToast(state.authMode === "login" ? "登录成功，已恢复本地加密会话" : "注册成功，已创建本地加密会话");
   } catch (error) {
     const message = error.message || "认证失败";
     setAuthFeedback(message, true);
@@ -4404,6 +4618,10 @@ async function submitMessage(event) {
   }
   if (state.peerKeyMismatches.has(state.activePeer)) {
     showToast("联系人密钥已变化，请先在联系人详情中确认", "error");
+    return;
+  }
+  if (state.peerKeyUnverified.has(state.activePeer)) {
+    showToast("请先在联系人详情中核对安全码并信任该密钥", "error");
     return;
   }
   const contact = contactRecord(state.activePeer);
@@ -5153,12 +5371,16 @@ function bindEvents() {
   elements.detailsTrustKeyButton?.addEventListener("click", async () => {
     const peer = state.activePeer;
     const observedKey = state.peerObservedKeys.get(peer);
-    if (!peer || !observedKey || !state.peerKeyMismatches.has(peer)) {
+    const mismatch = state.peerKeyMismatches.has(peer);
+    const unverified = state.peerKeyUnverified.has(peer);
+    if (!peer || !observedKey || (!mismatch && !unverified)) {
       return;
     }
     if (!await confirmActionDialog({
-      title: "信任新密钥",
-      message: "仅在你已通过其他渠道确认对方身份后继续。确认后会用这把新密钥继续加密会话。",
+      title: mismatch ? "信任新密钥" : "验证并信任密钥",
+      message: mismatch
+        ? "仅在你已通过其他渠道确认对方身份后继续。确认后会用这把新密钥继续加密会话。"
+        : "请先通过其他渠道核对安全码。确认后会把这把首次见到的密钥固定为联系人身份。",
       confirmLabel: "信任"
     })) {
       return;
@@ -5166,11 +5388,12 @@ function bindEvents() {
     state.peerKeyPins[peer] = observedKey;
     state.peerKeys.set(peer, observedKey);
     state.peerKeyMismatches.delete(peer);
+    state.peerKeyUnverified.delete(peer);
     state.conversationKeys.clear();
     state.importedPeerKeys.clear();
     savePeerKeyPins();
     render();
-    showToast("已信任新密钥");
+    showToast(mismatch ? "已信任新密钥" : "已验证并信任联系人密钥");
     await openConversation(peer);
   });
   elements.deleteContactButton?.addEventListener("click", async () => {
@@ -5420,20 +5643,11 @@ function bindEvents() {
       return;
     }
     try {
-      if (!state.identity?.privateKeyPkcs8Base64 || !state.identity?.publicKeyBase64) {
-        throw new Error("本地密钥未就绪，请重新登录后再试");
-      }
-      const keyBundle = await encryptPrivateKeyBundle(
-        base64ToBytes(state.identity.privateKeyPkcs8Base64),
-        newPw
-      );
       await api("/api/me/password", {
         method: "POST",
         body: {
           currentPassword: currentPw,
-          newPassword: newPw,
-          publicKey: state.identity.publicKeyBase64,
-          ...keyBundle
+          newPassword: newPw
         }
       });
       closeEventStream();
@@ -5469,13 +5683,25 @@ async function restoreAuthenticatedWorkspace() {
     throw new Error("请先登录");
   }
 
-  const identity = await restoreIdentityFromSessionCache(user);
+  let identity;
+  try {
+    identity = await restoreIdentityFromSessionCache(user);
+  } catch (error) {
+    clearSession(false, false);
+    elements.authUsernameInput.value = user.username;
+    elements.authPasswordInput.value = "";
+    setAuthMode("login");
+    setAuthFeedback(error.message || "当前设备本地私钥不可用，请使用原设备登录。", true);
+    elements.workspace.hidden = true;
+    elements.authScreen.hidden = false;
+    return false;
+  }
   if (!identity) {
     clearSession(false, false);
     elements.authUsernameInput.value = user.username;
     elements.authPasswordInput.value = "";
     setAuthMode("login");
-    setAuthFeedback("检测到已有登录状态，请重新输入密码以解锁本地密钥。", false);
+    setAuthFeedback("当前设备不存在该账号私钥，服务端不保存私钥，请使用原设备登录。", true);
     elements.workspace.hidden = true;
     elements.authScreen.hidden = false;
     return false;
@@ -5500,6 +5726,11 @@ async function boot() {
   if (!window.crypto?.subtle) {
     elements.authSubmitButton.disabled = true;
     elements.authTip.textContent = "当前环境缺少 Web Crypto，请使用 HTTPS 或 localhost 打开本站。";
+    return;
+  }
+  if (!window.indexedDB) {
+    elements.authSubmitButton.disabled = true;
+    elements.authTip.textContent = "当前浏览器不支持安全本地密钥存储，请使用新版浏览器。";
     return;
   }
 

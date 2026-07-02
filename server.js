@@ -17,7 +17,14 @@ const {
   securityHeaders, sendJson, getClientAddress, normalizedRequestHost,
   parseRequestUrl, isSameOriginRequest
 } = require("./utils/http");
-const { readJsonFile, readJsonLinesFile, writeJsonFile, rewriteJsonLinesFile } = require("./utils/data");
+const {
+  readJsonFile,
+  readJsonLinesFile,
+  writeJsonFile,
+  rewriteJsonLinesFile,
+  appendJsonLinesFile,
+  appendTextFileSync
+} = require("./utils/data");
 const {
   normalizeUsername, normalizePassword, normalizeBoundedText, normalizeAuditReason,
   normalizeUserList, normalizeUserContacts, readOptionalUsernameFilter, readSubmittedUsername
@@ -32,11 +39,11 @@ const {
 } = require("./utils/crypto");
 
 const {
-  HOST, PORT, SESSION_TTL_MS, PUBLIC_DIR, DATA_DIR,
-  USERS_FILE, MESSAGES_FILE, MESSAGES_LOG_FILE, ADMIN_AUDIT_FILE,
+  HOST, PORT, SESSION_TTL_MS, SESSION_ABSOLUTE_TTL_MS, PUBLIC_DIR, DATA_DIR,
+  USERS_FILE, MESSAGES_FILE, MESSAGES_LOG_FILE, ADMIN_AUDIT_FILE, SESSIONS_FILE, ERROR_LOG_FILE, SESSION_SECRET_FILE,
   MAX_BODY_BYTES, MAX_MESSAGE_BODY_BYTES, RATE_WINDOW_MS, MAX_AUTH_REQUESTS_PER_WINDOW,
   MAX_API_REQUESTS_PER_WINDOW, MAX_MESSAGES_PER_CONVERSATION_WINDOW,
-  HEARTBEAT_MS, EVENT_TICKET_TTL_MS, MESSAGE_PERSIST_DEBOUNCE_MS,
+  HEARTBEAT_MS, EVENT_TICKET_TTL_MS, MESSAGE_PERSIST_DEBOUNCE_MS, MESSAGE_RECALL_WINDOW_MS,
   HSTS_MAX_AGE_SECONDS, COOKIE_SECURE, ENABLE_ACCESS_LOG,
   ACCESS_LOG_RETENTION_DAYS, ACCESS_LOG_MAX_QUEUE, ENABLE_IP_GEO,
   IP_GEO_TIMEOUT_MS, IP_GEO_CACHE_TTL_MS,
@@ -58,6 +65,7 @@ const eventTickets = new Map();
 const messageBuckets = new Map();
 const messageIdIndex = new Map();
 const messageClientIndex = new Map();
+const messageNonceIndex = new Set();
 const userPeersIndex = new Map();
 const usersByKey = new Map();
 const adminLoginFailures = new Map();
@@ -65,14 +73,36 @@ const userLoginFailures = new Map();
 
 let users = [];
 let messages = [];
+let nextMessageSequence = 1;
 let adminAuditLastHash = "GENESIS";
 const adminAuditEntries = [];
 let pendingMessagesPersistTimer = null;
 let messagesDirty = false;
 let messagesRequireFullPersist = false;
 const pendingMessageAppends = [];
+let pendingSessionsPersistTimer = null;
+let sessionsDirty = false;
 const serverStartedAt = Date.now();
 const serveStatic = createStaticFileServer(PUBLIC_DIR);
+const SESSION_PERSIST_DEBOUNCE_MS = 150;
+const SESSION_ACTIVITY_PERSIST_MS = 60 * 1000;
+const SESSION_TOKEN_VERSION = "v1";
+const SESSION_BINDING_DOMAIN = "secure-chat/session-binding-v1";
+const SESSION_SIGNING_DOMAIN = "secure-chat/session-signing-v1";
+const ERROR_LOG_SENSITIVE_KEYS = new Set([
+  "password",
+  "currentpassword",
+  "newpassword",
+  "token",
+  "cookie",
+  "authorization",
+  "set-cookie",
+  "session",
+  "sessiontoken",
+  "csrftoken",
+  "encryptedprivatekey",
+  "privatekeypkcs8base64"
+]);
 
 function ensureDataFiles() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -87,6 +117,113 @@ function ensureDataFiles() {
   }
   if (!fs.existsSync(ADMIN_AUDIT_FILE)) {
     fs.writeFileSync(ADMIN_AUDIT_FILE, "", "utf8");
+  }
+  if (!fs.existsSync(SESSIONS_FILE)) {
+    fs.writeFileSync(SESSIONS_FILE, "[]\n", "utf8");
+  }
+  if (!fs.existsSync(ERROR_LOG_FILE)) {
+    fs.writeFileSync(ERROR_LOG_FILE, "", "utf8");
+  }
+}
+
+function readOrCreateSessionSecret() {
+  const configured = String(process.env.SESSION_SECRET || "").trim();
+  if (configured) {
+    return configured;
+  }
+  ensureDataFiles();
+  if (fs.existsSync(SESSION_SECRET_FILE)) {
+    const persisted = String(fs.readFileSync(SESSION_SECRET_FILE, "utf8") || "").trim();
+    if (persisted) {
+      return persisted;
+    }
+  }
+  const generated = crypto.randomBytes(32).toString("hex");
+  fs.writeFileSync(SESSION_SECRET_FILE, `${generated}\n`, { encoding: "utf8", mode: 0o600 });
+  return generated;
+}
+
+const sessionSecret = readOrCreateSessionSecret();
+
+function hashSessionValue(domain, value) {
+  return crypto.createHmac("sha256", sessionSecret).update(`${domain}:${String(value || "")}`).digest("hex");
+}
+
+function sessionBindingHash(req) {
+  const userAgent = String(req?.headers?.["user-agent"] || "").slice(0, 240);
+  return hashSessionValue(SESSION_BINDING_DOMAIN, userAgent || "unknown");
+}
+
+function signSessionToken(sessionId) {
+  const id = String(sessionId || "").trim();
+  const signature = hashSessionValue(SESSION_SIGNING_DOMAIN, id);
+  return `${SESSION_TOKEN_VERSION}.${id}.${signature}`;
+}
+
+function parseSignedSessionToken(token) {
+  const value = String(token || "").trim();
+  const parts = value.split(".");
+  if (parts.length !== 3 || parts[0] !== SESSION_TOKEN_VERSION) {
+    return null;
+  }
+  const sessionId = parts[1] || "";
+  const signature = parts[2] || "";
+  if (!sessionId || !signature) {
+    return null;
+  }
+  const expected = hashSessionValue(SESSION_SIGNING_DOMAIN, sessionId);
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (signatureBuffer.length !== expectedBuffer.length) {
+    return null;
+  }
+  return crypto.timingSafeEqual(signatureBuffer, expectedBuffer) ? sessionId : null;
+}
+
+function redactSensitiveValue(value, depth = 0) {
+  if (depth > 4) {
+    return "[Truncated]";
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((entry) => redactSensitiveValue(entry, depth + 1));
+  }
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string" && value.length > 1024) {
+      return `${value.slice(0, 1024)}…`;
+    }
+    return value;
+  }
+  const next = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const normalizedKey = String(key || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+    next[key] = ERROR_LOG_SENSITIVE_KEYS.has(normalizedKey)
+      ? "[Redacted]"
+      : redactSensitiveValue(entry, depth + 1);
+  }
+  return next;
+}
+
+function recordErrorLog(kind, error, req = null, details = {}) {
+  const entry = {
+    id: crypto.randomUUID(),
+    at: Date.now(),
+    kind: String(kind || "error"),
+    message: error instanceof Error ? error.message : String(error || "unknown error"),
+    stack: error instanceof Error ? String(error.stack || "").split("\n").slice(0, 12).join("\n") : "",
+    request: req
+      ? {
+          method: String(req.method || ""),
+          path: parseRequestUrl(req)?.pathname || String(req.url || ""),
+          ip: getClientAddress(req),
+          userAgent: String(req.headers["user-agent"] || "").slice(0, 240)
+        }
+      : null,
+    details: redactSensitiveValue(details)
+  };
+  try {
+    appendTextFileSync(ERROR_LOG_FILE, `${JSON.stringify(entry)}\n`);
+  } catch (writeError) {
+    console.error(`[error-log] ${writeError instanceof Error ? writeError.message : String(writeError)}`);
   }
 }
 
@@ -109,9 +246,32 @@ function purgeStoredMessagePlaintext() {
       delete message.auditText;
       changed = true;
     }
+    if (message.replyTo && typeof message.replyTo === "object" && "text" in message.replyTo) {
+      delete message.replyTo.text;
+      changed = true;
+    }
   }
   if (changed) {
     schedulePersistMessages();
+  }
+}
+
+function purgeStoredLegacyUserKeyMaterial() {
+  let changed = false;
+  for (const user of users) {
+    if (user.__legacyKeyMaterialDetected) {
+      delete user.__legacyKeyMaterialDetected;
+      changed = true;
+    }
+    for (const key of ["privateKeySalt", "privateKeyIv", "encryptedPrivateKey"]) {
+      if (key in user) {
+        delete user[key];
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    persistUsers();
   }
 }
 
@@ -128,6 +288,7 @@ const accessLogStore = createAccessLogStore({
   ipGeoTimeoutMs: IP_GEO_TIMEOUT_MS,
   ipGeoCacheTtlMs: IP_GEO_CACHE_TTL_MS,
   logger: (error) => {
+    recordErrorLog("access_log_store", error);
     console.error(`[access-log] ${error instanceof Error ? error.message : String(error)}`);
   }
 });
@@ -158,7 +319,7 @@ function loadAdminAuditState() {
 
 function appendAdminAuditEntry(entry) {
   const payload = JSON.stringify(entry);
-  fs.appendFileSync(ADMIN_AUDIT_FILE, `${payload}\n`, "utf8");
+  appendTextFileSync(ADMIN_AUDIT_FILE, `${payload}\n`);
   adminAuditEntries.push(entry);
 }
 
@@ -233,6 +394,170 @@ function verifyAdminAuditChain() {
   return { ok: mismatches.length === 0, checked, mismatches, hmacKeySource };
 }
 
+function normalizeSessionRole(role) {
+  const normalized = String(role || "user").trim().toLowerCase();
+  return normalized === "admin" || normalized === "system" ? normalized : "user";
+}
+
+function normalizeSessionRecord(session) {
+  const createdAt = Number.parseInt(String(session?.createdAt || "0"), 10) || Date.now();
+  const absoluteExpiresAt = Number.parseInt(String(session?.absoluteExpiresAt || "0"), 10) || (createdAt + SESSION_ABSOLUTE_TTL_MS);
+  const expiresAt = Number.parseInt(String(session?.expiresAt || "0"), 10) || Math.min(createdAt + SESSION_TTL_MS, absoluteExpiresAt);
+  return {
+    id: String(session?.id || crypto.randomUUID()),
+    username: String(session?.username || ""),
+    role: normalizeSessionRole(session?.role),
+    csrfToken: String(session?.csrfToken || crypto.randomBytes(24).toString("base64url")),
+    bindingHash: String(session?.bindingHash || ""),
+    createdAt,
+    lastSeenAt: Number.parseInt(String(session?.lastSeenAt || createdAt), 10) || createdAt,
+    expiresAt,
+    absoluteExpiresAt,
+    ip: String(session?.ip || ""),
+    userAgent: String(session?.userAgent || ""),
+    browser: String(session?.browser || ""),
+    os: String(session?.os || ""),
+    device: String(session?.device || ""),
+    revokedAt: Number.parseInt(String(session?.revokedAt || "0"), 10) || 0,
+    lastPersistedAt: Number.parseInt(String(session?.lastPersistedAt || createdAt), 10) || createdAt
+  };
+}
+
+function persistedSessionSnapshot() {
+  const now = Date.now();
+  return [...sessions.values()]
+    .filter((session) => session && !session.revokedAt && session.expiresAt > now && session.absoluteExpiresAt > now)
+    .map((session) => ({
+      id: session.id,
+      username: session.username,
+      role: session.role,
+      csrfToken: session.csrfToken,
+      bindingHash: session.bindingHash,
+      createdAt: session.createdAt,
+      lastSeenAt: session.lastSeenAt,
+      expiresAt: session.expiresAt,
+      absoluteExpiresAt: session.absoluteExpiresAt,
+      ip: session.ip,
+      userAgent: session.userAgent,
+      browser: session.browser,
+      os: session.os,
+      device: session.device,
+      revokedAt: 0,
+      lastPersistedAt: session.lastPersistedAt
+    }));
+}
+
+function persistSessionsNow() {
+  writeJsonFile(SESSIONS_FILE, persistedSessionSnapshot());
+}
+
+function flushPendingSessionPersist() {
+  if (pendingSessionsPersistTimer) {
+    clearTimeout(pendingSessionsPersistTimer);
+    pendingSessionsPersistTimer = null;
+  }
+  if (!sessionsDirty) {
+    return;
+  }
+  sessionsDirty = false;
+  persistSessionsNow();
+}
+
+function schedulePersistSessions(force = false) {
+  sessionsDirty = true;
+  if (force) {
+    flushPendingSessionPersist();
+    return;
+  }
+  if (pendingSessionsPersistTimer) {
+    return;
+  }
+  pendingSessionsPersistTimer = setTimeout(() => {
+    pendingSessionsPersistTimer = null;
+    flushPendingSessionPersist();
+  }, SESSION_PERSIST_DEBOUNCE_MS);
+}
+
+function loadSessionState() {
+  ensureDataFiles();
+  const loaded = readJsonFile(SESSIONS_FILE);
+  if (!Array.isArray(loaded)) {
+    throw new Error(`expected ${SESSIONS_FILE} to contain a JSON array`);
+  }
+  sessions.clear();
+  const now = Date.now();
+  for (const rawSession of loaded) {
+    const session = normalizeSessionRecord(rawSession);
+    if (!session.username || session.revokedAt || session.expiresAt <= now || session.absoluteExpiresAt <= now) {
+      continue;
+    }
+    sessions.set(session.id, session);
+  }
+  schedulePersistSessions(true);
+}
+
+function findSessionByCookieToken(token) {
+  const sessionId = parseSignedSessionToken(token);
+  if (!sessionId) {
+    return null;
+  }
+  return sessions.get(sessionId) || null;
+}
+
+function issueSession(username, role = "user", req = null) {
+  const now = Date.now();
+  const meta = sessionClientMeta(req);
+  const session = normalizeSessionRecord({
+    id: crypto.randomUUID(),
+    username,
+    role,
+    csrfToken: crypto.randomBytes(24).toString("base64url"),
+    bindingHash: req ? sessionBindingHash(req) : "",
+    createdAt: now,
+    lastSeenAt: now,
+    expiresAt: now + SESSION_TTL_MS,
+    absoluteExpiresAt: now + SESSION_ABSOLUTE_TTL_MS,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+    browser: meta.browser,
+    os: meta.os,
+    device: meta.device,
+    lastPersistedAt: now
+  });
+  sessions.set(session.id, session);
+  schedulePersistSessions(true);
+  return session;
+}
+
+function revokeSession(session) {
+  if (!session?.id || !sessions.has(session.id)) {
+    return false;
+  }
+  sessions.delete(session.id);
+  schedulePersistSessions(true);
+  return true;
+}
+
+function maybePersistSessionActivity(session) {
+  const now = Date.now();
+  if ((now - Number(session.lastPersistedAt || 0)) < SESSION_ACTIVITY_PERSIST_MS) {
+    return;
+  }
+  session.lastPersistedAt = now;
+  schedulePersistSessions();
+}
+
+function refreshSessionState(session) {
+  const now = Date.now();
+  session.lastSeenAt = now;
+  session.expiresAt = Math.min(now + SESSION_TTL_MS, Number(session.absoluteExpiresAt || now));
+  maybePersistSessionActivity(session);
+}
+
+function sessionTokenValue(session) {
+  return signSessionToken(session?.id || "");
+}
+
 
 function loadData() {
   ensureDataFiles();
@@ -240,20 +565,39 @@ function loadData() {
   if (!Array.isArray(loadedUsers)) {
     throw new Error(`expected ${USERS_FILE} to contain a JSON array`);
   }
-  users = loadedUsers.map((user) => ({
-    ...user,
-    id: String(user?.id || crypto.randomUUID()),
-    usernameKey: String(user?.usernameKey || normalizeUsername(user?.username)?.key || ""),
-    banned: Boolean(user?.banned),
-    bannedReason: String(user?.bannedReason || ""),
-    bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0,
-    showOnlineStatus: user?.showOnlineStatus !== false,
-    allowUserSearch: user?.allowUserSearch !== false,
-    blockedUsers: normalizeUserList(user?.blockedUsers),
-    contacts: normalizeUserContacts(user?.contacts),
-    lastSeenAt: Number.parseInt(String(user?.lastSeenAt || "0"), 10) || 0,
-    lastLoginAt: Number.parseInt(String(user?.lastLoginAt || "0"), 10) || 0
-  }));
+  users = loadedUsers.map((user) => {
+    const {
+      privateKeySalt: legacyPrivateKeySalt,
+      privateKeyIv: legacyPrivateKeyIv,
+      encryptedPrivateKey: legacyEncryptedPrivateKey,
+      ...safeUser
+    } = user || {};
+    void legacyPrivateKeySalt;
+    void legacyPrivateKeyIv;
+    void legacyEncryptedPrivateKey;
+    return {
+      ...safeUser,
+      id: String(user?.id || crypto.randomUUID()),
+      usernameKey: String(user?.usernameKey || normalizeUsername(user?.username)?.key || ""),
+      publicKey: String(user?.publicKey || ""),
+      __legacyKeyMaterialDetected: Boolean(
+        user && (
+          Object.prototype.hasOwnProperty.call(user, "privateKeySalt") ||
+          Object.prototype.hasOwnProperty.call(user, "privateKeyIv") ||
+          Object.prototype.hasOwnProperty.call(user, "encryptedPrivateKey")
+        )
+      ),
+      banned: Boolean(user?.banned),
+      bannedReason: String(user?.bannedReason || ""),
+      bannedAt: Number.parseInt(String(user?.bannedAt || "0"), 10) || 0,
+      showOnlineStatus: user?.showOnlineStatus !== false,
+      allowUserSearch: user?.allowUserSearch !== false,
+      blockedUsers: normalizeUserList(user?.blockedUsers),
+      contacts: normalizeUserContacts(user?.contacts),
+      lastSeenAt: Number.parseInt(String(user?.lastSeenAt || "0"), 10) || 0,
+      lastLoginAt: Number.parseInt(String(user?.lastLoginAt || "0"), 10) || 0
+    };
+  });
   rebuildUserIndex();
 
   const logStat = fs.statSync(MESSAGES_LOG_FILE);
@@ -263,6 +607,9 @@ function loadData() {
   }
   messages = loadedMessages.map((message) => ({
     ...message,
+    createdAt: Number.parseInt(String(message?.createdAt || message?.timestamp || "0"), 10) || Date.now(),
+    timestamp: Number.parseInt(String(message?.timestamp || message?.createdAt || "0"), 10) || Date.now(),
+    sequence: Number.parseInt(String(message?.sequence || "0"), 10) || 0,
     clientId: typeof message?.clientId === "string" ? message.clientId : "",
     deletedFor: Array.isArray(message?.deletedFor)
       ? message.deletedFor
@@ -270,7 +617,24 @@ function loadData() {
         .filter(Boolean)
       : []
   }));
-  messages.sort((left, right) => Number(left.createdAt) - Number(right.createdAt));
+  let sequenceCursor = messages.reduce(
+    (maxValue, message) => Math.max(maxValue, Number(message.sequence || 0)),
+    0
+  ) + 1;
+  messages = messages.map((message) => ({
+    ...message,
+    sequence: Number(message.sequence || 0) > 0 ? Number(message.sequence) : sequenceCursor++
+  }));
+  nextMessageSequence = sequenceCursor;
+  messages.sort((left, right) => {
+    if (Number(left.createdAt) !== Number(right.createdAt)) {
+      return Number(left.createdAt) - Number(right.createdAt);
+    }
+    if (Number(left.sequence) !== Number(right.sequence)) {
+      return Number(left.sequence) - Number(right.sequence);
+    }
+    return String(left.id || "").localeCompare(String(right.id || ""));
+  });
   rebuildMessageBuckets();
 }
 
@@ -288,7 +652,7 @@ function persistMessageAppendsNow(rows) {
   if (rows.length === 0) {
     return;
   }
-  fs.appendFileSync(MESSAGES_LOG_FILE, rows.map((row) => `${JSON.stringify(row)}\n`).join(""), "utf8");
+  appendJsonLinesFile(MESSAGES_LOG_FILE, rows);
 }
 
 function flushPendingMessagePersist() {
@@ -346,6 +710,7 @@ function rebuildMessageBuckets() {
   messageBuckets.clear();
   messageIdIndex.clear();
   messageClientIndex.clear();
+  messageNonceIndex.clear();
   userPeersIndex.clear();
   for (const message of messages) {
     recordUserPeer(message.from, message.to);
@@ -358,11 +723,22 @@ function rebuildMessageBuckets() {
       messageIdIndex.set(message.id, message);
     }
     if (message.clientId) {
-      messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
+      messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
+    }
+    if (message.nonce) {
+      messageNonceIndex.add(messageNonceReplayKey(message.from, message.to, message.nonce));
     }
   }
   for (const bucket of messageBuckets.values()) {
-    bucket.sort((left, right) => left.createdAt - right.createdAt);
+    bucket.sort((left, right) => {
+      if (Number(left.createdAt) !== Number(right.createdAt)) {
+        return Number(left.createdAt) - Number(right.createdAt);
+      }
+      if (Number(left.sequence) !== Number(right.sequence)) {
+        return Number(left.sequence) - Number(right.sequence);
+      }
+      return String(left.id || "").localeCompare(String(right.id || ""));
+    });
   }
 }
 
@@ -386,7 +762,10 @@ function appendMessageBucket(message) {
     messageIdIndex.set(message.id, message);
   }
   if (message.clientId) {
-    messageClientIndex.set(`${message.from}\u0000${message.to}\u0000${message.clientId}`, message);
+    messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
+  }
+  if (message.nonce) {
+    messageNonceIndex.add(messageNonceReplayKey(message.from, message.to, message.nonce));
   }
 }
 
@@ -399,25 +778,28 @@ function cleanRateBuckets() {
 
 function cleanSessions() {
   const now = Date.now();
-  const expiredTokens = [];
-  for (const [token, session] of sessions) {
-    if (!session || session.expiresAt <= now) {
-      sessions.delete(token);
-      expiredTokens.push(token);
+  const expiredSessionIds = [];
+  for (const [sessionId, session] of sessions) {
+    if (!session || session.expiresAt <= now || session.absoluteExpiresAt <= now) {
+      sessions.delete(sessionId);
+      expiredSessionIds.push(sessionId);
     }
   }
-  for (const token of expiredTokens) {
-    disconnectSessionRealtime(token, "session expired");
-    purgeSessionEventTickets(token);
+  if (expiredSessionIds.length > 0) {
+    schedulePersistSessions(true);
+  }
+  for (const sessionId of expiredSessionIds) {
+    disconnectSessionRealtime(sessionId, "session expired");
+    purgeSessionEventTickets(sessionId);
   }
 }
 
-function purgeSessionEventTickets(token) {
-  if (!token) {
+function purgeSessionEventTickets(sessionId) {
+  if (!sessionId) {
     return;
   }
   for (const [ticket, record] of eventTickets) {
-    if (record?.token === token) {
+    if (record?.token === sessionId) {
       eventTickets.delete(ticket);
     }
   }
@@ -520,6 +902,10 @@ function normalizeClientId(value) {
   return clientId;
 }
 
+function messageNonceReplayKey(from, to, nonce) {
+  return `${String(from || "")}\u0000${String(to || "")}\u0000${String(nonce || "")}`;
+}
+
 
 function publicUser(user) {
   return {
@@ -536,6 +922,19 @@ function publicUser(user) {
       showOnlineStatus: userShowsPresence(user),
       allowUserSearch: userAllowsSearch(user)
     }
+  };
+}
+
+function sessionResponseFields(session) {
+  return {
+    csrfToken: String(session?.csrfToken || ""),
+    session: session
+      ? {
+          role: normalizeSessionRole(session.role),
+          expiresAt: Number(session.expiresAt || 0),
+          absoluteExpiresAt: Number(session.absoluteExpiresAt || 0)
+        }
+      : null
   };
 }
 
@@ -634,6 +1033,14 @@ function canSearchUser(viewerUsername, targetUser) {
   return true;
 }
 
+function normalizeRelationshipStateValue(value) {
+  const normalized = String(value || "normal").trim().toLowerCase();
+  if (normalized === "blocked" || normalized === "muted") {
+    return normalized;
+  }
+  return "normal";
+}
+
 function contactEntryFor(user, username) {
   if (!user?.contacts || !username) {
     return null;
@@ -656,6 +1063,9 @@ function upsertUserContact(user, username, patch = {}) {
     note: normalizeBoundedText(patch.note === undefined ? existing.note : patch.note, 32),
     pinned: patch.pinned === undefined ? Boolean(existing.pinned) : Boolean(patch.pinned),
     muted: patch.muted === undefined ? Boolean(existing.muted) : Boolean(patch.muted),
+    relationshipState: normalizeRelationshipStateValue(
+      patch.relationshipState === undefined ? existing.relationshipState : patch.relationshipState
+    ),
     prefsVersion: patch.pinned === undefined && patch.muted === undefined
       ? Number(existing.prefsVersion || 0)
       : 1,
@@ -667,6 +1077,42 @@ function upsertUserContact(user, username, patch = {}) {
   }
   user.contacts[username] = next;
   return next;
+}
+
+function relationshipStateFor(owner, peerUsername) {
+  if (!owner || !peerUsername) {
+    return "normal";
+  }
+  if (isUserBlocked(owner, peerUsername)) {
+    return "blocked";
+  }
+  const entry = contactEntryFor(owner, peerUsername);
+  if (!entry) {
+    return "normal";
+  }
+  if (normalizeRelationshipStateValue(entry.relationshipState) === "muted" || Boolean(entry.muted)) {
+    return "muted";
+  }
+  return "normal";
+}
+
+function setRelationshipState(owner, peerUsername, nextState, patch = {}) {
+  if (!owner || !peerUsername) {
+    return null;
+  }
+  const normalizedState = normalizeRelationshipStateValue(nextState);
+  const blockedUsers = new Set(normalizeUserList(owner.blockedUsers));
+  if (normalizedState === "blocked") {
+    blockedUsers.add(peerUsername);
+  } else {
+    blockedUsers.delete(peerUsername);
+  }
+  owner.blockedUsers = [...blockedUsers];
+  return upsertUserContact(owner, peerUsername, {
+    ...patch,
+    muted: normalizedState === "muted",
+    relationshipState: normalizedState
+  });
 }
 
 function removeUserContact(user, username) {
@@ -692,14 +1138,16 @@ function removeUserContact(user, username) {
 function publicContactView(ownerUsername, peerUser) {
   const owner = findUserByUsername(ownerUsername);
   const entry = contactEntryFor(owner, peerUser.username);
+  const relationshipState = relationshipStateFor(owner, peerUser.username);
   return {
     username: peerUser.username,
     usernameKey: peerUser.usernameKey,
     note: entry?.note || "",
-    blocked: Boolean(owner && isUserBlocked(owner, peerUser.username)),
+    blocked: relationshipState === "blocked",
     blockedByPeer: isUserBlocked(peerUser, ownerUsername),
     pinned: Boolean(entry?.pinned),
-    muted: Boolean(entry?.muted),
+    muted: relationshipState === "muted",
+    relationshipState,
     prefsVersion: Number(entry?.prefsVersion || 0),
     online: isPresenceVisibleTo(ownerUsername, peerUser.username),
     lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, ownerUsername)
@@ -736,12 +1184,26 @@ function listContactsFor(ownerUsername) {
     });
 }
 
-function keyBundleForUser(user) {
+function publicKeyBundleForUser(user) {
   return {
-    publicKey: user.publicKey,
-    privateKeySalt: user.privateKeySalt,
-    privateKeyIv: user.privateKeyIv,
-    encryptedPrivateKey: user.encryptedPrivateKey
+    userId: user.username,
+    username: user.username,
+    usernameKey: user.usernameKey,
+    algorithm: "ECDH-P256+HKDF-SHA256+AES-256-GCM",
+    identityKey: user.publicKey,
+    publicKey: user.publicKey
+  };
+}
+
+function prekeyBundleForUser(user) {
+  return {
+    ...publicKeyBundleForUser(user),
+    preKeyBundleVersion: 1,
+    signedPreKey: {
+      keyId: `identity:${user.usernameKey}`,
+      publicKey: user.publicKey
+    },
+    oneTimePreKeys: []
   };
 }
 
@@ -819,26 +1281,6 @@ function sessionClientMeta(req) {
   };
 }
 
-function createSession(username, role = "user", req = null) {
-  const token = crypto.randomBytes(24).toString("hex");
-  const now = Date.now();
-  const meta = sessionClientMeta(req);
-  sessions.set(token, {
-    token,
-    username,
-    role,
-    createdAt: now,
-    lastSeenAt: now,
-    expiresAt: now + SESSION_TTL_MS,
-    ip: meta.ip,
-    userAgent: meta.userAgent,
-    browser: meta.browser,
-    os: meta.os,
-    device: meta.device
-  });
-  return token;
-}
-
 function parseCookies(req) {
   const header = String(req.headers.cookie || "");
   const cookies = new Map();
@@ -873,8 +1315,8 @@ function cookieAttributes(maxAgeSeconds, pathValue = "/") {
     .join("; ");
 }
 
-function sessionCookieHeader(name, token, maxAgeMs = SESSION_TTL_MS) {
-  return `${name}=${encodeURIComponent(token)}; ${cookieAttributes(maxAgeMs / 1000)}`;
+function sessionCookieHeader(name, session, maxAgeMs = SESSION_TTL_MS) {
+  return `${name}=${encodeURIComponent(sessionTokenValue(session))}; ${cookieAttributes(maxAgeMs / 1000)}`;
 }
 
 function clearSessionCookieHeader(name) {
@@ -905,56 +1347,89 @@ function sessionCookieNameForPath(pathname) {
   return pathname.startsWith("/api/admin") ? ADMIN_SESSION_COOKIE : USER_SESSION_COOKIE;
 }
 
+function csrfTokenFromRequest(req) {
+  return String(req.headers["x-csrf-token"] || req.headers["x-echo-csrf"] || "").trim();
+}
+
 function getSessionFromRequest(req, url) {
   const cookies = parseCookies(req);
   const cookieToken = cookies.get(sessionCookieNameForPath(url.pathname)) || "";
   if (cookieToken) {
-    const cookieSession = sessions.get(cookieToken);
-    if (cookieSession) {
+    const cookieSession = findSessionByCookieToken(cookieToken);
+    if (cookieSession && !cookieSession.revokedAt) {
       return cookieSession;
     }
   }
   return null;
 }
 
-function requireSession(req, res, url) {
+function requireSession(req, res, url, allowedRoles = ["user", "admin", "system"]) {
   const session = getSessionFromRequest(req, url);
   if (!session) {
     sendJson(res, 401, { error: "unauthorized" });
     return null;
   }
   const now = Date.now();
-  if (session.expiresAt <= now) {
-    sessions.delete(session.token);
+  if (session.bindingHash && req && session.bindingHash !== sessionBindingHash(req)) {
+    revokeSession(session);
+    purgeSessionEventTickets(session.id);
+    disconnectSessionRealtime(session.id, "session binding mismatch");
+    req.pendingSessionCookie = clearSessionCookieHeader(sessionCookieNameForPath(url.pathname));
+    sendJson(res, 401, { error: "unauthorized" });
+    return null;
+  }
+  if (session.expiresAt <= now || session.absoluteExpiresAt <= now) {
+    revokeSession(session);
+    purgeSessionEventTickets(session.id);
+    disconnectSessionRealtime(session.id, "session expired");
+    req.pendingSessionCookie = clearSessionCookieHeader(sessionCookieNameForPath(url.pathname));
     sendJson(res, 401, { error: "session expired" });
+    return null;
+  }
+  const allowedRoleSet = new Set((Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles]).map(normalizeSessionRole));
+  if (!allowedRoleSet.has(normalizeSessionRole(session.role))) {
+    sendJson(res, 403, { error: "forbidden" });
     return null;
   }
   if (session.role === "user") {
     const user = findUserByUsername(session.username);
     if (!user) {
-      sessions.delete(session.token);
+      revokeSession(session);
+      req.pendingSessionCookie = clearSessionCookieHeader(sessionCookieNameForPath(url.pathname));
       sendJson(res, 401, { error: "unauthorized" });
       return null;
     }
     if (user.banned) {
-      sessions.delete(session.token);
+      revokeSession(session);
+      req.pendingSessionCookie = clearSessionCookieHeader(sessionCookieNameForPath(url.pathname));
       sendJson(res, 403, { error: "account banned" });
       return null;
     }
     user.lastSeenAt = now;
   }
-  session.lastSeenAt = now;
-  session.expiresAt = now + SESSION_TTL_MS;
-  req.pendingSessionCookie = sessionCookieHeader(sessionCookieNameForPath(url.pathname), session.token);
+  if (!["GET", "HEAD", "OPTIONS"].includes(String(req.method || "GET").toUpperCase())) {
+    if (!isSameOriginRequest(req)) {
+      sendJson(res, 403, { error: "forbidden origin" });
+      return null;
+    }
+    const csrfToken = csrfTokenFromRequest(req);
+    if (!csrfToken || csrfToken !== session.csrfToken) {
+      sendJson(res, 403, { error: "invalid csrf token" });
+      return null;
+    }
+  }
+  refreshSessionState(session);
+  req.pendingSessionCookie = sessionCookieHeader(sessionCookieNameForPath(url.pathname), session);
+  req.authSession = session;
   return session;
 }
 
 function requireAdminSession(req, res, url) {
-  const session = requireSession(req, res, url);
+  const session = requireSession(req, res, url, ["admin", "system"]);
   if (!session) {
     return null;
   }
-  if (session.role !== "admin") {
+  if (session.role !== "admin" && session.role !== "system") {
     sendJson(res, 403, { error: "admin required" });
     return null;
   }
@@ -963,7 +1438,7 @@ function requireAdminSession(req, res, url) {
 
 function deleteSessionsForUsername(username, role = null) {
   let deleted = 0;
-  for (const [token, session] of sessions) {
+  for (const [sessionId, session] of sessions) {
     if (!session) {
       continue;
     }
@@ -973,8 +1448,11 @@ function deleteSessionsForUsername(username, role = null) {
     if (role !== null && session.role !== role) {
       continue;
     }
-    sessions.delete(token);
+    sessions.delete(sessionId);
     deleted += 1;
+  }
+  if (deleted > 0) {
+    schedulePersistSessions(true);
   }
   return deleted;
 }
@@ -984,7 +1462,7 @@ function createEventTicketForSession(session) {
   eventTickets.set(ticket, {
     username: session.username,
     role: session.role,
-    token: session.token,
+    token: session.id,
     issuedAt: Date.now(),
     expiresAt: Date.now() + EVENT_TICKET_TTL_MS
   });
@@ -1430,6 +1908,7 @@ function adminUserMessageView(message, username) {
     nonce: String(message.nonce || ""),
     ciphertext: String(message.ciphertext || ""),
     recalled: Boolean(message.recalled),
+    replyToId: String(message.replyToId || ""),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     createdAt: Number(message.createdAt || 0)
   };
@@ -1537,9 +2016,7 @@ async function buildAdminUserDetail(user) {
     },
     crypto: {
       publicKey: summarizeEncodedBlob(user.publicKey),
-      privateKeySalt: summarizeEncodedBlob(user.privateKeySalt),
-      privateKeyIv: summarizeEncodedBlob(user.privateKeyIv),
-      encryptedPrivateKey: summarizeEncodedBlob(user.encryptedPrivateKey)
+      privateKeyStoredOnServer: false
     },
     sessions: sessionsList,
     realtime: {
@@ -1713,10 +2190,12 @@ function createMessageView(message, viewer) {
     publicKey: peerUser?.publicKey || "",
     text: null,
     recalled: Boolean(message.recalled),
+    replyToId: String(message.replyToId || ""),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
     nonce: message.nonce,
     ciphertext: message.ciphertext,
     createdAt: message.createdAt,
+    timestamp: Number(message.timestamp || message.createdAt || 0),
     deliveredAt: Number.parseInt(String(message.deliveredAt || "0"), 10) || 0,
     readAt: Number.parseInt(String(message.readAt || "0"), 10) || 0
   };
@@ -1751,10 +2230,12 @@ function buildConversationSummary(viewer, peer) {
           to: latest.to,
           text: null,
           recalled: Boolean(latest.recalled),
+          replyToId: String(latest.replyToId || ""),
           replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
           nonce: latest.nonce,
           ciphertext: latest.ciphertext,
-          createdAt: latest.createdAt
+          createdAt: latest.createdAt,
+          timestamp: Number(latest.timestamp || latest.createdAt || 0)
         }
       : null,
     lastAt: latest ? latest.createdAt : 0
@@ -1817,6 +2298,17 @@ function parseMessageCursor(rawValue) {
     return null;
   }
   return { id: value };
+}
+
+function readPathSuffix(pathname, prefix) {
+  if (!pathname.startsWith(prefix)) {
+    return "";
+  }
+  try {
+    return decodeURIComponent(pathname.slice(prefix.length));
+  } catch (error) {
+    return "";
+  }
 }
 
 function parsePositiveInteger(rawValue, fallback, min, max) {
@@ -2121,6 +2613,7 @@ function sendJsonBodyError(res, error) {
 
 function runAsyncRoute(promise, res) {
   Promise.resolve(promise).catch((error) => {
+    recordErrorLog("route_handler", error);
     console.error(error instanceof Error ? error.stack || error.message : String(error));
     if (res.headersSent || res.writableEnded) {
       res.destroy(error instanceof Error ? error : undefined);
@@ -2172,33 +2665,11 @@ async function handleRegister(req, res) {
   }
 
   const publicKey = String(body.publicKey || "").trim();
-  const privateKeySalt = String(body.privateKeySalt || "").trim();
-  const privateKeyIv = String(body.privateKeyIv || "").trim();
-  const encryptedPrivateKey = String(body.encryptedPrivateKey || "").trim();
 
   if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
     sendJson(res, 400, { error: "invalid public key bundle" });
     return;
   }
-  if (!isBase64Blob(privateKeySalt, PRIVATE_KEY_SALT_BYTES.min, PRIVATE_KEY_SALT_BYTES.max)) {
-    sendJson(res, 400, { error: "invalid private key bundle" });
-    return;
-  }
-  if (!isBase64Blob(privateKeyIv, PRIVATE_KEY_IV_BYTES.min, PRIVATE_KEY_IV_BYTES.max)) {
-    sendJson(res, 400, { error: "invalid private key bundle" });
-    return;
-  }
-  if (
-    !isBase64Blob(
-      encryptedPrivateKey,
-      ENCRYPTED_PRIVATE_KEY_BYTES.min,
-      ENCRYPTED_PRIVATE_KEY_BYTES.max
-    )
-  ) {
-    sendJson(res, 400, { error: "invalid private key bundle" });
-    return;
-  }
-
   const passwordHash = await hashPassword(password);
   // Hashing yields to the event loop; re-check before committing the username.
   if (findUserByKey(normalizedUsername.key)) {
@@ -2212,9 +2683,6 @@ async function handleRegister(req, res) {
     usernameKey: normalizedUsername.key,
     passwordHash,
     publicKey,
-    privateKeySalt,
-    privateKeyIv,
-    encryptedPrivateKey,
     banned: false,
     bannedReason: "",
     bannedAt: 0,
@@ -2230,13 +2698,13 @@ async function handleRegister(req, res) {
   persistUsers();
 
   recordAdminAction("user_register", { username: user.username, role: "user" }, req, {});
-  const token = createSession(user.username, "user", req);
+  const sessionRecord = issueSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 201, {
     user: publicUser(user),
-    keyBundle: keyBundleForUser(user)
+    ...sessionResponseFields(sessionRecord)
   }, {
-    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
+    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
   });
 }
 
@@ -2293,20 +2761,20 @@ async function handleLogin(req, res) {
     sendJson(res, 403, { error: "account banned" });
     return;
   }
-  if (!user.publicKey || !user.privateKeySalt || !user.privateKeyIv || !user.encryptedPrivateKey) {
+  if (!user.publicKey) {
     sendJson(res, 409, { error: "account key material is missing" });
     return;
   }
 
   touchUserLogin(user.username, Date.now());
   recordAdminAction("user_login", { username: user.username, role: "user" }, req, {});
-  const token = createSession(user.username, "user", req);
+  const sessionRecord = issueSession(user.username, "user", req);
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 200, {
     user: publicUser(user),
-    keyBundle: keyBundleForUser(user)
+    ...sessionResponseFields(sessionRecord)
   }, {
-    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
+    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
   });
 }
 
@@ -2327,9 +2795,10 @@ function handleLogout(req, res, url) {
   ) {
     return;
   }
-  sessions.delete(session.token);
-  purgeSessionEventTickets(session.token);
-  disconnectSessionRealtime(session.token, "logged out");
+  revokeSession(session);
+  purgeSessionEventTickets(session.id);
+  disconnectSessionRealtime(session.id, "logged out");
+  recordAdminAction("user_logout", session, req, {});
   sendJson(res, 200, { ok: true }, {
     "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
   });
@@ -2355,6 +2824,7 @@ function handleLogoutAll(req, res, url) {
   const revoked = deleteSessionsForUsername(session.username, session.role);
   purgeUserEventTickets(session.username);
   disconnectUserRealtime(session.username, "logged out from all devices");
+  recordAdminAction("user_logout_all", session, req, { revoked });
   sendJson(res, 200, {
     ok: true,
     revoked
@@ -2370,16 +2840,25 @@ function handleMe(req, res, url) {
   }
   const user = findUserByUsername(session.username);
   if (!user) {
-    sessions.delete(session.token);
+    revokeSession(session);
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
   sendJson(res, 200, {
-    user: publicUser(user)
+    user: publicUser(user),
+    ...sessionResponseFields(session)
   });
 }
 
 function handleMeKeyBundle(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  sendJson(res, 410, { error: "private key bundles are not available in zero-knowledge mode" });
+}
+
+function handlePublicKeyLookup(req, res, url, userId) {
   const session = requireSession(req, res, url);
   if (!session) {
     return;
@@ -2389,7 +2868,57 @@ function handleMeKeyBundle(req, res, url) {
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:me:key-bundle:${session.username}:${address}`,
+      `api:public-key:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const user = findUserByUsername(userId);
+  if (!user || user.banned) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  sendJson(res, 200, publicKeyBundleForUser(user));
+}
+
+function handlePrekeyBundleLookup(req, res, url, userId) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:prekey-bundle:${session.username}:${address}`,
+      MAX_API_REQUESTS_PER_WINDOW,
+      "too many requests"
+    )
+  ) {
+    return;
+  }
+  const user = findUserByUsername(userId);
+  if (!user || user.banned) {
+    sendJson(res, 404, { error: "user not found" });
+    return;
+  }
+  sendJson(res, 200, prekeyBundleForUser(user));
+}
+
+async function handleUploadPublicKey(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:upload-public-key:${session.username}:${address}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -2398,13 +2927,30 @@ function handleMeKeyBundle(req, res, url) {
   }
   const user = findUserByUsername(session.username);
   if (!user) {
-    sessions.delete(session.token);
+    revokeSession(session);
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  const publicKey = String(body.publicKey || body.identityKey || "").trim();
+  if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
+    sendJson(res, 400, { error: "invalid public key bundle" });
+    return;
+  }
+  user.publicKey = publicKey;
+  persistUsers();
+  recordAdminAction("user_public_key_upload", { username: user.username, role: "user" }, req, {
+    publicKeyBytes: decodeBase64Blob(publicKey)?.length || 0
+  });
   sendJson(res, 200, {
-    user: publicUser(user),
-    keyBundle: keyBundleForUser(user)
+    ok: true,
+    publicKey: publicKeyBundleForUser(user)
   });
 }
 
@@ -2415,7 +2961,7 @@ function handleMeSettings(req, res, url) {
   }
   const user = findUserByUsername(session.username);
   if (!user) {
-    sessions.delete(session.token);
+    revokeSession(session);
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
@@ -2444,7 +2990,7 @@ async function handleMeSettingsPatch(req, res, url) {
   }
   const user = findUserByUsername(session.username);
   if (!user) {
-    sessions.delete(session.token);
+    revokeSession(session);
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
@@ -2496,7 +3042,7 @@ async function handleMePassword(req, res, url) {
   }
   const user = findUserByUsername(session.username);
   if (!user) {
-    sessions.delete(session.token);
+    revokeSession(session);
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
@@ -2509,10 +3055,6 @@ async function handleMePassword(req, res, url) {
   }
   const currentPassword = normalizePassword(body.currentPassword);
   const nextPassword = normalizePassword(body.newPassword);
-  const publicKey = String(body.publicKey || "").trim();
-  const privateKeySalt = String(body.privateKeySalt || "").trim();
-  const privateKeyIv = String(body.privateKeyIv || "").trim();
-  const encryptedPrivateKey = String(body.encryptedPrivateKey || "").trim();
   if (!currentPassword || !nextPassword) {
     sendJson(res, 400, { error: "currentPassword and newPassword are required" });
     return;
@@ -2521,37 +3063,23 @@ async function handleMePassword(req, res, url) {
     sendJson(res, 400, { error: "password must be 4-72 characters" });
     return;
   }
-  if (publicKey !== user.publicKey) {
-    sendJson(res, 409, { error: "public key cannot be changed with password" });
-    return;
-  }
-  if (
-    !isBase64Blob(privateKeySalt, PRIVATE_KEY_SALT_BYTES.min, PRIVATE_KEY_SALT_BYTES.max) ||
-    !isBase64Blob(privateKeyIv, PRIVATE_KEY_IV_BYTES.min, PRIVATE_KEY_IV_BYTES.max) ||
-    !isBase64Blob(encryptedPrivateKey, ENCRYPTED_PRIVATE_KEY_BYTES.min, ENCRYPTED_PRIVATE_KEY_BYTES.max)
-  ) {
-    sendJson(res, 400, { error: "invalid private key bundle" });
-    return;
-  }
   const currentOk = await verifyPassword(currentPassword, user.passwordHash || DUMMY_PASSWORD_HASH);
   if (!currentOk) {
     sendJson(res, 403, { error: "current password invalid" });
     return;
   }
   user.passwordHash = await hashPassword(nextPassword);
-  user.privateKeySalt = privateKeySalt;
-  user.privateKeyIv = privateKeyIv;
-  user.encryptedPrivateKey = encryptedPrivateKey;
   persistUsers();
   const revoked = deleteSessionsForUsername(user.username, "user");
   purgeUserEventTickets(user.username);
   disconnectUserRealtime(user.username, "password updated");
-  const token = createSession(user.username, "user", req);
+  const sessionRecord = issueSession(user.username, "user", req);
   sendJson(res, 200, {
     ok: true,
-    revoked
+    revoked,
+    ...sessionResponseFields(sessionRecord)
   }, {
-    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, token)
+    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
   });
 }
 
@@ -2562,7 +3090,7 @@ function handleMeSessions(req, res, url) {
   }
   const user = findUserByUsername(session.username);
   if (!user) {
-    sessions.delete(session.token);
+    revokeSession(session);
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
@@ -2682,10 +3210,17 @@ async function handleContactPatch(req, res, url, pathname) {
     sendJson(res, 400, { error: "muted must be a boolean" });
     return;
   }
-  const entry = upsertUserContact(owner, peer.username, {
+  if (relationshipStateFor(owner, peer.username) === "blocked" && Object.prototype.hasOwnProperty.call(body, "muted")) {
+    sendJson(res, 409, { error: "relationship is blocked" });
+    return;
+  }
+  const entry = setRelationshipState(
+    owner,
+    peer.username,
+    Object.prototype.hasOwnProperty.call(body, "muted") ? (body.muted ? "muted" : "normal") : relationshipStateFor(owner, peer.username),
+    {
     ...(Object.prototype.hasOwnProperty.call(body, "note") ? { note: body.note } : {}),
-    ...(Object.prototype.hasOwnProperty.call(body, "pinned") ? { pinned: body.pinned } : {}),
-    ...(Object.prototype.hasOwnProperty.call(body, "muted") ? { muted: body.muted } : {})
+    ...(Object.prototype.hasOwnProperty.call(body, "pinned") ? { pinned: body.pinned } : {})
   });
   persistUsers();
   sendJson(res, 200, {
@@ -2766,14 +3301,7 @@ async function handleContactBlock(req, res, url, pathname) {
     sendJson(res, 400, { error: "blocked must be a boolean" });
     return;
   }
-  const blockedUsers = new Set(normalizeUserList(owner.blockedUsers));
-  if (body.blocked) {
-    blockedUsers.add(peer.username);
-  } else {
-    blockedUsers.delete(peer.username);
-  }
-  owner.blockedUsers = [...blockedUsers];
-  upsertUserContact(owner, peer.username, {});
+  setRelationshipState(owner, peer.username, body.blocked ? "blocked" : "normal");
   persistUsers();
   pushPresence(owner.username, isUserOnline(owner.username));
   pushEventToUser(peer.username, "contact-blocked", {
@@ -2831,16 +3359,17 @@ async function handleAdminLogin(req, res) {
     return;
   }
   clearAdminLoginFailures(account.username);
-  const token = createSession(account.username, "admin", req);
+  const sessionRecord = issueSession(account.username, "admin", req);
   accessLogMiddleware.setUserId(req, account.username);
   recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
   sendJson(res, 200, {
     admin: {
       username: account.username,
       role: "admin"
-    }
+    },
+    ...sessionResponseFields(sessionRecord)
   }, {
-    "Set-Cookie": sessionCookieHeader(ADMIN_SESSION_COOKIE, token)
+    "Set-Cookie": sessionCookieHeader(ADMIN_SESSION_COOKIE, sessionRecord)
   });
 }
 
@@ -2927,11 +3456,12 @@ async function handleAdminAccountReset(req, res) {
   updateRuntimeAdminConfig(nextConfig);
   clearAdminLoginFailures(previousUsername);
   clearAdminLoginFailures(nextConfig.username);
-  for (const [token, sessionRecord] of sessions.entries()) {
+  for (const [sessionId, sessionRecord] of sessions.entries()) {
     if (sessionRecord.role === "admin") {
-      sessions.delete(token);
+      sessions.delete(sessionId);
     }
   }
+  schedulePersistSessions(true);
   recordAdminAction("admin_account_reset", { username: nextConfig.username, role: "admin" }, req, {
     previousUsername,
     nextUsername: nextConfig.username
@@ -2965,9 +3495,9 @@ function handleAdminLogout(req, res, url) {
     return;
   }
   recordAdminAction("admin_logout", session, req, {});
-  sessions.delete(session.token);
-  purgeSessionEventTickets(session.token);
-  disconnectSessionRealtime(session.token, "logged out");
+  revokeSession(session);
+  purgeSessionEventTickets(session.id);
+  disconnectSessionRealtime(session.id, "logged out");
   sendJson(res, 200, { ok: true }, {
     "Set-Cookie": clearSessionCookieHeader(ADMIN_SESSION_COOKIE)
   });
@@ -2982,7 +3512,8 @@ function handleAdminMe(req, res, url) {
     admin: {
       username: session.username,
       role: session.role
-    }
+    },
+    ...sessionResponseFields(session)
   });
 }
 
@@ -3327,11 +3858,7 @@ async function handleAdminUsersBatch(req, res, url) {
     user.bannedReason = banned ? reason : "";
     user.bannedAt = banned ? Date.now() : 0;
     if (banned) {
-      for (const [token, sessionRecord] of sessions) {
-        if (sessionRecord.role === "user" && sessionRecord.username === user.username) {
-          sessions.delete(token);
-        }
-      }
+      deleteSessionsForUsername(user.username, "user");
       disconnectUserRealtime(user.username, "account banned by admin");
       purgeUserEventTickets(user.username);
     }
@@ -3651,8 +4178,12 @@ async function handleSendMessage(req, res, url) {
     return;
   }
   if (clientId) {
-    const existing = messageClientIndex.get(`${session.username}\u0000${peer.username}\u0000${clientId}`);
+    const existing = messageClientIndex.get(`${session.username}\u0000${clientId}`);
     if (existing) {
+      if (existing.to !== peer.username) {
+        sendJson(res, 409, { error: "clientId already used" });
+        return;
+      }
       sendJson(res, 200, {
         message: createMessageView(existing, session.username),
         conversation: buildConversationSummary(session.username, peer.username)
@@ -3679,22 +4210,35 @@ async function handleSendMessage(req, res, url) {
     sendJson(res, 400, { error: "invalid message payload" });
     return;
   }
+  if (messageNonceIndex.has(messageNonceReplayKey(session.username, peer.username, nonce))) {
+    sendJson(res, 409, { error: "duplicate message nonce" });
+    return;
+  }
   const replyTo = resolveReplyTarget(session.username, peer.username, replyToId);
   if (replyToId && !replyTo) {
     sendJson(res, 400, { error: "reply target not found" });
     return;
   }
 
+  const createdAt = Date.now();
   const message = {
     id: crypto.randomUUID(),
     clientId,
+    sequence: nextMessageSequence++,
     from: session.username,
     to: peer.username,
     nonce,
     ciphertext,
-    createdAt: Date.now(),
+    createdAt,
+    timestamp: createdAt,
     replyToId: replyTo?.id || "",
-    replyTo,
+    replyTo: replyTo
+      ? {
+          id: String(replyTo.id),
+          from: String(replyTo.from || ""),
+          createdAt: Number(replyTo.createdAt) || 0
+        }
+      : null,
     deletedFor: []
   };
   let contactsChanged = false;
@@ -3769,11 +4313,25 @@ async function handleRecallMessage(req, res, url) {
     sendJson(res, 404, { error: "message not found or not yours" });
     return;
   }
+  const recallAgeMs = Date.now() - Number(target.createdAt || 0);
+  if (recallAgeMs > MESSAGE_RECALL_WINDOW_MS) {
+    sendJson(res, 403, { error: "recall window expired" });
+    return;
+  }
+  if (target.recalled) {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
   target.recalled = true;
-  target.ciphertext = "";
-  target.nonce = "";
+  target.recalledAt = Date.now();
+  target.recalledBy = session.username;
   schedulePersistMessages(target);
   const peer = target.to === session.username ? target.from : target.to;
+  recordAdminAction("message_recall", session, req, {
+    messageId,
+    peer,
+    recallAgeMs
+  });
   pushEventToUser(session.username, "message-recalled", { messageId, by: session.username, peer });
   pushEventToUser(peer, "message-recalled", { messageId, by: session.username, peer: session.username });
   sendJson(res, 200, { ok: true });
@@ -3971,6 +4529,8 @@ function handleEvents(req, res, url) {
   const sessionRecord = ticketRecord.token ? sessions.get(ticketRecord.token) : null;
   if (
     !sessionRecord ||
+    sessionRecord.expiresAt <= Date.now() ||
+    sessionRecord.absoluteExpiresAt <= Date.now() ||
     sessionRecord.username !== ticketRecord.username ||
     sessionRecord.role !== ticketRecord.role
   ) {
@@ -4024,9 +4584,12 @@ function handleEvents(req, res, url) {
 
 try {
   loadData();
+  loadSessionState();
+  purgeStoredLegacyUserKeyMaterial();
   purgeStoredMessagePlaintext();
   loadAdminAuditState();
   void accessLogStore.ready.catch((error) => {
+    recordErrorLog("access_log_startup", error);
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
@@ -4039,6 +4602,7 @@ try {
     console.log(`[audit] verified ${auditCheck.checked} entries (key source: ${auditCheck.hmacKeySource})`);
   }
 } catch (error) {
+  recordErrorLog("startup", error);
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
@@ -4086,6 +4650,8 @@ const server = http.createServer((req, res) => {
   }
   accessLogMiddleware.begin(req, res, url);
   const pathname = url.pathname;
+  const publicKeyUserId = readPathSuffix(pathname, "/public-key/");
+  const prekeyBundleUserId = readPathSuffix(pathname, "/prekey-bundle/");
 
   if (req.method === "GET" && pathname === "/health") {
     sendJson(res, 200, { ok: true });
@@ -4186,6 +4752,18 @@ const server = http.createServer((req, res) => {
     handleMeKeyBundle(req, res, url);
     return;
   }
+  if (req.method === "GET" && publicKeyUserId) {
+    handlePublicKeyLookup(req, res, url, publicKeyUserId);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/upload-public-key") {
+    runAsyncRoute(handleUploadPublicKey(req, res, url), res);
+    return;
+  }
+  if (req.method === "GET" && prekeyBundleUserId) {
+    handlePrekeyBundleLookup(req, res, url, prekeyBundleUserId);
+    return;
+  }
   if (req.method === "GET" && pathname === "/api/me/settings") {
     handleMeSettings(req, res, url);
     return;
@@ -4281,8 +4859,14 @@ server.keepAliveTimeout = 65000;
 server.maxHeadersCount = 64;
 server.maxRequestsPerSocket = 1000;
 
-process.on("beforeExit", flushPendingMessagePersist);
-process.on("exit", flushPendingMessagePersist);
+process.on("beforeExit", () => {
+  flushPendingMessagePersist();
+  flushPendingSessionPersist();
+});
+process.on("exit", () => {
+  flushPendingMessagePersist();
+  flushPendingSessionPersist();
+});
 let shutdownPromise = null;
 
 function closeHttpServer() {
@@ -4313,11 +4897,13 @@ function shutdown(signal) {
     try {
       await closeHttpServer();
       flushPendingMessagePersist();
+      flushPendingSessionPersist();
       await accessLogStore.close();
     } finally {
       clearTimeout(forceCloseTimer);
     }
   })().catch((error) => {
+    recordErrorLog("shutdown", error);
     console.error(`[shutdown] ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   });
