@@ -123,6 +123,7 @@ const state = {
   loadingMessages: false,
   logs: [],
   lastRefreshAt: 0,
+  toastTimer: 0,
   dialogResolver: null,
   dialogOptions: null
 };
@@ -166,9 +167,10 @@ function resetAdminState(showLogin = false) {
 }
 
 function showToast(message) {
+  window.clearTimeout(state.toastTimer);
   elements.toast.textContent = message;
   elements.toast.classList.add("show");
-  window.setTimeout(() => elements.toast.classList.remove("show"), 2200);
+  state.toastTimer = window.setTimeout(() => elements.toast.classList.remove("show"), 2200);
 }
 
 function translateAdminError(pathname, status, payload) {

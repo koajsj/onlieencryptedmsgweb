@@ -43,12 +43,19 @@ function decodeBase64Blob(value) {
     return null;
   }
   const trimmed = value.trim();
-  if (!trimmed || !/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
+  if (
+    !trimmed ||
+    trimmed.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(trimmed)
+  ) {
     return null;
   }
   try {
     const bytes = Buffer.from(trimmed, "base64");
-    return bytes.length > 0 ? bytes : null;
+    if (bytes.length === 0 || bytes.toString("base64") !== trimmed) {
+      return null;
+    }
+    return bytes;
   } catch (error) {
     return null;
   }

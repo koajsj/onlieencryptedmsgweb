@@ -215,6 +215,8 @@ const state = {
   resizeRenderRaf: 0,
   toastTimer: 0,
   longPressTimer: 0,
+  longPressTouchX: 0,
+  longPressTouchY: 0,
   openConversationRequest: 0,
   conversationPrefs: {},
   drafts: {},
@@ -223,6 +225,7 @@ const state = {
   scrollBottomHideTimer: 0,
   detailsPanelOpen: false,
   detailsPanelCollapsed: false,
+  appViewportHeight: 0,
   activeNavSection: "messages",
   emojiPanelOpen: false,
   accountMenuOpen: false,
@@ -962,6 +965,7 @@ async function validateAttachmentFile(file) {
   if (magicType && type && magicType !== type) {
     throw new Error("附件类型与文件头不匹配，已拒绝发送");
   }
+  return bytes;
 }
 
 function renderAttachmentTransfers() {
@@ -1028,8 +1032,10 @@ function setAttachmentTransferForTempId(tempId, stage, note = "") {
     finishAttachmentTransfer(transfer.id, stage === "done");
   }
 }
-async function buildAttachmentMessageText(file) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
+async function buildAttachmentMessageText(file, validatedBytes = null) {
+  const bytes = validatedBytes instanceof Uint8Array
+    ? validatedBytes
+    : new Uint8Array(await file.arrayBuffer());
   return `${ATTACHMENT_MARKER}${JSON.stringify({
     name: sanitizeAttachmentName(file.name),
     type: String(file.type || "application/octet-stream").toLowerCase().slice(0, 100),
@@ -1081,13 +1087,13 @@ async function sendAttachmentFiles(fileList) {
       continue;
     }
     try {
-      await validateAttachmentFile(file);
+      const bytes = await validateAttachmentFile(file);
       upsertAttachmentTransfer(transferId, {
         stage: "encrypting",
         label: "加密中",
         note: "正在生成端到端密文"
       });
-      const text = await buildAttachmentMessageText(file);
+      const text = await buildAttachmentMessageText(file, bytes);
       const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
       const tempId = addPendingMessage(state.activePeer, text, replyTo);
       upsertAttachmentTransfer(transferId, {
@@ -1943,8 +1949,32 @@ function setComposerBusy(busy) {
     state.peerKeyMismatches.has(state.activePeer) ||
     state.peerKeyUnverified.has(state.activePeer)
   );
-  elements.sendButton.disabled = busy || !state.activePeer || blocked;
+  elements.sendButton.disabled = busy || state.submitInFlight || !state.activePeer || blocked;
   elements.messageInput.disabled = busy || !state.activePeer || blocked;
+}
+
+function setSubmitInFlight(inFlight) {
+  state.submitInFlight = Boolean(inFlight);
+  if (!elements.sendButton) {
+    return;
+  }
+  const label = elements.sendButton.querySelector(".send-label");
+  if (state.submitInFlight) {
+    elements.sendButton.setAttribute("data-busy", "true");
+    elements.sendButton.setAttribute("aria-busy", "true");
+    elements.sendButton.setAttribute("aria-label", "正在发送消息");
+    if (label) {
+      label.textContent = "发送中";
+    }
+  } else {
+    elements.sendButton.removeAttribute("data-busy");
+    elements.sendButton.removeAttribute("aria-busy");
+    elements.sendButton.setAttribute("aria-label", "发送消息");
+    if (label) {
+      label.textContent = "发送";
+    }
+  }
+  setComposerBusy(state.composerBusy);
 }
 
 function isMobile() {
@@ -1968,6 +1998,15 @@ function syncLayoutState() {
   if (elements.contactPanel) {
     elements.contactPanel.inert = detailsDrawerClosed;
     elements.contactPanel.setAttribute("aria-hidden", detailsDrawerClosed ? "true" : "false");
+  }
+  if (elements.headerDetailsButton) {
+    const label = isDetailsDrawerLayout()
+      ? "打开联系人详情"
+      : state.detailsPanelCollapsed
+        ? "展开联系人详情"
+        : "联系人详情";
+    elements.headerDetailsButton.setAttribute("aria-label", label);
+    elements.headerDetailsButton.setAttribute("title", label);
   }
   if (state.accountMenuOpen && state.accountMenuAnchor && state.accountMenuAnchor.offsetParent === null) {
     closeAccountMenu();
@@ -2066,13 +2105,34 @@ function scheduleResponsiveRender() {
   }
   state.resizeRenderRaf = window.requestAnimationFrame(() => {
     state.resizeRenderRaf = 0;
-    syncViewportHeight();
+    const viewportChanged = syncViewportHeight();
+    if (!viewportChanged) {
+      return;
+    }
     if (document.activeElement === elements.messageInput) {
       syncLayoutState();
       updateScrollBottomButton();
       return;
     }
     render();
+  });
+}
+
+function scheduleViewportOnlySync() {
+  if (state.resizeRenderRaf) {
+    return;
+  }
+  state.resizeRenderRaf = window.requestAnimationFrame(() => {
+    state.resizeRenderRaf = 0;
+    const viewportChanged = syncViewportHeight();
+    if (!viewportChanged) {
+      return;
+    }
+    syncLayoutState();
+    updateScrollBottomButton();
+    if (document.activeElement === elements.messageInput && state.activePeer) {
+      scrollMessagesToBottom(false);
+    }
   });
 }
 
@@ -2204,7 +2264,8 @@ function closeEventStream() {
     window.clearTimeout(state.reconnectTimer);
     state.reconnectTimer = 0;
   }
-  state.manualEventSourceClose = false;
+  // Keep this true until openEventStream installs the next source; stale error
+  // events from the previous EventSource must not schedule a phantom reconnect.
   state.reconnectAttempts = 0;
   state.connectionState = "offline";
   if (state.typingStopTimer) {
@@ -2780,11 +2841,18 @@ function openContactDetailsPanel() {
 }
 
 function syncViewportHeight() {
-  const viewportHeight = window.innerHeight || window.visualViewport?.height || 0;
+  const visualHeight = window.visualViewport?.height || 0;
+  const viewportHeight = isMobile() && visualHeight ? visualHeight : window.innerHeight || visualHeight || 0;
   if (!viewportHeight) {
-    return;
+    return false;
   }
-  document.documentElement.style.setProperty("--app-vh", `${Math.round(viewportHeight)}px`);
+  const roundedHeight = Math.round(viewportHeight);
+  if (Math.abs((state.appViewportHeight || 0) - roundedHeight) < 2) {
+    return false;
+  }
+  state.appViewportHeight = roundedHeight;
+  document.documentElement.style.setProperty("--app-vh", `${roundedHeight}px`);
+  return true;
 }
 
 function renderSimpleDetailRow(title, meta, actionLabel = "", action = "") {
@@ -3047,7 +3115,7 @@ function renderContactDetails(peer) {
     elements.blockContactButtonLabel.textContent = contact?.blocked ? "取消拉黑" : "拉黑";
   }
   if (elements.detailsCollapseButton) {
-    elements.detailsCollapseButton.textContent = isDetailsDrawerLayout() ? "关闭" : "收起";
+    elements.detailsCollapseButton.textContent = isDetailsDrawerLayout() ? "关闭" : "隐藏";
   }
   if (elements.editContactButton) {
     elements.editContactButton.disabled = false;
@@ -3539,18 +3607,19 @@ function renderThread(options = {}) {
     autoResizeComposer();
   }
   setComposerBusy(false);
+  syncReplyState();
   if (scrollBehavior === "bottom") {
     scrollMessagesToBottom(true);
     return;
   }
   if (virtualWindow) {
     elements.messageList.scrollTop = previousScrollTop;
+    updateScrollBottomButton();
     return;
   }
   if (previousScrollHeight > 0) {
     elements.messageList.scrollTop = previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight);
   }
-  syncReplyState();
   updateScrollBottomButton();
 }
 
@@ -3677,6 +3746,9 @@ async function loadPeerPrekeyBundle(peerUsername) {
   const publicKey = String(bundle.identityKey || bundle.publicKey || "");
   if (!publicKey) {
     throw new Error("对端没有可用公钥");
+  }
+  if (bundle.capabilities && bundle.capabilities.zeroKnowledgeMessages !== true) {
+    throw new Error("对端密钥包不支持端到端加密消息");
   }
   cachePeerInfo({ username: bundle.username || peerUsername, publicKey });
   return state.peerKeys.get(peerUsername) || publicKey;
@@ -5077,16 +5149,7 @@ async function submitMessage(event) {
     return;
   }
 
-  state.submitInFlight = true;
-  if (elements.sendButton) {
-    elements.sendButton.setAttribute("data-busy", "true");
-  }
-  window.setTimeout(() => {
-    state.submitInFlight = false;
-    if (elements.sendButton) {
-      elements.sendButton.removeAttribute("data-busy");
-    }
-  }, 480);
+  setSubmitInFlight(true);
 
   const peer = state.activePeer;
   const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
@@ -5119,9 +5182,11 @@ async function submitMessage(event) {
       renderThread({ scrollBehavior: "bottom" });
       showToast("\u5df2\u53d1\u9001");
     }
+    setSubmitInFlight(false);
     return;
   }
-  void sendMessageWithRetry(tempId, peer, text, tempId, false, replyTo?.id || "");
+  void sendMessageWithRetry(tempId, peer, text, tempId, false, replyTo?.id || "")
+    .finally(() => setSubmitInFlight(false));
 }
 
 async function retryPendingMessage(tempId) {
@@ -5724,6 +5789,8 @@ function bindEvents() {
       return;
     }
     const touch = event.touches[0];
+    state.longPressTouchX = touch.clientX;
+    state.longPressTouchY = touch.clientY;
     window.clearTimeout(state.longPressTimer);
     state.longPressTimer = window.setTimeout(() => {
       showMessageContextMenu(message.dataset.messageId || "", touch.clientX, touch.clientY);
@@ -5733,9 +5800,16 @@ function bindEvents() {
     window.clearTimeout(state.longPressTimer);
     state.longPressTimer = 0;
   }, { passive: true });
-  elements.messageList.addEventListener("touchmove", () => {
-    window.clearTimeout(state.longPressTimer);
-    state.longPressTimer = 0;
+  elements.messageList.addEventListener("touchmove", (event) => {
+    if (!state.longPressTimer || event.touches.length !== 1) {
+      return;
+    }
+    const touch = event.touches[0];
+    const moved = Math.hypot(touch.clientX - state.longPressTouchX, touch.clientY - state.longPressTouchY);
+    if (moved > 10) {
+      window.clearTimeout(state.longPressTimer);
+      state.longPressTimer = 0;
+    }
   }, { passive: true });
   elements.pinPeerButton.addEventListener("click", () => handleThreadActionsClick("pin"));
   elements.mutePeerButton.addEventListener("click", () => handleThreadActionsClick("mute"));
@@ -5963,9 +6037,16 @@ function bindEvents() {
   elements.composerForm.addEventListener("click", handleComposerActionClick);
   elements.messageInput.addEventListener("input", handleComposerInput);
   elements.attachmentInput?.addEventListener("change", (event) => {
-    void sendAttachmentFiles(event.currentTarget?.files).catch((error) => {
-      showToast(error.message || "附件发送失败");
-    });
+    const input = event.currentTarget;
+    void sendAttachmentFiles(input?.files)
+      .catch((error) => {
+        showToast(error.message || "附件发送失败");
+      })
+      .finally(() => {
+        if (input) {
+          input.value = "";
+        }
+      });
   });
   elements.contextCopyButton?.addEventListener("click", () => {
     const target = state.contextMenuMessageId ? elements.messageList.querySelector(`[data-message-id="${state.contextMenuMessageId}"] .message-copy-button`) : null;
@@ -6010,7 +6091,7 @@ function bindEvents() {
   });
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
-  window.visualViewport?.addEventListener("resize", scheduleResponsiveRender);
+  window.visualViewport?.addEventListener("resize", scheduleViewportOnlySync);
   document.addEventListener("click", (event) => {
     if (!isAccountMenuEventTarget(event.target)) {
       closeAccountMenu();

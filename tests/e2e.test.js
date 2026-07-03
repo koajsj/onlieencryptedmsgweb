@@ -12,6 +12,13 @@ const test = require("node:test");
 const ROOT_DIR = path.resolve(__dirname, "..");
 const SERVER_PATH = path.join(ROOT_DIR, "server.js");
 const APP_SOURCE = path.join(ROOT_DIR, "public", "app.js");
+const UI_UTILS_SOURCE = path.join(ROOT_DIR, "public", "ui-utils.js");
+const ADMIN_SOURCE = path.join(ROOT_DIR, "public", "admin.js");
+const ADMIN_USER_SOURCE = path.join(ROOT_DIR, "public", "admin-user.js");
+const INDEX_HTML = path.join(ROOT_DIR, "public", "index.html");
+const ADMIN_HTML = path.join(ROOT_DIR, "public", "admin.html");
+const ADMIN_USER_HTML = path.join(ROOT_DIR, "public", "admin-user.html");
+const CONFIG_SOURCE = path.join(ROOT_DIR, "config.js");
 const DEPLOY_SCRIPT = path.join(ROOT_DIR, "scripts", "deploy-debian.sh");
 const UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "update-debian.sh");
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
@@ -247,6 +254,8 @@ async function decryptMessage(selfIdentity, selfUsername, peerUsername, peerPubl
 
 test("browser client never uploads or restores server-side private key bundles", () => {
   const appSource = fs.readFileSync(APP_SOURCE, "utf8");
+  const adminUserSource = fs.readFileSync(ADMIN_USER_SOURCE, "utf8");
+  const configSource = fs.readFileSync(CONFIG_SOURCE, "utf8");
   assert.doesNotMatch(appSource, /encryptedPrivateKey/);
   assert.doesNotMatch(appSource, /privateKeySalt/);
   assert.doesNotMatch(appSource, /privateKeyIv/);
@@ -256,6 +265,56 @@ test("browser client never uploads or restores server-side private key bundles",
   assert.match(appSource, /publicKey:\s*identity\.publicKeyBase64/);
   assert.match(appSource, /deleteScopedStorageRecord\(STORAGE\.deviceIdentities/);
   assert.doesNotMatch(appSource, /同一账号可多端进入/);
+  assert.doesNotMatch(adminUserSource, /encryptedPrivateKey|privateKeySalt|privateKeyIv/);
+  assert.match(adminUserSource, /privateKeyStoredOnServer/);
+  assert.doesNotMatch(configSource, /PRIVATE_KEY_SALT_BYTES|PRIVATE_KEY_IV_BYTES|ENCRYPTED_PRIVATE_KEY_BYTES/);
+});
+
+test("browser client keeps static HTML chrome readable", () => {
+  const pages = [
+    [INDEX_HTML, "进入私密会话"],
+    [ADMIN_HTML, "管理员登录"],
+    [ADMIN_USER_HTML, "用户详情"]
+  ];
+  for (const [file, expectedText] of pages) {
+    const source = fs.readFileSync(file, "utf8");
+    assert.match(source, new RegExp(expectedText));
+    assert.doesNotMatch(source, /锟斤拷|�|鐧|鎼|娑|璇|绉|鑱|閫|瀵/);
+  }
+});
+
+test("client guards duplicate sends and mobile viewport resizing", () => {
+  const appSource = fs.readFileSync(APP_SOURCE, "utf8");
+  const uiUtilsSource = fs.readFileSync(UI_UTILS_SOURCE, "utf8");
+  const adminSource = fs.readFileSync(ADMIN_SOURCE, "utf8");
+  const adminUserSource = fs.readFileSync(ADMIN_USER_SOURCE, "utf8");
+  const closeEventStreamBody = appSource.slice(
+    appSource.indexOf("function closeEventStream"),
+    appSource.indexOf("function clearSession")
+  );
+  assert.match(appSource, /function setSubmitInFlight/);
+  assert.match(appSource, /state\.submitInFlight \|\| !state\.activePeer \|\| blocked/);
+  assert.match(appSource, /setAttribute\("aria-busy", "true"\)/);
+  assert.match(appSource, /setAttribute\("aria-label", "正在发送消息"\)/);
+  assert.match(appSource, /\.finally\(\(\) => setSubmitInFlight\(false\)\)/);
+  assert.doesNotMatch(appSource, /window\.setTimeout\(\(\) => \{\s*state\.submitInFlight = false/);
+  assert.match(appSource, /function scheduleViewportOnlySync/);
+  assert.match(appSource, /const viewportChanged = syncViewportHeight\(\);[\s\S]*if \(!viewportChanged\) \{[\s\S]*return;/);
+  assert.match(appSource, /visualViewport\?\.\addEventListener\("resize", scheduleViewportOnlySync\)/);
+  assert.doesNotMatch(closeEventStreamBody, /manualEventSourceClose = false/);
+  assert.match(appSource, /setComposerBusy\(false\);\s*syncReplyState\(\);/);
+  assert.match(appSource, /if \(virtualWindow\) \{\s*elements\.messageList\.scrollTop = previousScrollTop;\s*updateScrollBottomButton\(\);\s*return;/);
+  assert.match(appSource, /Math\.hypot\(touch\.clientX - state\.longPressTouchX, touch\.clientY - state\.longPressTouchY\)/);
+  assert.match(appSource, /bundle\.capabilities\.zeroKnowledgeMessages !== true/);
+  assert.match(appSource, /return bytes;\s*\}\s*function renderAttachmentTransfers/);
+  assert.match(appSource, /const bytes = await validateAttachmentFile\(file\);[\s\S]*buildAttachmentMessageText\(file, bytes\)/);
+  assert.match(appSource, /sendAttachmentFiles\(input\?\.files\)[\s\S]*input\.value = ""/);
+  assert.match(uiUtilsSource, /CLIENT_META_REFRESH_MS = 6 \* 60 \* 60 \* 1000/);
+  assert.match(uiUtilsSource, /setItem\(CLIENT_META_SENT_STORAGE_KEY, String\(now\)\)/);
+  assert.doesNotMatch(uiUtilsSource, /getItem\(CLIENT_META_SENT_STORAGE_KEY\) === "1"/);
+  assert.match(adminSource, /window\.clearTimeout\(state\.toastTimer\)/);
+  assert.match(adminUserSource, /formatIpLocation\(sessionItem\)/);
+  assert.match(adminUserSource, /window\.clearTimeout\(state\.toastTimer\)/);
 });
 
 test("deployment scripts preserve generated assets and verify the build without rotating admin credentials by default", () => {
@@ -269,6 +328,7 @@ test("deployment scripts preserve generated assets and verify the build without 
   assert.match(updateScript, /npm run verify:build/);
   assert.match(updateScript, /read_env_value "ADMIN_PASSWORD_HASH"/);
   assert.doesNotMatch(updateScript, /ensure_line "ADMIN_PASSWORD_HASH" "\$\(hash_password "\$\{ADMIN_PASSWORD\}"\)"/);
+  assert.doesNotMatch(fs.readFileSync(path.join(ROOT_DIR, "config.js"), "utf8"), /ADMIN_IP_ALLOWLIST/);
 });
 
 test("server stores only public keys and ciphertext while clients can decrypt each other", async () => {
@@ -276,6 +336,7 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
   try {
     const aliceIdentity = await createIdentity();
     const bobIdentity = await createIdentity();
+    const charlieIdentity = await createIdentity();
 
     const aliceRegister = await requestJson(server.port, "/api/register", {
       method: "POST",
@@ -301,6 +362,16 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.equal(bobRegister.json.user.publicKey, bobIdentity.publicKeyBase64);
     assert.equal(bobRegister.json.keyBundle, undefined);
 
+    const charlieRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "Charlie",
+        password: "earth123",
+        publicKey: charlieIdentity.publicKeyBase64
+      }
+    });
+    assert.equal(charlieRegister.status, 201);
+
     const aliceLogin = await requestJson(server.port, "/api/login", {
       method: "POST",
       body: { username: "Alice", password: "hello123" }
@@ -317,15 +388,37 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     });
     assert.equal(prekey.status, 200);
     assert.equal(prekey.json.identityKey, bobIdentity.publicKeyBase64);
+    assert.equal(prekey.json.privateKeyStoredOnServer, false);
+    assert.equal(prekey.json.capabilities.zeroKnowledgeMessages, true);
+    assert.equal(prekey.json.capabilities.encryptedAttachments, true);
+    assert.equal(prekey.json.capabilities.oneTimePreKeys, false);
+    assert.equal(prekey.json.preKeyModel, "identity-key-compat-v1");
+    assert.equal(prekey.json.signedPreKey.signature, null);
+    assert.deepEqual(prekey.json.oneTimePreKeys, []);
     assert.equal(prekey.json.encryptedPrivateKey, undefined);
 
     const plaintext = "zero knowledge plaintext";
     const encrypted = await encryptMessage(aliceIdentity, "Alice", "Bob", bobIdentity.publicKeyBase64, plaintext, 11);
+
+    const malformedNonce = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceLogin.session,
+      body: {
+        to: "Bob",
+        clientId: "test-message-bad1",
+        nonce: `${encrypted.nonce}=`,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(malformedNonce.status, 400);
+    assert.equal(malformedNonce.json.error, "invalid message payload");
+
     const sent = await requestJson(server.port, "/api/messages", {
       method: "POST",
       session: aliceLogin.session,
       body: {
         to: "Bob",
+        clientId: "test-message-0001",
         nonce: encrypted.nonce,
         ciphertext: encrypted.ciphertext
       }
@@ -334,6 +427,76 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.equal(sent.json.message.text, null);
     assert.equal(sent.json.message.ciphertext, encrypted.ciphertext);
     assert.equal(sent.json.message.nonce, encrypted.nonce);
+
+    const duplicateAttempt = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceLogin.session,
+      body: {
+        to: "Bob",
+        clientId: sent.json.message.clientId,
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(duplicateAttempt.status, 200);
+    assert.equal(duplicateAttempt.json.message.id, sent.json.message.id);
+
+    const nonceReplay = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceLogin.session,
+      body: {
+        to: "Bob",
+        clientId: "test-message-0002",
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(nonceReplay.status, 409);
+    assert.equal(nonceReplay.json.error, "duplicate message nonce");
+
+    const encryptedForCharlie = await encryptMessage(
+      aliceIdentity,
+      "Alice",
+      "Charlie",
+      charlieIdentity.publicKeyBase64,
+      "same sender nonce replay",
+      11
+    );
+    const crossPeerNonceReplay = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceLogin.session,
+      body: {
+        to: "Charlie",
+        clientId: "test-message-0003",
+        nonce: encryptedForCharlie.nonce,
+        ciphertext: encryptedForCharlie.ciphertext
+      }
+    });
+    assert.equal(crossPeerNonceReplay.status, 409);
+    assert.equal(crossPeerNonceReplay.json.error, "duplicate message nonce");
+
+    const attachmentPlaintext = '[[echo-attachment-v1]]{"name":"report.txt","type":"text/plain","size":5,"data":"aGVsbG8="}';
+    const encryptedAttachment = await encryptMessage(
+      aliceIdentity,
+      "Alice",
+      "Bob",
+      bobIdentity.publicKeyBase64,
+      attachmentPlaintext,
+      12
+    );
+    const sentAttachment = await requestJson(server.port, "/api/messages/attachment", {
+      method: "POST",
+      session: aliceLogin.session,
+      body: {
+        to: "Bob",
+        clientId: "test-attachment-0001",
+        nonce: encryptedAttachment.nonce,
+        ciphertext: encryptedAttachment.ciphertext
+      }
+    });
+    assert.equal(sentAttachment.status, 201);
+    assert.equal(sentAttachment.json.message.text, null);
+    assert.equal(sentAttachment.json.message.ciphertext, encryptedAttachment.ciphertext);
 
     const plaintextOnly = await requestJson(server.port, "/api/messages", {
       method: "POST",
@@ -350,10 +513,11 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
       session: bobLogin.session
     });
     assert.equal(history.status, 200);
-    assert.equal(history.json.messages.length, 1);
+    assert.equal(history.json.messages.length, 2);
     assert.equal(history.json.messages[0].text, null);
     assert.equal(history.json.messages[0].ciphertext, encrypted.ciphertext);
     assert.equal(history.json.messages[0].nonce, encrypted.nonce);
+    assert.equal(history.json.messages[1].text, null);
 
     const decrypted = await decryptMessage(
       bobIdentity,
@@ -363,6 +527,14 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
       history.json.messages[0]
     );
     assert.equal(decrypted, plaintext);
+    const decryptedAttachment = await decryptMessage(
+      bobIdentity,
+      "Bob",
+      "Alice",
+      aliceIdentity.publicKeyBase64,
+      history.json.messages[1]
+    );
+    assert.equal(decryptedAttachment, attachmentPlaintext);
 
     const keyBundle = await requestJson(server.port, "/api/me/key-bundle", {
       session: aliceLogin.session
@@ -377,8 +549,10 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.match(usersJson, new RegExp(aliceIdentity.publicKeyBase64.replace(/[+/=]/g, "\\$&")));
     assert.doesNotMatch(usersJson, /encryptedPrivateKey|privateKeySalt|privateKeyIv|privateKeyPkcs8/i);
     assert.doesNotMatch(storedMessages, /zero knowledge plaintext/);
+    assert.doesNotMatch(storedMessages, /report\.txt|aGVsbG8=/);
     assert.doesNotMatch(messagesLog, /zero knowledge plaintext/);
     assert.match(storedMessages, new RegExp(encrypted.ciphertext.replace(/[+/=]/g, "\\$&")));
+    assert.match(storedMessages, new RegExp(encryptedAttachment.ciphertext.replace(/[+/=]/g, "\\$&")));
   } finally {
     await server.stop();
   }
@@ -520,7 +694,7 @@ test("session management can revoke another active device without logging out th
   }
 });
 
-test("public key rotation endpoint accepts only public key material", async () => {
+test("public key upload is idempotent and refuses identity key rotation", async () => {
   const server = await startServer();
   try {
     const identity = await createIdentity();
@@ -539,17 +713,28 @@ test("public key rotation endpoint accepts only public key material", async () =
       method: "POST",
       session: register.session,
       body: {
-        publicKey: nextIdentity.publicKeyBase64
+        publicKey: identity.publicKeyBase64
       }
     });
     assert.equal(upload.status, 200);
     assert.equal(upload.json.ok, true);
-    assert.equal(upload.json.publicKey.identityKey, nextIdentity.publicKeyBase64);
+    assert.equal(upload.json.publicKey.identityKey, identity.publicKeyBase64);
     assert.equal(upload.json.keyBundle, undefined);
+
+    const rotation = await requestJson(server.port, "/upload-public-key", {
+      method: "POST",
+      session: register.session,
+      body: {
+        publicKey: nextIdentity.publicKeyBase64
+      }
+    });
+    assert.equal(rotation.status, 409);
+    assert.equal(rotation.json.error, "identity public key already registered");
 
     await delay(200);
     const usersJson = fs.readFileSync(path.join(server.dataDir, "users.json"), "utf8");
-    assert.match(usersJson, new RegExp(nextIdentity.publicKeyBase64.replace(/[+/=]/g, "\\$&")));
+    assert.match(usersJson, new RegExp(identity.publicKeyBase64.replace(/[+/=]/g, "\\$&")));
+    assert.doesNotMatch(usersJson, new RegExp(nextIdentity.publicKeyBase64.replace(/[+/=]/g, "\\$&")));
     assert.doesNotMatch(usersJson, /encryptedPrivateKey|privateKeySalt|privateKeyIv/);
   } finally {
     await server.stop();

@@ -36,13 +36,15 @@ const state = {
   detail: null,
   csrfToken: "",
   loading: false,
-  lastRefreshAt: 0
+  lastRefreshAt: 0,
+  toastTimer: 0
 };
 
 function showToast(message) {
+  window.clearTimeout(state.toastTimer);
   elements.toast.textContent = String(message || "");
   elements.toast.classList.add("show");
-  window.setTimeout(() => elements.toast.classList.remove("show"), 2400);
+  state.toastTimer = window.setTimeout(() => elements.toast.classList.remove("show"), 2400);
 }
 
 function userDetailHref(username) {
@@ -162,26 +164,32 @@ function renderIdentity(detail) {
 }
 
 function renderCrypto(detail) {
+  const publicKey = detail.crypto?.publicKey || {};
+  const publicKeySummary = publicKey.present
+    ? `${publicKey.bytes || 0} bytes | SHA-256 ${String(publicKey.sha256 || "").slice(0, 16) || "-"}`
+    : "缺少公钥";
   const rows = [
-    { title: "公钥", field: "publicKey", value: detail.crypto?.publicKey },
-    { title: "私钥盐", field: "privateKeySalt", value: detail.crypto?.privateKeySalt },
-    { title: "私钥 IV", field: "privateKeyIv", value: detail.crypto?.privateKeyIv },
-    { title: "加密私钥包", field: "encryptedPrivateKey", value: detail.crypto?.encryptedPrivateKey }
+    {
+      title: "公钥",
+      summary: publicKeySummary
+    },
+    {
+      title: "私钥保存位置",
+      summary: detail.crypto?.privateKeyStoredOnServer === false
+        ? "仅保存在用户浏览器设备，服务端不可读取"
+        : "未知，建议检查历史数据"
+    },
+    {
+      title: "后台可见内容",
+      summary: "仅密文元数据与公钥摘要，不展示私钥材料"
+    }
   ];
-  elements.cryptoList.innerHTML = rows.map((row) => {
-    const item = row.value || {};
-    const summary = row.field === "encryptedPrivateKey"
-      ? (item.present ? "已保存密钥包" : "缺失")
-      : item.present
-        ? `${item.bytes || 0} bytes · ${item.preview || "-"}`
-        : "历史数据未提供";
-    return `
+  elements.cryptoList.innerHTML = rows.map((row) => `
       <article class="detail-item">
         <strong>${escapeHtml(row.title)}</strong>
-        <div class="detail-item-meta">${escapeHtml(summary)}</div>
+        <div class="detail-item-meta">${escapeHtml(row.summary)}</div>
       </article>
-    `;
-  }).join("");
+    `).join("");
 }
 
 function renderSessions(detail) {
@@ -190,6 +198,8 @@ function renderSessions(detail) {
     ? sessions.map((sessionItem) => `
           <article class="detail-item">
             <strong>活跃会话</strong>
+            <div class="detail-item-meta">${escapeHtml(`${sessionItem.browser || "-"} · ${sessionItem.os || "-"} · ${sessionItem.device || "-"}`)}</div>
+            <div class="detail-item-meta">IP ${escapeHtml(formatIpLocation(sessionItem))}</div>
             <div class="detail-item-meta">创建时间 ${escapeHtml(formatDateTime(sessionItem.createdAt))}</div>
             <div class="detail-item-meta">最近活动 ${escapeHtml(formatDateTime(sessionItem.lastSeenAt))}</div>
             <div class="detail-item-meta">过期时间 ${escapeHtml(formatDateTime(sessionItem.expiresAt))}</div>

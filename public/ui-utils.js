@@ -2,6 +2,7 @@
 
 (function initializeEchoUiUtils() {
   const CLIENT_META_SENT_STORAGE_KEY = "secure_chat_client_meta_sent_v1";
+  const CLIENT_META_REFRESH_MS = 6 * 60 * 60 * 1000;
 
   function escapeHtml(value) {
     return String(value)
@@ -34,12 +35,15 @@
   }
 
   async function reportClientMetaOnce() {
+    const now = Date.now();
     try {
-      if (window.localStorage.getItem(CLIENT_META_SENT_STORAGE_KEY) === "1") {
+      const lastReportedAt = Number(window.localStorage.getItem(CLIENT_META_SENT_STORAGE_KEY) || "0");
+      if (lastReportedAt > 0 && now - lastReportedAt < CLIENT_META_REFRESH_MS) {
         return;
       }
     } catch (error) {
-      return;
+      // Storage can be disabled; still report once for this page so admin device
+      // metadata does not silently go stale.
     }
 
     const payload = {
@@ -60,7 +64,11 @@
         keepalive: true,
         body: JSON.stringify(payload)
       });
-      window.localStorage.setItem(CLIENT_META_SENT_STORAGE_KEY, "1");
+      try {
+        window.localStorage.setItem(CLIENT_META_SENT_STORAGE_KEY, String(now));
+      } catch (error) {
+        // Optional throttling only.
+      }
     } catch (error) {
       // Client metadata is optional and must not interrupt the application.
     }

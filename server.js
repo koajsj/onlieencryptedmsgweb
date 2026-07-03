@@ -50,8 +50,7 @@ const {
   USER_SESSION_COOKIE, ADMIN_SESSION_COOKIE,
   DEFAULT_ADMIN_USERNAME_VALUE,
   AUDIT_TEXT_RETENTION_DAYS, TRUST_PROXY, TRUSTED_ORIGINS,
-  PUBLIC_KEY_BYTES, PRIVATE_KEY_SALT_BYTES, PRIVATE_KEY_IV_BYTES,
-  ENCRYPTED_PRIVATE_KEY_BYTES, MESSAGE_NONCE_BYTES, MESSAGE_CIPHERTEXT_BYTES,
+  PUBLIC_KEY_BYTES, MESSAGE_NONCE_BYTES, MESSAGE_CIPHERTEXT_BYTES,
   ADMIN_LOGIN_FAILURE_WINDOW_MS, ADMIN_LOGIN_LOCKOUT_MS, ADMIN_LOGIN_MAX_FAILURES,
   USER_LOGIN_FAILURE_WINDOW_MS, USER_LOGIN_LOCKOUT_MS, USER_LOGIN_MAX_FAILURES,
   MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER, DUMMY_PASSWORD_HASH
@@ -726,7 +725,7 @@ function rebuildMessageBuckets() {
       messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
     }
     if (message.nonce) {
-      messageNonceIndex.add(messageNonceReplayKey(message.from, message.to, message.nonce));
+      messageNonceIndex.add(messageNonceReplayKey(message.from, message.nonce));
     }
   }
   for (const bucket of messageBuckets.values()) {
@@ -765,7 +764,7 @@ function appendMessageBucket(message) {
     messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
   }
   if (message.nonce) {
-    messageNonceIndex.add(messageNonceReplayKey(message.from, message.to, message.nonce));
+    messageNonceIndex.add(messageNonceReplayKey(message.from, message.nonce));
   }
 }
 
@@ -884,13 +883,6 @@ function isReservedUsernameKey(usernameKey) {
   return String(usernameKey || "").trim().toLowerCase() === String(adminConfig.username || "").trim().toLowerCase();
 }
 
-function normalizeMessageText(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-}
-
 function normalizeClientId(value) {
   if (typeof value !== "string") {
     return "";
@@ -902,8 +894,8 @@ function normalizeClientId(value) {
   return clientId;
 }
 
-function messageNonceReplayKey(from, to, nonce) {
-  return `${String(from || "")}\u0000${String(to || "")}\u0000${String(nonce || "")}`;
+function messageNonceReplayKey(from, nonce) {
+  return `${String(from || "")}\u0000${String(nonce || "")}`;
 }
 
 
@@ -1185,48 +1177,45 @@ function listContactsFor(ownerUsername) {
 }
 
 function publicKeyBundleForUser(user) {
+  const publicKeyBytes = decodeBase64Blob(user.publicKey);
+  const fingerprint = publicKeyBytes
+    ? crypto.createHash("sha256").update(publicKeyBytes).digest("hex")
+    : "";
   return {
     userId: user.username,
     username: user.username,
     usernameKey: user.usernameKey,
     algorithm: "ECDH-P256+HKDF-SHA256+AES-256-GCM",
+    keyAgreement: "identity-key-ecdh-v1",
     identityKey: user.publicKey,
-    publicKey: user.publicKey
+    publicKey: user.publicKey,
+    fingerprint,
+    privateKeyStoredOnServer: false,
+    capabilities: {
+      zeroKnowledgeMessages: true,
+      encryptedAttachments: true,
+      signedPreKeys: false,
+      oneTimePreKeys: false,
+      multiDeviceKeyBundles: false
+    }
   };
 }
 
 function prekeyBundleForUser(user) {
   return {
     ...publicKeyBundleForUser(user),
-    preKeyBundleVersion: 1,
+    preKeyBundleVersion: 2,
+    preKeyModel: "identity-key-compat-v1",
     signedPreKey: {
       keyId: `identity:${user.usernameKey}`,
-      publicKey: user.publicKey
+      publicKey: user.publicKey,
+      signature: null,
+      signatureVerified: false
     },
-    oneTimePreKeys: []
-  };
-}
-
-function publicKeyBundleForUser(user) {
-  return {
-    userId: user.username,
-    username: user.username,
-    usernameKey: user.usernameKey,
-    algorithm: "ECDH-P256+HKDF-SHA256+AES-256-GCM",
-    identityKey: user.publicKey,
-    publicKey: user.publicKey
-  };
-}
-
-function prekeyBundleForUser(user) {
-  return {
-    ...publicKeyBundleForUser(user),
-    preKeyBundleVersion: 1,
-    signedPreKey: {
-      keyId: `identity:${user.usernameKey}`,
-      publicKey: user.publicKey
-    },
-    oneTimePreKeys: []
+    oneTimePreKeys: [],
+    limitations: [
+      "Signal Double Ratchet, one-time prekey pools, and multi-device key bundles are not enabled in this build; the server publishes public key material only and never generates session keys."
+    ]
   };
 }
 
@@ -1236,6 +1225,7 @@ function summarizeEncodedBlob(value) {
   return {
     present: raw.length > 0,
     bytes: bytes ? bytes.length : 0,
+    sha256: bytes ? crypto.createHash("sha256").update(bytes).digest("hex") : "",
     preview: raw.length > 0 ? "[hidden]" : ""
   };
 }
@@ -1849,6 +1839,62 @@ function listUserSessions(username, currentSessionId = "") {
     }));
 }
 
+function basicIpAttribution(ip) {
+  const value = String(ip || "").trim().toLowerCase();
+  if (!value || value === "unknown") {
+    return "未知";
+  }
+  if (value === "::1" || value === "127.0.0.1" || value === "localhost") {
+    return "本机";
+  }
+  if (value.includes(":")) {
+    return /^f[cd][0-9a-f]{0,2}:/.test(value) || value.startsWith("fe80:") ? "内网" : "IPv6";
+  }
+  const match = value.match(/^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+  if (!match) {
+    return "未知";
+  }
+  const first = Number(match[1]);
+  const second = Number(match[2]);
+  if (
+    first === 10 ||
+    first === 127 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  ) {
+    return "内网";
+  }
+  return "IPv4";
+}
+
+function sessionIpAttribution(ip, accessProfile, accessLogs) {
+  const normalizedIp = String(ip || "").trim();
+  if (!normalizedIp) {
+    return "";
+  }
+  const exactLog = (Array.isArray(accessLogs) ? accessLogs : []).find(
+    (row) => String(row?.ip || "").trim() === normalizedIp && String(row?.ipAttribution || row?.ipLocation || "").trim()
+  );
+  if (exactLog) {
+    return String(exactLog.ipAttribution || exactLog.ipLocation || "").trim();
+  }
+  if (String(accessProfile?.ip || "").trim() === normalizedIp) {
+    return String(accessProfile?.ipAttribution || accessProfile?.ipLocation || "").trim() || basicIpAttribution(normalizedIp);
+  }
+  return basicIpAttribution(normalizedIp);
+}
+
+function enrichSessionsWithAccessLocations(sessionsList, accessProfile, accessLogs) {
+  return sessionsList.map((sessionRecord) => {
+    const ipAttribution = sessionIpAttribution(sessionRecord.ip, accessProfile, accessLogs);
+    return {
+      ...sessionRecord,
+      ipAttribution,
+      ipLocation: ipAttribution
+    };
+  });
+}
+
 function buildUserMessageStats(username) {
   let sent = 0;
   let received = 0;
@@ -1915,12 +1961,6 @@ function messageAuditLabel(message) {
     return "端到端加密密文，后台不可读取明文";
   }
   return "消息缺少密文载荷，已按异常历史数据处理";
-}
-
-function wrappedPrivateKeyPresence(value) {
-  return {
-    present: String(value || "").length > 0
-  };
 }
 
 function ciphertextAdminMetadata(value) {
@@ -2066,7 +2106,7 @@ async function buildAdminUserDetail(user) {
       publicKey: summarizeEncodedBlob(user.publicKey),
       privateKeyStoredOnServer: false
     },
-    sessions: sessionsList,
+    sessions: enrichSessionsWithAccessLocations(sessionsList, accessProfile, accessLogs.rows || []),
     realtime: {
       eventConnections: Number(onlineConnections.get(user.username)?.size || 0)
     },
@@ -2991,6 +3031,10 @@ async function handleUploadPublicKey(req, res, url) {
   const publicKey = String(body.publicKey || body.identityKey || "").trim();
   if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
     sendJson(res, 400, { error: "invalid public key bundle" });
+    return;
+  }
+  if (user.publicKey && user.publicKey !== publicKey) {
+    sendJson(res, 409, { error: "identity public key already registered" });
     return;
   }
   user.publicKey = publicKey;
@@ -4317,7 +4361,7 @@ async function handleSendMessage(req, res, url) {
     sendJson(res, 400, { error: "invalid message payload" });
     return;
   }
-  if (messageNonceIndex.has(messageNonceReplayKey(session.username, peer.username, nonce))) {
+  if (messageNonceIndex.has(messageNonceReplayKey(session.username, nonce))) {
     sendJson(res, 409, { error: "duplicate message nonce" });
     return;
   }

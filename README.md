@@ -294,6 +294,12 @@ npm run build
 npm test
 ```
 
+默认测试只跑快速的客户端与部署护栏，适合日常修改后快速确认。涉及安全、登录、消息发送或服务端接口时，部署前再跑完整 E2E：
+
+```bash
+npm run test:full
+```
+
 检查构建产物：
 
 ```bash
@@ -305,14 +311,16 @@ npm run check
 The chat path is client-encrypted and server zero-knowledge:
 
 - Browser clients generate a long-lived P-256 ECDH identity key pair.
-- The private identity key is wrapped in the browser with PBKDF2 + AES-GCM before upload; the server stores only the wrapped blob and cannot decrypt it.
-- Public identity keys are published through `GET /public-key/:userId` and `GET /prekey-bundle/:userId`.
+- The private identity key stays in the browser's local device vault; it is never uploaded, wrapped, restored, or decrypted by the server.
+- Public identity keys are published through `GET /public-key/:userId` and `GET /prekey-bundle/:userId`; an existing identity key cannot be silently replaced.
 - Clients derive a non-extractable session message key with ECDH shared secret + HKDF-SHA256.
 - Every message uses AES-GCM with a fresh nonce and non-null AAD bound to `{ from, to }`.
 - `POST /api/messages` accepts only `ciphertext` and `nonce`; plaintext message bodies are rejected and never stored.
+- `POST /api/messages/attachment` uses the same ciphertext-only path; attachment names, bytes, and previews are encrypted inside the client payload.
 - The server stores message ciphertext, nonce, sender, recipient, id, and timestamp metadata only.
-- The server keeps a per-sender/per-recipient nonce replay index and rejects duplicate nonces with `409 duplicate message nonce`.
+- The server keeps a per-sender nonce replay index and rejects duplicate nonces with `409 duplicate message nonce`.
 - There is no base64 plaintext fallback and no server-side message decrypt path.
+- The current `prekey-bundle` response is an identity-key compatibility bundle. It does not claim Signal Double Ratchet, one-time prekey pools, or multi-device key bundles.
 
 Key exchange endpoints:
 

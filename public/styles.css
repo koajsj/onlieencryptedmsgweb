@@ -1049,6 +1049,18 @@ img {
   min-width: 116px;
 }
 
+.send-button[data-busy="true"] {
+  cursor: wait;
+}
+
+.send-button[data-busy="true"] .send-icon {
+  animation: send-pulse 760ms ease-in-out infinite;
+}
+
+.send-button.is-sent-feedback .send-icon {
+  animation: send-pop 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
 .send-button .send-icon,
 .send-button .send-label {
   color: #ffffff;
@@ -1753,6 +1765,29 @@ img {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes send-pulse {
+  0%, 100% {
+    opacity: 0.76;
+    transform: translateX(0) scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(2px) scale(0.96);
+  }
+}
+
+@keyframes send-pop {
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  45% {
+    transform: translateY(-2px) scale(1.08);
+  }
+  100% {
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -4505,6 +4540,7 @@ textarea:focus-visible {
     height: 44px;
     min-height: 44px;
     padding: 0;
+    touch-action: manipulation;
   }
 
   .send-button .send-label {
@@ -4833,5 +4869,10 @@ textarea:focus-visible {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .send-button[data-busy="true"] .send-icon,
+  .send-button.is-sent-feedback .send-icon {
+    animation: none !important;
   }
 }
