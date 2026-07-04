@@ -21,6 +21,8 @@ ADMIN_USERNAME="${ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
+PREVIOUS_REV=""
+CURRENT_REV=""
 SAFE_RESET_PATHS=(
   "public/index.html"
   "public/admin.html"
@@ -160,9 +162,11 @@ update_repository() {
   git config --global --add safe.directory "${APP_DIR}" 2>/dev/null || true
   reset_safe_generated_files
   assert_clean_worktree_for_pull
+  PREVIOUS_REV="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || true)"
   git -C "${APP_DIR}" fetch origin "${APP_BRANCH}"
   git -C "${APP_DIR}" checkout "${APP_BRANCH}"
   git -C "${APP_DIR}" pull --ff-only origin "${APP_BRANCH}"
+  CURRENT_REV="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || true)"
 }
 
 build_application() {
@@ -175,11 +179,47 @@ build_application() {
 
 restart_application() {
   systemctl restart "${APP_NAME}"
-  if ! systemctl is-active --quiet "${APP_NAME}"; then
-    echo "${APP_NAME} failed to restart. Recent logs:" >&2
-    journalctl -u "${APP_NAME}" -n 60 --no-pager >&2 || true
-    exit 1
+  if systemctl is-active --quiet "${APP_NAME}" && wait_for_application_health; then
+    return
   fi
+  echo "${APP_NAME} failed to restart cleanly after update. Recent logs:" >&2
+  journalctl -u "${APP_NAME}" -n 60 --no-pager >&2 || true
+  rollback_application
+  exit 1
+}
+
+wait_for_application_health() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+  local url="http://${APP_HOST}:${APP_PORT}/health"
+  local attempt=0
+  for attempt in $(seq 1 30); do
+    if curl -fsS --max-time 2 "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+rollback_application() {
+  if [ -z "${PREVIOUS_REV}" ] || [ "${PREVIOUS_REV}" = "${CURRENT_REV}" ]; then
+    echo "No previous revision is available for rollback." >&2
+    return 1
+  fi
+  echo "Rolling back ${APP_NAME} to ${PREVIOUS_REV}..." >&2
+  reset_safe_generated_files
+  git -C "${APP_DIR}" checkout --detach "${PREVIOUS_REV}"
+  build_application
+  systemctl restart "${APP_NAME}"
+  if systemctl is-active --quiet "${APP_NAME}" && wait_for_application_health; then
+    echo "Rollback succeeded. The update did not complete; inspect logs before retrying." >&2
+    return 0
+  fi
+  echo "Rollback failed. Recent logs:" >&2
+  journalctl -u "${APP_NAME}" -n 80 --no-pager >&2 || true
+  return 1
 }
 
 assert_caddy_available() {

@@ -15,6 +15,7 @@ const APP_SOURCE = path.join(ROOT_DIR, "public", "app.js");
 const UI_UTILS_SOURCE = path.join(ROOT_DIR, "public", "ui-utils.js");
 const ADMIN_SOURCE = path.join(ROOT_DIR, "public", "admin.js");
 const ADMIN_USER_SOURCE = path.join(ROOT_DIR, "public", "admin-user.js");
+const MESSAGE_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "message-routes.js");
 const INDEX_HTML = path.join(ROOT_DIR, "public", "index.html");
 const ADMIN_HTML = path.join(ROOT_DIR, "public", "admin.html");
 const ADMIN_USER_HTML = path.join(ROOT_DIR, "public", "admin-user.html");
@@ -151,6 +152,131 @@ async function requestJson(port, pathname, { method = "GET", body, session } = {
     status: response.status,
     json: payload,
     session: nextSession
+  };
+}
+
+function parseSseBlock(block) {
+  const lines = String(block || "").replace(/\r/g, "").split("\n");
+  let event = "message";
+  const dataLines = [];
+  for (const line of lines) {
+    if (!line || line.startsWith(":")) {
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      event = line.slice("event:".length).trim() || event;
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (dataLines.length === 0) {
+    return null;
+  }
+  const rawData = dataLines.join("\n");
+  let data = rawData;
+  try {
+    data = JSON.parse(rawData);
+  } catch (error) {
+    // Keep non-JSON SSE payloads readable to assertions.
+  }
+  return { event, data };
+}
+
+async function openEventStream(port, session) {
+  const ticketResponse = await requestJson(port, "/api/events/token", {
+    method: "POST",
+    session
+  });
+  assert.equal(ticketResponse.status, 200);
+  assert.ok(ticketResponse.json.ticket);
+
+  const controller = new AbortController();
+  const response = await fetch(`http://127.0.0.1:${port}/api/events?ticket=${encodeURIComponent(ticketResponse.json.ticket)}`, {
+    headers: { Accept: "text/event-stream" },
+    signal: controller.signal
+  });
+  assert.equal(response.status, 200);
+  assert.ok(response.body);
+
+  const events = [];
+  const waiters = [];
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  function resolveWaiters(sseEvent) {
+    for (let index = waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = waiters[index];
+      if (waiter.eventName !== sseEvent.event || !waiter.predicate(sseEvent.data)) {
+        continue;
+      }
+      waiters.splice(index, 1);
+      clearTimeout(waiter.timer);
+      waiter.resolve(sseEvent.data);
+    }
+  }
+
+  const pump = (async () => {
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          return;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let delimiter = buffer.indexOf("\n\n");
+        while (delimiter >= 0) {
+          const parsed = parseSseBlock(buffer.slice(0, delimiter));
+          buffer = buffer.slice(delimiter + 2);
+          if (parsed) {
+            events.push(parsed);
+            resolveWaiters(parsed);
+          }
+          delimiter = buffer.indexOf("\n\n");
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        throw error;
+      }
+    }
+  })();
+
+  return {
+    events,
+    waitForEvent(eventName, predicate = () => true, timeoutMs = 2000) {
+      const existing = events.find((entry) => entry.event === eventName && predicate(entry.data));
+      if (existing) {
+        return Promise.resolve(existing.data);
+      }
+      return new Promise((resolve, reject) => {
+        const waiter = {
+          eventName,
+          predicate,
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) {
+              waiters.splice(index, 1);
+            }
+            reject(new Error(`timed out waiting for ${eventName}`));
+          }, timeoutMs)
+        };
+        waiters.push(waiter);
+      });
+    },
+    async close() {
+      controller.abort();
+      try {
+        await reader.cancel();
+      } catch (error) {
+        // The abort path may already have closed the stream.
+      }
+      await pump.catch(() => {});
+    }
   };
 }
 
@@ -349,10 +475,20 @@ test("browser client keeps static HTML chrome readable", () => {
     [ADMIN_HTML, "管理员登录"],
     [ADMIN_USER_HTML, "用户详情"]
   ];
+  const mojibakeMarkers = [
+    "\ufffd",
+    "\u951f\u65a4\u62f7",
+    "\u9435",
+    "\u95ab",
+    "\u675e\u6d98",
+    "\u7ee0\u6b12"
+  ];
   for (const [file, expectedText] of pages) {
     const source = fs.readFileSync(file, "utf8");
     assert.match(source, new RegExp(expectedText));
-    assert.doesNotMatch(source, /锟斤拷|�|鐧|鎼|娑|璇|绉|鑱|閫|瀵/);
+    for (const marker of mojibakeMarkers) {
+      assert.equal(source.includes(marker), false, `${path.basename(file)} contains mojibake marker ${marker}`);
+    }
   }
 });
 
@@ -390,6 +526,19 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(adminUserSource, /window\.clearTimeout\(state\.toastTimer\)/);
 });
 
+test("browser client recall flow waits for the server and server source stays free of redaction mojibake", () => {
+  const appSource = fs.readFileSync(APP_SOURCE, "utf8");
+  const serverSource = fs.readFileSync(SERVER_PATH, "utf8");
+  const messageRoutesSource = fs.readFileSync(MESSAGE_ROUTES_SOURCE, "utf8");
+  assert.match(appSource, /async function recallMessageById/);
+  assert.match(appSource, /await api\("\/api\/messages\/recall", \{ method: "POST", body: \{ messageId: serverId \} \}\);/);
+  assert.match(appSource, /showToast\(error\.message \|\| "\\u64a4\\u56de\\u5931\\u8d25", "error"\)/);
+  assert.doesNotMatch(appSource, /api\("\/api\/messages\/recall", \{ method: "POST", body: \{ messageId: serverId \} \}\)\.catch\(\(\) => \{\}\)/);
+  assert.ok(serverSource.includes("${value.slice(0, 1024)}..."));
+  assert.doesNotMatch(serverSource, /…/);
+  assert.match(messageRoutesSource, /const target = messageIdIndex\.get\(messageId\);[\s\S]*target\.from !== session\.username/);
+});
+
 test("deployment scripts preserve generated assets and verify the build without rotating admin credentials by default", () => {
   const deployScript = fs.readFileSync(DEPLOY_SCRIPT, "utf8");
   const updateScript = fs.readFileSync(UPDATE_SCRIPT, "utf8");
@@ -400,6 +549,11 @@ test("deployment scripts preserve generated assets and verify the build without 
   assert.match(updateScript, /npm run lint/);
   assert.match(updateScript, /npm run verify:build/);
   assert.match(updateScript, /read_env_value "ADMIN_PASSWORD_HASH"/);
+  assert.match(updateScript, /PREVIOUS_REV="\$\(git -C "\$\{APP_DIR\}" rev-parse HEAD/);
+  assert.match(updateScript, /wait_for_application_health/);
+  assert.match(updateScript, /rollback_application/);
+  assert.match(deployScript, /public\/index\.html/);
+  assert.match(updateScript, /public\/index\.html/);
   assert.doesNotMatch(updateScript, /ensure_line "ADMIN_PASSWORD_HASH" "\$\(hash_password "\$\{ADMIN_PASSWORD\}"\)"/);
   assert.doesNotMatch(fs.readFileSync(path.join(ROOT_DIR, "config.js"), "utf8"), /ADMIN_IP_ALLOWLIST/);
 });
@@ -470,9 +624,12 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.equal(prekey.json.capabilities.zeroKnowledgeMessages, true);
     assert.equal(prekey.json.capabilities.encryptedAttachments, true);
     assert.equal(prekey.json.capabilities.oneTimePreKeys, false);
+    assert.equal(prekey.json.capabilities.multiDeviceKeyBundles, true);
+    assert.equal(prekey.json.capabilities.passwordEncryptedIdentityBundles, true);
     assert.equal(prekey.json.preKeyModel, "identity-key-compat-v1");
     assert.equal(prekey.json.signedPreKey.signature, null);
     assert.deepEqual(prekey.json.oneTimePreKeys, []);
+    assert.match(prekey.json.limitations.join(" "), /password-encrypted identity bundle/);
     assert.equal(prekey.json.encryptedPrivateKey, undefined);
 
     const plaintext = "zero knowledge plaintext";
@@ -633,6 +790,221 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.match(storedMessages, new RegExp(encrypted.ciphertext.replace(/[+/=]/g, "\\$&")));
     assert.match(storedMessages, new RegExp(encryptedAttachment.ciphertext.replace(/[+/=]/g, "\\$&")));
   } finally {
+    await server.stop();
+  }
+});
+
+test("recalled messages stay single after append log reload", async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "secure-chat-recall-"));
+  fs.writeFileSync(path.join(dataDir, "users.json"), "[]", "utf8");
+  fs.writeFileSync(path.join(dataDir, "messages.json"), "[]", "utf8");
+  fs.writeFileSync(path.join(dataDir, "messages.jsonl"), "", "utf8");
+  fs.writeFileSync(path.join(dataDir, "admin_audit.jsonl"), "", "utf8");
+
+  let server = await startServer({ DATA_DIR: dataDir });
+  try {
+    const aliceIdentity = await createIdentity();
+    const bobIdentity = await createIdentity();
+    const aliceRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "RecallAlice",
+        password: "hello123",
+        publicKey: aliceIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(aliceIdentity, "hello123")
+      }
+    });
+    assert.equal(aliceRegister.status, 201);
+
+    const bobRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "RecallBob",
+        password: "world123",
+        publicKey: bobIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(bobIdentity, "world123")
+      }
+    });
+    assert.equal(bobRegister.status, 201);
+
+    const encrypted = await encryptMessage(
+      aliceIdentity,
+      "RecallAlice",
+      "RecallBob",
+      bobIdentity.publicKeyBase64,
+      "recall persistence probe",
+      21
+    );
+    const sent = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: {
+        to: "RecallBob",
+        clientId: "recall-message-0001",
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(sent.status, 201);
+
+    const recalled = await requestJson(server.port, "/api/messages/recall", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: {
+        messageId: sent.json.message.id
+      }
+    });
+    assert.equal(recalled.status, 200);
+    await delay(350);
+    await server.stop();
+
+    server = await startServer({ DATA_DIR: dataDir });
+    const bobLogin = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: {
+        username: "RecallBob",
+        password: "world123"
+      }
+    });
+    assert.equal(bobLogin.status, 200);
+
+    const history = await requestJson(server.port, "/api/messages?with=RecallAlice", {
+      session: bobLogin.session
+    });
+    assert.equal(history.status, 200);
+    assert.equal(history.json.messages.length, 1);
+    assert.equal(history.json.messages[0].id, sent.json.message.id);
+    assert.equal(history.json.messages[0].recalled, true);
+  } finally {
+    if (server?.child?.exitCode === null) {
+      await server.stop();
+    }
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("message lifecycle events stay consistent across realtime streams and history views", async () => {
+  const server = await startServer();
+  let aliceStream = null;
+  let bobStream = null;
+  try {
+    const aliceIdentity = await createIdentity();
+    const bobIdentity = await createIdentity();
+    const aliceRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "LifeAlice",
+        password: "hello123",
+        publicKey: aliceIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(aliceIdentity, "hello123")
+      }
+    });
+    assert.equal(aliceRegister.status, 201);
+
+    const bobRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "LifeBob",
+        password: "world123",
+        publicKey: bobIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(bobIdentity, "world123")
+      }
+    });
+    assert.equal(bobRegister.status, 201);
+
+    aliceStream = await openEventStream(server.port, aliceRegister.session);
+    bobStream = await openEventStream(server.port, bobRegister.session);
+    assert.equal((await aliceStream.waitForEvent("ready")).me, "LifeAlice");
+    assert.equal((await bobStream.waitForEvent("ready")).me, "LifeBob");
+
+    const firstEncrypted = await encryptMessage(
+      aliceIdentity,
+      "LifeAlice",
+      "LifeBob",
+      bobIdentity.publicKeyBase64,
+      "lifecycle recall probe",
+      31
+    );
+    const firstSent = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: {
+        to: "LifeBob",
+        clientId: "lifecycle-message-0001",
+        nonce: firstEncrypted.nonce,
+        ciphertext: firstEncrypted.ciphertext
+      }
+    });
+    assert.equal(firstSent.status, 201);
+
+    const firstMessageId = firstSent.json.message.id;
+    assert.equal((await bobStream.waitForEvent("message", (payload) => payload.id === firstMessageId)).peer, "LifeAlice");
+    assert.equal((await aliceStream.waitForEvent("message", (payload) => payload.id === firstMessageId)).mine, true);
+
+    const recalled = await requestJson(server.port, "/api/messages/recall", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: { messageId: firstMessageId }
+    });
+    assert.equal(recalled.status, 200);
+    assert.equal((await aliceStream.waitForEvent("message-recalled", (payload) => payload.messageId === firstMessageId)).peer, "LifeBob");
+    assert.equal((await bobStream.waitForEvent("message-recalled", (payload) => payload.messageId === firstMessageId)).peer, "LifeAlice");
+
+    const secondEncrypted = await encryptMessage(
+      aliceIdentity,
+      "LifeAlice",
+      "LifeBob",
+      bobIdentity.publicKeyBase64,
+      "lifecycle delete probe",
+      32
+    );
+    const secondSent = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: {
+        to: "LifeBob",
+        clientId: "lifecycle-message-0002",
+        nonce: secondEncrypted.nonce,
+        ciphertext: secondEncrypted.ciphertext
+      }
+    });
+    assert.equal(secondSent.status, 201);
+    const secondMessageId = secondSent.json.message.id;
+    assert.equal((await bobStream.waitForEvent("message", (payload) => payload.id === secondMessageId)).peer, "LifeAlice");
+
+    const deleted = await requestJson(server.port, "/api/messages/delete", {
+      method: "POST",
+      session: bobRegister.session,
+      body: { messageId: secondMessageId }
+    });
+    assert.equal(deleted.status, 200);
+    assert.equal((await bobStream.waitForEvent("message-deleted", (payload) => payload.messageId === secondMessageId)).peer, "LifeAlice");
+    await assert.rejects(
+      aliceStream.waitForEvent("message-deleted", (payload) => payload.messageId === secondMessageId, 250),
+      /timed out waiting for message-deleted/
+    );
+
+    const bobHistory = await requestJson(server.port, "/api/messages?with=LifeAlice", {
+      session: bobRegister.session
+    });
+    assert.equal(bobHistory.status, 200);
+    assert.deepEqual(
+      bobHistory.json.messages.map((message) => message.id),
+      [firstMessageId]
+    );
+    assert.equal(bobHistory.json.messages[0].recalled, true);
+
+    const aliceHistory = await requestJson(server.port, "/api/messages?with=LifeBob", {
+      session: aliceRegister.session
+    });
+    assert.equal(aliceHistory.status, 200);
+    assert.deepEqual(
+      aliceHistory.json.messages.map((message) => message.id),
+      [firstMessageId, secondMessageId]
+    );
+  } finally {
+    await aliceStream?.close();
+    await bobStream?.close();
     await server.stop();
   }
 });

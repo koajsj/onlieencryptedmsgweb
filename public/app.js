@@ -5431,32 +5431,41 @@ function removeMessageFromConversationCache(peer, messageId) {
   return target;
 }
 
-function recallMessageById(peer, messageId) {
+async function recallMessageById(peer, messageId) {
+  const target = findMessageById(peer, messageId);
+  if (!target || !target.mine || target.recalled) {
+    return;
+  }
   const messageNode = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
   if (messageNode) {
     messageNode.classList.add("is-recalling");
   }
-  window.setTimeout(() => {
-  const messages = state.messageCache.get(peer) || [];
-  const target = messages.find((item) => (item.id === messageId || item.tempId === messageId) && item.mine);
-  if (!target) {
-    return;
+  try {
+    if (messageNode) {
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
+    }
+    const serverId = target.id || messageId;
+    if (serverId && !target.tempId) {
+      await api("/api/messages/recall", { method: "POST", body: { messageId: serverId } });
+    }
+    if (target.recalled) {
+      return;
+    }
+    target.recalled = true;
+    target.text = "";
+    if (target.tempId) {
+      removePendingOutboxEntry(target.tempId);
+      state.pendingMessages.delete(target.tempId);
+    }
+    syncConversationFromCache(peer);
+    renderSidebar();
+    renderThread({ scrollBehavior: "preserve" });
+    showToast("\u6d88\u606f\u5df2\u64a4\u56de");
+  } catch (error) {
+    showToast(error.message || "\u64a4\u56de\u5931\u8d25", "error");
+  } finally {
+    messageNode?.classList.remove("is-recalling");
   }
-  target.recalled = true;
-  target.text = "";
-  if (target.tempId) {
-    removePendingOutboxEntry(target.tempId);
-    state.pendingMessages.delete(target.tempId);
-  }
-  syncConversationFromCache(peer);
-  renderSidebar();
-  renderThread({ scrollBehavior: "preserve" });
-  showToast("\u6d88\u606f\u5df2\u64a4\u56de");
-  const serverId = target.id || messageId;
-  if (serverId && !target.tempId) {
-    api("/api/messages/recall", { method: "POST", body: { messageId: serverId } }).catch(() => {});
-  }
-  }, messageNode ? 180 : 0);
 }
 
 function handleRemoteRecall(payload) {

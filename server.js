@@ -7,6 +7,12 @@ const UAParser = require("ua-parser-js");
 const { createAccessLogMiddleware } = require("./middleware/access-log");
 const { createAccessLogStore } = require("./services/access-log-store");
 const { createStaticFileServer } = require("./services/static-file-server");
+const { createAccountRoutes } = require("./routes/account-routes");
+const { createAdminRoutes } = require("./routes/admin-routes");
+const { createContactRoutes } = require("./routes/contact-routes");
+const { createEventRoutes } = require("./routes/event-routes");
+const { createMessageRoutes } = require("./routes/message-routes");
+const { createSupportRoutes } = require("./routes/support-routes");
 const {
   ADMIN_AUDIT_HMAC_ALGO, ADMIN_AUDIT_SHA_ALGO,
   readConfiguredAdminConfig, validateConfiguredAdminConfig, warnIfWeakAdminCredential,
@@ -198,7 +204,7 @@ function redactSensitiveValue(value, depth = 0) {
   }
   if (!value || typeof value !== "object") {
     if (typeof value === "string" && value.length > 1024) {
-      return `${value.slice(0, 1024)}…`;
+      return `${value.slice(0, 1024)}...`;
     }
     return value;
   }
@@ -1245,7 +1251,8 @@ function publicKeyBundleForUser(user) {
       encryptedAttachments: true,
       signedPreKeys: false,
       oneTimePreKeys: false,
-      multiDeviceKeyBundles: false
+      multiDeviceKeyBundles: true,
+      passwordEncryptedIdentityBundles: true
     }
   };
 }
@@ -1263,7 +1270,7 @@ function prekeyBundleForUser(user) {
     },
     oneTimePreKeys: [],
     limitations: [
-      "Signal Double Ratchet, one-time prekey pools, and multi-device key bundles are not enabled in this build; the server publishes public key material only and never generates session keys."
+      "Signal Double Ratchet and one-time prekey pools are not enabled in this build; multi-device recovery uses an owner-only password-encrypted identity bundle, and the server never decrypts or generates session keys."
     ]
   };
 }
@@ -2762,903 +2769,6 @@ function runAsyncRoute(promise, res) {
   });
 }
 
-async function handleRegister(req, res) {
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:register:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-
-  const normalizedUsername = normalizeUsername(readSubmittedUsername(body));
-  const password = normalizePassword(body.password);
-  if (!normalizedUsername) {
-    sendJson(res, 400, { error: "username must be 3-24 characters using letters, numbers, or underscore" });
-    return;
-  }
-  if (isReservedUsernameKey(normalizedUsername.key)) {
-    sendJson(res, 409, { error: "username is reserved" });
-    return;
-  }
-  if (password.length < 4 || password.length > 72) {
-    sendJson(res, 400, { error: "password must be 4-72 characters" });
-    return;
-  }
-  if (findUserByKey(normalizedUsername.key)) {
-    sendJson(res, 409, { error: "username already exists" });
-    return;
-  }
-
-  const publicKey = String(body.publicKey || "").trim();
-  const keyBundle = normalizeKeyBundle(body.keyBundle);
-
-  if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
-    sendJson(res, 400, { error: "invalid public key bundle" });
-    return;
-  }
-  if (!keyBundle) {
-    sendJson(res, 400, { error: "invalid account key bundle" });
-    return;
-  }
-  const passwordHash = await hashPassword(password);
-  // Hashing yields to the event loop; re-check before committing the username.
-  if (findUserByKey(normalizedUsername.key)) {
-    sendJson(res, 409, { error: "username already exists" });
-    return;
-  }
-
-  const user = {
-    id: crypto.randomUUID(),
-    username: normalizedUsername.value,
-    usernameKey: normalizedUsername.key,
-    passwordHash,
-    publicKey,
-    keyBundle,
-    banned: false,
-    bannedReason: "",
-    bannedAt: 0,
-    showOnlineStatus: true,
-    allowUserSearch: true,
-    blockedUsers: [],
-    contacts: {},
-    createdAt: Date.now(),
-    lastSeenAt: Date.now(),
-    lastLoginAt: Date.now()
-  };
-  users.push(user);
-  persistUsers();
-
-  recordAdminAction("user_register", { username: user.username, role: "user" }, req, {});
-  const sessionRecord = issueSession(user.username, "user", req);
-  accessLogMiddleware.setUserId(req, user.username);
-  sendJson(res, 201, {
-    user: publicUser(user),
-    keyBundle: accountKeyBundleView(user),
-    ...sessionResponseFields(sessionRecord)
-  }, {
-    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
-  });
-}
-
-async function handleLogin(req, res) {
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:login:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-
-  const normalizedUsername = normalizeUsername(readSubmittedUsername(body));
-  const password = normalizePassword(body.password);
-  if (!normalizedUsername || !password) {
-    sendJson(res, 400, { error: "username and password are required" });
-    return;
-  }
-
-  const lockState = userLoginLockState(normalizedUsername.value);
-  if (userLoginLockActive(lockState)) {
-    sendJson(res, 429, { error: "too many failed attempts, try again later" });
-    return;
-  }
-
-  const user = findUserByKey(normalizedUsername.key);
-  const passwordOk = await verifyPassword(password, user?.passwordHash || DUMMY_PASSWORD_HASH);
-  if (!user || !passwordOk) {
-    const next = recordUserLoginFailure(normalizedUsername.value);
-    recordAdminAction("user_login_failed", { username: normalizedUsername.value, role: "user" }, req, {
-      exists: Boolean(user)
-    });
-    const message = next && next.lockedUntil > Date.now()
-      ? "too many failed attempts, try again later"
-      : "invalid username or password";
-    sendJson(res, next && next.lockedUntil > Date.now() ? 429 : 401, { error: message });
-    return;
-  }
-  clearUserLoginFailures(user.username);
-  if (user.banned) {
-    sendJson(res, 403, { error: "account banned" });
-    return;
-  }
-  if (!user.publicKey) {
-    sendJson(res, 409, { error: "account key material is missing" });
-    return;
-  }
-
-  touchUserLogin(user.username, Date.now());
-  recordAdminAction("user_login", { username: user.username, role: "user" }, req, {});
-  const sessionRecord = issueSession(user.username, "user", req);
-  accessLogMiddleware.setUserId(req, user.username);
-  sendJson(res, 200, {
-    user: publicUser(user),
-    keyBundle: accountKeyBundleView(user),
-    ...sessionResponseFields(sessionRecord)
-  }, {
-    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
-  });
-}
-
-function handleLogout(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:logout:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  revokeSession(session);
-  purgeSessionEventTickets(session.id);
-  disconnectSessionRealtime(session.id, "logged out");
-  recordAdminAction("user_logout", session, req, {});
-  sendJson(res, 200, { ok: true }, {
-    "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
-  });
-}
-
-function handleLogoutAll(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:logout-all:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const revoked = deleteSessionsForUsername(session.username, session.role);
-  purgeUserEventTickets(session.username);
-  disconnectUserRealtime(session.username, "logged out from all devices");
-  recordAdminAction("user_logout_all", session, req, { revoked });
-  sendJson(res, 200, {
-    ok: true,
-    revoked
-  }, {
-    "Set-Cookie": clearSessionCookieHeader(USER_SESSION_COOKIE)
-  });
-}
-
-function handleMe(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  sendJson(res, 200, {
-    user: publicUser(user),
-    ...sessionResponseFields(session)
-  });
-}
-
-function handleMeKeyBundle(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  sendJson(res, 200, {
-    keyBundle: accountKeyBundleView(user)
-  });
-}
-
-function handlePublicKeyLookup(req, res, url, userId) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:public-key:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const user = findUserByUsername(userId);
-  if (!user || user.banned) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  sendJson(res, 200, publicKeyBundleForUser(user));
-}
-
-function handlePrekeyBundleLookup(req, res, url, userId) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:prekey-bundle:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const user = findUserByUsername(userId);
-  if (!user || user.banned) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  sendJson(res, 200, prekeyBundleForUser(user));
-}
-
-async function handleUploadPublicKey(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:upload-public-key:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const publicKey = String(body.publicKey || body.identityKey || "").trim();
-  if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
-    sendJson(res, 400, { error: "invalid public key bundle" });
-    return;
-  }
-  if (user.publicKey && user.publicKey !== publicKey) {
-    sendJson(res, 409, { error: "identity public key already registered" });
-    return;
-  }
-  user.publicKey = publicKey;
-  persistUsers();
-  recordAdminAction("user_public_key_upload", { username: user.username, role: "user" }, req, {
-    publicKeyBytes: decodeBase64Blob(publicKey)?.length || 0
-  });
-  sendJson(res, 200, {
-    ok: true,
-    publicKey: publicKeyBundleForUser(user)
-  });
-}
-
-async function handleMeKeyBundlePatch(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:me:key-bundle:${session.username}:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const keyBundle = normalizeKeyBundle(body.keyBundle);
-  const publicKey = String(body.publicKey || "").trim();
-  const rotateIdentity = body.rotateIdentity === true;
-  if (!keyBundle) {
-    sendJson(res, 400, { error: "invalid account key bundle" });
-    return;
-  }
-  if (publicKey) {
-    if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
-      sendJson(res, 400, { error: "invalid public key bundle" });
-      return;
-    }
-    if (user.publicKey && user.publicKey !== publicKey && !rotateIdentity) {
-      sendJson(res, 409, { error: "identity public key already registered" });
-      return;
-    }
-    user.publicKey = publicKey;
-  }
-  user.keyBundle = keyBundle;
-  persistUsers();
-  recordAdminAction("user_key_bundle_update", { username: user.username, role: "user" }, req, {
-    rotatedIdentity: Boolean(publicKey && rotateIdentity),
-    publicKeyBytes: decodeBase64Blob(user.publicKey)?.length || 0
-  });
-  sendJson(res, 200, {
-    ok: true,
-    user: publicUser(user),
-    keyBundle: accountKeyBundleView(user)
-  });
-}
-
-function handleMeSettings(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  sendJson(res, 200, {
-    settings: publicUser(user).settings,
-    blockedUsers: normalizeUserList(user.blockedUsers)
-  });
-}
-
-async function handleMeSettingsPatch(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:me:settings:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "showOnlineStatus")) {
-    if (typeof body.showOnlineStatus !== "boolean") {
-      sendJson(res, 400, { error: "showOnlineStatus must be a boolean" });
-      return;
-    }
-    user.showOnlineStatus = body.showOnlineStatus;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "allowUserSearch")) {
-    if (typeof body.allowUserSearch !== "boolean") {
-      sendJson(res, 400, { error: "allowUserSearch must be a boolean" });
-      return;
-    }
-    user.allowUserSearch = body.allowUserSearch;
-  }
-  persistUsers();
-  pushPresence(user.username, isUserOnline(user.username));
-  sendJson(res, 200, {
-    settings: publicUser(user).settings,
-    blockedUsers: normalizeUserList(user.blockedUsers)
-  });
-}
-
-async function handleMePassword(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:me:password:${session.username}:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const currentPassword = normalizePassword(body.currentPassword);
-  const nextPassword = normalizePassword(body.newPassword);
-  const providedKeyBundle = Object.prototype.hasOwnProperty.call(body || {}, "keyBundle");
-  const keyBundle = normalizeKeyBundle(body.keyBundle);
-  if (!currentPassword || !nextPassword) {
-    sendJson(res, 400, { error: "currentPassword and newPassword are required" });
-    return;
-  }
-  if (providedKeyBundle && !keyBundle) {
-    sendJson(res, 400, { error: "invalid account key bundle" });
-    return;
-  }
-  if (nextPassword.length < 4 || nextPassword.length > 72) {
-    sendJson(res, 400, { error: "password must be 4-72 characters" });
-    return;
-  }
-  const currentOk = await verifyPassword(currentPassword, user.passwordHash || DUMMY_PASSWORD_HASH);
-  if (!currentOk) {
-    sendJson(res, 403, { error: "current password invalid" });
-    return;
-  }
-  user.passwordHash = await hashPassword(nextPassword);
-  if (keyBundle) {
-    user.keyBundle = keyBundle;
-  }
-  persistUsers();
-  const revoked = deleteSessionsForUsername(user.username, "user");
-  purgeUserEventTickets(user.username);
-  disconnectUserRealtime(user.username, "password updated");
-  const sessionRecord = issueSession(user.username, "user", req);
-  sendJson(res, 200, {
-    ok: true,
-    revoked,
-    ...sessionResponseFields(sessionRecord)
-  }, {
-    "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
-  });
-}
-
-function handleMeSessions(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  sendJson(res, 200, {
-    sessions: listUserSessions(user.username, session.id)
-  });
-}
-
-async function handleMeSessionRevoke(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const user = findUserByUsername(session.username);
-  if (!user) {
-    revokeSession(session);
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:me:sessions:revoke:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const targetSessionId = normalizeBoundedText(body?.sessionId || "", 128);
-  if (!targetSessionId) {
-    sendJson(res, 400, { error: "sessionId is required" });
-    return;
-  }
-  if (targetSessionId === session.id) {
-    sendJson(res, 409, { error: "current session cannot be revoked here" });
-    return;
-  }
-  const targetSession = sessions.get(targetSessionId) || null;
-  if (!targetSession || targetSession.role !== "user" || targetSession.username !== session.username) {
-    sendJson(res, 404, { error: "session not found" });
-    return;
-  }
-  revokeSession(targetSession);
-  purgeSessionEventTickets(targetSession.id);
-  disconnectSessionRealtime(targetSession.id, "revoked by user");
-  recordAdminAction("user_revoke_session", session, req, {
-    revokedSessionId: targetSession.id
-  });
-  sendJson(res, 200, {
-    ok: true,
-    revokedSessionId: targetSession.id,
-    sessions: listUserSessions(user.username, session.id)
-  });
-}
-
-function handleContacts(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  sendJson(res, 200, {
-    contacts: listContactsFor(session.username)
-  });
-}
-
-async function handleContactCreate(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(
-    req,
-    res,
-    `api:contacts:create:${session.username}:${address}`,
-    MAX_API_REQUESTS_PER_WINDOW,
-    "too many requests"
-  )) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const peer = findUserByUsername(readSubmittedUsername(body));
-  const owner = findUserByUsername(session.username);
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  if (!owner) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "note") && typeof body.note !== "string") {
-    sendJson(res, 400, { error: "note must be a string" });
-    return;
-  }
-  if (isUserBlocked(owner, peer.username)) {
-    sendJson(res, 409, { error: "you blocked peer" });
-    return;
-  }
-  if (isUserBlocked(peer, owner.username)) {
-    sendJson(res, 403, { error: "blocked by peer" });
-    return;
-  }
-  const existing = contactEntryFor(owner, peer.username);
-  if (existing && !existing.removedAt) {
-    sendJson(res, 409, { error: "already a contact" });
-    return;
-  }
-  upsertUserContact(owner, peer.username, { note: body.note || "" });
-  persistUsers();
-  sendJson(res, 201, { contact: publicContactView(owner.username, peer) });
-}
-
-async function handleContactPatch(req, res, url, pathname) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:contacts:patch:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const parsed = parseContactPath(pathname);
-  const peer = parsed?.username ? findUserByUsername(parsed.username) : null;
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  const owner = findUserByUsername(session.username);
-  if (!owner) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "note") && typeof body.note !== "string") {
-    sendJson(res, 400, { error: "note must be a string" });
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "pinned") && typeof body.pinned !== "boolean") {
-    sendJson(res, 400, { error: "pinned must be a boolean" });
-    return;
-  }
-  if (Object.prototype.hasOwnProperty.call(body, "muted") && typeof body.muted !== "boolean") {
-    sendJson(res, 400, { error: "muted must be a boolean" });
-    return;
-  }
-  if (relationshipStateFor(owner, peer.username) === "blocked" && Object.prototype.hasOwnProperty.call(body, "muted")) {
-    sendJson(res, 409, { error: "relationship is blocked" });
-    return;
-  }
-  const entry = setRelationshipState(
-    owner,
-    peer.username,
-    Object.prototype.hasOwnProperty.call(body, "muted") ? (body.muted ? "muted" : "normal") : relationshipStateFor(owner, peer.username),
-    {
-    ...(Object.prototype.hasOwnProperty.call(body, "note") ? { note: body.note } : {}),
-    ...(Object.prototype.hasOwnProperty.call(body, "pinned") ? { pinned: body.pinned } : {})
-  });
-  persistUsers();
-  sendJson(res, 200, {
-    contact: publicContactView(session.username, peer),
-    entry
-  });
-}
-
-function handleContactDelete(req, res, url, pathname) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:contacts:delete:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const parsed = parseContactPath(pathname);
-  const peer = parsed?.username ? findUserByUsername(parsed.username) : null;
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  const owner = findUserByUsername(session.username);
-  if (!owner) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  removeUserContact(owner, peer.username);
-  persistUsers();
-  sendJson(res, 200, { ok: true });
-}
-
-async function handleContactBlock(req, res, url, pathname) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:contacts:block:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const parsed = parseContactPath(pathname);
-  const peer = parsed?.username ? findUserByUsername(parsed.username) : null;
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  const owner = findUserByUsername(session.username);
-  if (!owner) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  if (typeof body.blocked !== "boolean") {
-    sendJson(res, 400, { error: "blocked must be a boolean" });
-    return;
-  }
-  setRelationshipState(owner, peer.username, body.blocked ? "blocked" : "normal");
-  persistUsers();
-  pushPresence(owner.username, isUserOnline(owner.username));
-  pushEventToUser(peer.username, "contact-blocked", {
-    username: owner.username,
-    blocked: body.blocked
-  });
-  sendJson(res, 200, {
-    contact: publicContactView(session.username, peer),
-    blockedUsers: owner.blockedUsers
-  });
-}
-
-async function handleAdminLogin(req, res) {
-  try {
-    syncRuntimeAdminConfigFromConfiguredSources();
-  } catch (error) {
-    sendJson(res, 503, { error: "admin credentials are not configured" });
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:admin:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const username = readSubmittedUsername(body);
-  const password = String(body.password || "");
-  const lockState = adminLoginLockState(username);
-  if (adminLoginLockActive(lockState)) {
-    sendJson(res, 429, { error: "too many failed attempts, try again later" });
-    return;
-  }
-  const account = findAdminAccount(username);
-  const passwordOk = await verifyConfiguredAdminPassword(password);
-  if (!account || !passwordOk) {
-    const next = recordAdminLoginFailure(username);
-    recordAdminAction("admin_login_failed", { username: username || "admin", role: "admin" }, req, {});
-    const message = next && next.lockedUntil > Date.now()
-      ? "too many failed attempts, try again later"
-      : "管理员账号或密码错误";
-    sendJson(res, next && next.lockedUntil > Date.now() ? 429 : 401, { error: message });
-    return;
-  }
-  clearAdminLoginFailures(account.username);
-  const sessionRecord = issueSession(account.username, "admin", req);
-  accessLogMiddleware.setUserId(req, account.username);
-  recordAdminAction("admin_login", { username: account.username, role: "admin" }, req, {});
-  sendJson(res, 200, {
-    admin: {
-      username: account.username,
-      role: "admin"
-    },
-    ...sessionResponseFields(sessionRecord)
-  }, {
-    "Set-Cookie": sessionCookieHeader(ADMIN_SESSION_COOKIE, sessionRecord)
-  });
-}
-
 function normalizeClientMetaPayload(body) {
   return {
     language: String(body?.language || "").trim().slice(0, 24),
@@ -3676,1197 +2786,6 @@ function readAccessLogFilters(url) {
     since: Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0,
     until: Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0
   };
-}
-
-async function handleAdminAccountReset(req, res) {
-  try {
-    syncRuntimeAdminConfigFromConfiguredSources();
-  } catch (error) {
-    sendJson(res, 503, { error: "admin credentials are not configured" });
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:admin-account-reset:${address}`,
-      Math.max(5, Math.floor(MAX_AUTH_REQUESTS_PER_WINDOW / 2)),
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const passphraseResult = verifyAdminUpdatePassphrase(String(body.verificationPassphrase || body.passphrase || ""));
-  if (!passphraseResult.ok) {
-    sendJson(res, passphraseResult.reason === "missing" ? 503 : 403, {
-      error: passphraseResult.reason === "missing" ? "管理员身份验证口令未配置" : "身份验证口令错误"
-    });
-    return;
-  }
-
-  const normalizedUsername = normalizeUsername(readSubmittedUsername(body));
-  const password = normalizePassword(body.password);
-  if (!normalizedUsername) {
-    sendJson(res, 400, { error: "管理员账号格式无效" });
-    return;
-  }
-  if (password.length < 4 || password.length > 72) {
-    sendJson(res, 400, { error: "管理员密码必须为 4-72 位" });
-    return;
-  }
-
-  const nextConfig = {
-    username: normalizedUsername.value,
-    credential: {
-      type: "hash",
-      value: await hashPassword(password)
-    }
-  };
-
-  try {
-    persistAdminConfigToEnvironmentSafe(nextConfig);
-  } catch (error) {
-    sendJson(res, 500, { error: "管理员配置写入失败" });
-    return;
-  }
-
-  const previousUsername = adminConfig.username;
-  updateRuntimeAdminConfig(nextConfig);
-  clearAdminLoginFailures(previousUsername);
-  clearAdminLoginFailures(nextConfig.username);
-  for (const [sessionId, sessionRecord] of sessions.entries()) {
-    if (sessionRecord.role === "admin") {
-      sessions.delete(sessionId);
-    }
-  }
-  schedulePersistSessions(true);
-  recordAdminAction("admin_account_reset", { username: nextConfig.username, role: "admin" }, req, {
-    previousUsername,
-    nextUsername: nextConfig.username
-  });
-  sendJson(res, 200, {
-    ok: true,
-    admin: {
-      username: nextConfig.username,
-      role: "admin"
-    }
-  }, {
-    "Set-Cookie": clearSessionCookieHeader(ADMIN_SESSION_COOKIE)
-  });
-}
-
-function handleAdminLogout(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:logout:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  recordAdminAction("admin_logout", session, req, {});
-  revokeSession(session);
-  purgeSessionEventTickets(session.id);
-  disconnectSessionRealtime(session.id, "logged out");
-  sendJson(res, 200, { ok: true }, {
-    "Set-Cookie": clearSessionCookieHeader(ADMIN_SESSION_COOKIE)
-  });
-}
-
-function handleAdminMe(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  sendJson(res, 200, {
-    admin: {
-      username: session.username,
-      role: session.role
-    },
-    ...sessionResponseFields(session)
-  });
-}
-
-function handleAdminStats(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:stats:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  sendJson(res, 200, {
-    stats: adminBasicStats()
-  });
-}
-
-function handleAdminHealth(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:health:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  sendJson(res, 200, {
-    health: adminHealthSnapshot()
-  });
-}
-
-async function handleAdminDashboardStats(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:dashboard-stats:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const days = parseAdminDashboardDays(url);
-  sendJson(res, 200, {
-    dashboard: await adminDashboardSnapshot(session, req, { days })
-  });
-}
-
-function handleAdminUsers(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:users:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const query = normalizeBoundedText(url.searchParams.get("q") || "", 64).toLowerCase();
-  const status = String(url.searchParams.get("status") || "all").trim().toLowerCase();
-  const requestedSort = String(url.searchParams.get("sort") || "username").trim();
-  const sortBy = requestedSort === "createdAt" ? "createdAt" : "username";
-  const order = String(url.searchParams.get("order") || "asc").trim().toLowerCase() === "desc" ? "desc" : "asc";
-  const page = parsePositiveInteger(url.searchParams.get("page"), 1, 1, 99999);
-  const limit = parsePositiveInteger(url.searchParams.get("limit"), 50, 1, 200);
-  const filtered = users.filter((user) => {
-    if (query && !user.usernameKey.includes(query)) {
-      return false;
-    }
-    if (status === "banned" && !user.banned) {
-      return false;
-    }
-    if (status === "active" && user.banned) {
-      return false;
-    }
-    return true;
-  });
-  filtered.sort((left, right) => {
-    const l = sortBy === "createdAt" ? Number(left.createdAt) : String(left.username).toLowerCase();
-    const r = sortBy === "createdAt" ? Number(right.createdAt) : String(right.username).toLowerCase();
-    if (l === r) {
-      return 0;
-    }
-    if (order === "desc") {
-      return l < r ? 1 : -1;
-    }
-    return l > r ? 1 : -1;
-  });
-  const offset = (page - 1) * limit;
-  const rows = filtered.slice(offset, offset + limit).map((user) => adminPublicUser(user));
-  sendJson(res, 200, {
-    users: rows,
-    page,
-    limit,
-    total: filtered.length
-  });
-}
-
-async function handleAdminUserDetail(req, res, url, pathname) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:user-detail:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const targetUsername = parseAdminUserPath(pathname);
-  if (!targetUsername) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  const user = findUserByUsername(targetUsername);
-  if (!user) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  sendJson(res, 200, {
-    detail: await buildAdminUserDetail(user)
-  });
-}
-
-async function handleAdminUserPatch(req, res, url, pathname) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:user-patch:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const targetUsername = parseAdminUserPath(pathname);
-  if (!targetUsername) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  const user = findUserByUsername(targetUsername);
-  if (!user) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(body, "password")) {
-    sendJson(res, 409, { error: "encrypted account password must be changed by the user" });
-    return;
-  }
-
-  const requestedName = normalizeBoundedText(body.username || "", 24);
-  const oldState = adminPublicUser(user);
-  let shouldRevokeUserSessions = false;
-  let disconnectReason = "";
-  if (requestedName) {
-    const normalizedUsername = normalizeUsername(requestedName);
-    if (!normalizedUsername) {
-      sendJson(res, 400, { error: "username must be 3-24 characters using letters, numbers, or underscore" });
-      return;
-    }
-    if (normalizedUsername.key !== user.usernameKey && isReservedUsernameKey(normalizedUsername.key)) {
-      sendJson(res, 409, { error: "username is reserved" });
-      return;
-    }
-    if (normalizedUsername.key !== user.usernameKey && findUserByKey(normalizedUsername.key)) {
-      sendJson(res, 409, { error: "username already exists" });
-      return;
-    }
-    const previousUsername = user.username;
-    user.username = normalizedUsername.value;
-    user.usernameKey = normalizedUsername.key;
-    for (const message of messages) {
-      if (message.from === previousUsername) {
-        message.from = user.username;
-      }
-      if (message.to === previousUsername) {
-        message.to = user.username;
-      }
-      if (message.replyTo?.from === previousUsername) {
-        message.replyTo.from = user.username;
-      }
-    }
-    rebuildMessageBuckets();
-    // Re-point other users' block lists and contact entries at the new username so a
-    // rename can't be used to slip past an existing block or orphan saved contacts.
-    for (const otherUser of users) {
-      if (otherUser === user) {
-        continue;
-      }
-      if (Array.isArray(otherUser.blockedUsers) && otherUser.blockedUsers.includes(previousUsername)) {
-        otherUser.blockedUsers = [
-          ...new Set(otherUser.blockedUsers.map((name) => (name === previousUsername ? user.username : name)))
-        ];
-      }
-      if (otherUser.contacts && typeof otherUser.contacts === "object" && otherUser.contacts[previousUsername]) {
-        const movedEntry = otherUser.contacts[previousUsername];
-        delete otherUser.contacts[previousUsername];
-        otherUser.contacts[user.username] = otherUser.contacts[user.username] || movedEntry;
-      }
-    }
-    for (const sessionRecord of sessions.values()) {
-      if (sessionRecord.role === "user" && sessionRecord.username === previousUsername) {
-        sessionRecord.username = user.username;
-      }
-    }
-    const connections = onlineConnections.get(previousUsername);
-    if (connections) {
-      onlineConnections.delete(previousUsername);
-      onlineConnections.set(user.username, connections);
-    }
-    purgeUserEventTickets(previousUsername);
-    await accessLogStore.renameUserId(previousUsername, user.username);
-    broadcastUserRename(previousUsername, user.username);
-  }
-
-  if (Object.prototype.hasOwnProperty.call(body, "banned")) {
-    if (typeof body.banned !== "boolean") {
-      sendJson(res, 400, { error: "banned must be a boolean" });
-      return;
-    }
-    const banned = body.banned;
-    user.banned = banned;
-    user.bannedReason = banned ? normalizeAuditReason(body.bannedReason, "admin action") : "";
-    user.bannedAt = banned ? Date.now() : 0;
-    if (banned) {
-      shouldRevokeUserSessions = true;
-      disconnectReason = "account banned by admin";
-    }
-  }
-
-  persistUsers();
-  if (shouldRevokeUserSessions) {
-    deleteSessionsForUsername(user.username, "user");
-    purgeUserEventTickets(user.username);
-    disconnectUserRealtime(user.username, disconnectReason || "account updated by admin");
-  }
-  schedulePersistMessages();
-  recordAdminAction("admin_user_patch", session, req, {
-    target: targetUsername,
-    before: oldState,
-    after: adminPublicUser(user)
-  });
-  sendJson(res, 200, {
-    user: adminPublicUser(user)
-  });
-}
-
-async function handleAdminUsersBatch(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:users:batch:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const usernames = Array.isArray(body.usernames)
-    ? [...new Set(body.usernames.map((item) => normalizeBoundedText(item, 24)).filter(Boolean))].slice(0, 200)
-    : [];
-  if (typeof body.banned !== "boolean") {
-    sendJson(res, 400, { error: "banned must be a boolean" });
-    return;
-  }
-  if (usernames.length === 0) {
-    sendJson(res, 400, { error: "at least one username is required" });
-    return;
-  }
-  if (usernames.some((username) => !normalizeUsername(username))) {
-    sendJson(res, 400, { error: "invalid username in batch request" });
-    return;
-  }
-  const banned = body.banned;
-  const reason = normalizeAuditReason(body.bannedReason, "admin batch action");
-  const requestedUsernames = new Set(usernames);
-  const targetUsers = users.filter((user) => requestedUsernames.has(user.username)).slice(0, 200);
-  for (const user of targetUsers) {
-    user.banned = banned;
-    user.bannedReason = banned ? reason : "";
-    user.bannedAt = banned ? Date.now() : 0;
-    if (banned) {
-      deleteSessionsForUsername(user.username, "user");
-      disconnectUserRealtime(user.username, "account banned by admin");
-      purgeUserEventTickets(user.username);
-    }
-  }
-  persistUsers();
-  recordAdminAction("admin_users_batch", session, req, {
-    usernames: targetUsers.map((user) => user.username),
-    banned
-  });
-  sendJson(res, 200, {
-    updated: targetUsers.length
-  });
-}
-
-function handleAdminAuditLogs(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:audit:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const limit = parsePositiveInteger(url.searchParams.get("limit"), 100, 1, 300);
-  sendJson(res, 200, {
-    logs: readRecentAdminAuditEntries(limit)
-  });
-}
-
-function handleAdminMessages(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:messages:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const limit = parsePositiveInteger(url.searchParams.get("limit"), 100, 1, 300);
-  const beforeCursor = parseMessageCursor(url.searchParams.get("before"));
-  const fromFilterResult = readOptionalUsernameFilter(url.searchParams.get("from"));
-  const toFilterResult = readOptionalUsernameFilter(url.searchParams.get("to"));
-  if (!fromFilterResult.ok || !toFilterResult.ok) {
-    sendJson(res, 400, { error: "invalid message filters" });
-    return;
-  }
-  const fromFilter = fromFilterResult.value;
-  const toFilter = toFilterResult.value;
-  const since = Number.parseInt(String(url.searchParams.get("since") || "0"), 10) || 0;
-  const until = Number.parseInt(String(url.searchParams.get("until") || "0"), 10) || 0;
-  const matchesFilters = (message) =>
-    (!fromFilter || message.from === fromFilter) &&
-    (!toFilter || message.to === toFilter) &&
-    (!since || Number(message.createdAt) >= since) &&
-    (!until || Number(message.createdAt) <= until);
-  const page = collectPagedMessages(messages, limit, beforeCursor, matchesFilters);
-  sendJson(res, 200, {
-    messages: page.items.map((message) => adminMessageView(message)),
-    hasMore: page.hasMore,
-    nextBefore: page.nextBefore
-  });
-}
-
-async function handleClientMeta(req, res, url) {
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:client-meta:${address}`,
-      Math.max(30, Math.floor(MAX_API_REQUESTS_PER_WINDOW / 2)),
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const meta = normalizeClientMetaPayload(body);
-  const sessionId = accessLogMiddleware.getSessionId(req);
-  if (sessionId && ENABLE_ACCESS_LOG) {
-    accessLogStore.enqueueClientMeta(sessionId, meta);
-  }
-  const session = getSessionFromRequest(req, url);
-  if (session?.username) {
-    accessLogMiddleware.setUserId(req, session.username);
-  }
-  sendJson(res, 200, { ok: true });
-}
-
-async function handleAdminAccessSummary(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:access-summary:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const days = parseAdminDashboardDays(url);
-  sendJson(res, 200, {
-    summary: await accessLogStore.getDashboardSummary({ days })
-  });
-}
-
-async function handleAdminAccessLogs(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:access-logs:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const filters = readAccessLogFilters(url);
-  const page = parsePositiveInteger(url.searchParams.get("page"), 1, 1, 99999);
-  const limit = parsePositiveInteger(url.searchParams.get("limit"), 50, 1, 200);
-  const payload = await accessLogStore.getAccessLogs({
-    ...filters,
-    page,
-    limit
-  });
-  sendJson(res, 200, payload);
-}
-
-async function handleAdminAccessProfile(req, res, url) {
-  const session = requireAdminSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:admin:access-profile:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const profile = await accessLogStore.getVisitorProfile(readAccessLogFilters(url));
-  sendJson(res, 200, {
-    profile
-  });
-}
-
-function handleUsers(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `api:users:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
-    return;
-  }
-  const query = normalizeBoundedText(url.searchParams.get("q") || "", 64);
-  if (!query) {
-    sendJson(res, 200, { users: [] });
-    return;
-  }
-  sendJson(res, 200, {
-    users: listUsersForSearch(session.username, query)
-  });
-}
-
-function handleConversations(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:conversations:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  sendJson(res, 200, {
-    conversations: listConversationsFor(session.username)
-  });
-}
-
-function handleMessages(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:messages:get:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-
-  const peer = findUserByUsername(url.searchParams.get("with"));
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  const limit = parsePositiveInteger(url.searchParams.get("limit"), 50, 1, 100);
-  const beforeCursor = parseMessageCursor(url.searchParams.get("before"));
-  const page = pagedMessagesBetween(session.username, peer.username, limit, beforeCursor);
-
-  sendJson(res, 200, {
-    peer: {
-      username: peer.username,
-      usernameKey: peer.usernameKey,
-      online: isPresenceVisibleTo(session.username, peer.username),
-      lastSeenAt: userShowsPresence(peer) && !isUserBlocked(peer, session.username)
-        ? Number.parseInt(String(peer.lastSeenAt || "0"), 10) || 0
-        : 0,
-      avatarSeed: makeAvatarSeed(peer.username),
-      publicKey: peer.publicKey
-    },
-    messages: page.items.map((message) => createMessageView(message, session.username)),
-    hasMore: page.hasMore,
-    nextBefore: page.nextBefore
-  });
-}
-
-async function handleSendMessage(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:messages:post:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(req, url.pathname === "/api/messages/attachment" ? MAX_MESSAGE_BODY_BYTES : MAX_BODY_BYTES);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-
-  const peer = findUserByUsername(body.to);
-  const nonce = String(body.nonce || "").trim();
-  const ciphertext = String(body.ciphertext || "").trim();
-  const clientId = normalizeClientId(body.clientId);
-  const replyToId = String(body.replyToId || "").trim();
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  if (peer.banned) {
-    sendJson(res, 403, { error: "peer is banned" });
-    return;
-  }
-  const senderUser = findUserByUsername(session.username);
-  if (isUserBlocked(senderUser, peer.username)) {
-    sendJson(res, 403, { error: "you blocked peer" });
-    return;
-  }
-  if (isUserBlocked(peer, session.username)) {
-    sendJson(res, 403, { error: "blocked by peer" });
-    return;
-  }
-  if (clientId) {
-    const existing = messageClientIndex.get(`${session.username}\u0000${clientId}`);
-    if (existing) {
-      if (existing.to !== peer.username) {
-        sendJson(res, 409, { error: "clientId already used" });
-        return;
-      }
-      sendJson(res, 200, {
-        message: createMessageView(existing, session.username),
-        conversation: buildConversationSummary(session.username, peer.username)
-      });
-      return;
-    }
-  }
-  if (
-    isRateLimited(
-      conversationRateBuckets,
-      `msg:${session.username}\u0000${peer.username}`,
-      MAX_MESSAGES_PER_CONVERSATION_WINDOW,
-      RATE_WINDOW_MS
-    )
-  ) {
-    sendJson(res, 429, { error: "too many messages sent" });
-    return;
-  }
-  if (!isBase64Blob(nonce, MESSAGE_NONCE_BYTES.min, MESSAGE_NONCE_BYTES.max)) {
-    sendJson(res, 400, { error: "invalid message payload" });
-    return;
-  }
-  if (!isBase64Blob(ciphertext, MESSAGE_CIPHERTEXT_BYTES.min, MESSAGE_CIPHERTEXT_BYTES.max)) {
-    sendJson(res, 400, { error: "invalid message payload" });
-    return;
-  }
-  if (messageNonceIndex.has(messageNonceReplayKey(session.username, nonce))) {
-    sendJson(res, 409, { error: "duplicate message nonce" });
-    return;
-  }
-  const replyTo = resolveReplyTarget(session.username, peer.username, replyToId);
-  if (replyToId && !replyTo) {
-    sendJson(res, 400, { error: "reply target not found" });
-    return;
-  }
-
-  const createdAt = Date.now();
-  const message = {
-    id: crypto.randomUUID(),
-    clientId,
-    sequence: nextMessageSequence++,
-    from: session.username,
-    to: peer.username,
-    publicKey: String(senderUser?.publicKey || ""),
-    nonce,
-    ciphertext,
-    createdAt,
-    timestamp: createdAt,
-    replyToId: replyTo?.id || "",
-    replyTo: replyTo
-      ? {
-          id: String(replyTo.id),
-          from: String(replyTo.from || ""),
-          createdAt: Number(replyTo.createdAt) || 0
-        }
-      : null,
-    deletedFor: []
-  };
-  let contactsChanged = false;
-  if (senderUser && !contactEntryFor(senderUser, peer.username)) {
-    upsertUserContact(senderUser, peer.username, {});
-    contactsChanged = true;
-  }
-  if (!contactEntryFor(peer, session.username)) {
-    upsertUserContact(peer, session.username, {});
-    contactsChanged = true;
-  }
-  if (contactsChanged) {
-    persistUsers();
-  }
-  messages.push(message);
-  appendMessageBucket(message);
-  const recipientOnline = isUserOnline(peer.username);
-  if (recipientOnline) {
-    message.deliveredAt = Date.now();
-  }
-  schedulePersistMessages(message);
-
-  const senderView = createMessageView(message, session.username);
-  const recipientView = createMessageView(message, peer.username);
-  pushEventToUser(session.username, "message", senderView);
-  pushEventToUser(peer.username, "message", recipientView);
-  if (recipientOnline) {
-    pushEventToUser(session.username, "message-delivered", {
-      peer: peer.username,
-      messageIds: [message.id],
-      deliveredAt: message.deliveredAt
-    });
-  }
-
-  sendJson(res, 201, {
-    message: senderView,
-    conversation: buildConversationSummary(session.username, peer.username)
-  });
-}
-
-async function handleRecallMessage(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:messages:recall:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const messageId = String(body.messageId || "").trim();
-  if (!messageId) {
-    sendJson(res, 400, { error: "messageId required" });
-    return;
-  }
-  const target = messages.find((m) => m.id === messageId && m.from === session.username);
-  if (!target) {
-    sendJson(res, 404, { error: "message not found or not yours" });
-    return;
-  }
-  const recallAgeMs = Date.now() - Number(target.createdAt || 0);
-  if (recallAgeMs > MESSAGE_RECALL_WINDOW_MS) {
-    sendJson(res, 403, { error: "recall window expired" });
-    return;
-  }
-  if (target.recalled) {
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-  target.recalled = true;
-  target.recalledAt = Date.now();
-  target.recalledBy = session.username;
-  schedulePersistMessages(target);
-  const peer = target.to === session.username ? target.from : target.to;
-  recordAdminAction("message_recall", session, req, {
-    messageId,
-    peer,
-    recallAgeMs
-  });
-  pushEventToUser(session.username, "message-recalled", { messageId, by: session.username, peer });
-  pushEventToUser(peer, "message-recalled", { messageId, by: session.username, peer: session.username });
-  sendJson(res, 200, { ok: true });
-}
-
-async function handleDeleteMessage(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:messages:delete:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-
-  const messageId = String(body.messageId || "").trim();
-  if (!messageId) {
-    sendJson(res, 400, { error: "messageId required" });
-    return;
-  }
-
-  const target = messageIdIndex.get(messageId);
-  if (!target || (target.from !== session.username && target.to !== session.username)) {
-    sendJson(res, 404, { error: "message not found" });
-    return;
-  }
-
-  const deletedFor = Array.isArray(target.deletedFor) ? target.deletedFor : [];
-  if (!deletedFor.includes(session.username)) {
-    deletedFor.push(session.username);
-    target.deletedFor = deletedFor;
-    schedulePersistMessages();
-  }
-
-  const peer = target.from === session.username ? target.to : target.from;
-  pushEventToUser(session.username, "message-deleted", { messageId, peer });
-  sendJson(res, 200, { ok: true });
-}
-
-async function handleMarkRead(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:messages:read:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-
-  const peer = findUserByUsername(body.peer);
-  if (!peer || peer.username === session.username) {
-    sendJson(res, 404, { error: "user not found" });
-    return;
-  }
-  if (isBlockedBetween(session.username, peer.username)) {
-    sendJson(res, 200, { ok: true, count: 0 });
-    return;
-  }
-
-  const now = Date.now();
-  const messageIds = [];
-  for (const message of messagesBetween(session.username, peer.username)) {
-    if (message.from !== peer.username || message.recalled || message.readAt) {
-      continue;
-    }
-    if (isMessageDeletedFor(message, session.username)) {
-      continue;
-    }
-    if (!message.deliveredAt) {
-      message.deliveredAt = now;
-    }
-    message.readAt = now;
-    messageIds.push(message.id);
-  }
-
-  if (messageIds.length > 0) {
-    schedulePersistMessages();
-    pushEventToUser(peer.username, "message-read", { peer: session.username, messageIds, readAt: now });
-    pushEventToUser(session.username, "conversation-read", { peer: peer.username, messageIds, readAt: now });
-  }
-
-  sendJson(res, 200, { ok: true, count: messageIds.length });
-}
-
-async function handleTypingSignal(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `api:typing:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (error) {
-    sendJsonBodyError(res, error);
-    return;
-  }
-  const peer = findUserByUsername(body.to);
-  // Typing is best-effort and ephemeral; always answer 200 so a caller can't probe
-  // block/online state, but only forward the signal when neither side is blocked.
-  if (peer && peer.username !== session.username && !peer.banned) {
-    const senderUser = findUserByUsername(session.username);
-    if (!isUserBlocked(senderUser, peer.username) && !isUserBlocked(peer, session.username)) {
-      pushEventToUser(peer.username, "typing", {
-        peer: session.username,
-        typing: Boolean(body.typing)
-      });
-    }
-  }
-  sendJson(res, 200, { ok: true });
-}
-
-function handleCreateEventTicket(req, res, url) {
-  const session = requireSession(req, res, url);
-  if (!session) {
-    return;
-  }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `events:ticket:${session.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many requests"
-    )
-  ) {
-    return;
-  }
-  const activeConnections = activeConnectionCount(session.username);
-  if (activeConnections >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
-    sendJson(res, 429, { error: "too many concurrent connections" });
-    return;
-  }
-  sendJson(res, 200, {
-    ticket: createEventTicketForSession(session),
-    expiresInMs: EVENT_TICKET_TTL_MS
-  });
-}
-
-function handleEvents(req, res, url) {
-  const ticket = String(url.searchParams.get("ticket") || "").trim();
-  if (!ticket) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  const ticketRecord = consumeEventTicket(ticket);
-  if (!ticketRecord) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  const sessionRecord = ticketRecord.token ? sessions.get(ticketRecord.token) : null;
-  if (
-    !sessionRecord ||
-    sessionRecord.expiresAt <= Date.now() ||
-    sessionRecord.absoluteExpiresAt <= Date.now() ||
-    sessionRecord.username !== ticketRecord.username ||
-    sessionRecord.role !== ticketRecord.role
-  ) {
-    sendJson(res, 401, { error: "unauthorized" });
-    return;
-  }
-  const user = findUserByUsername(ticketRecord.username);
-  if (!user || user.banned) {
-    sendJson(res, 403, { error: "account banned" });
-    return;
-  }
-
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `events:${ticketRecord.username}:${address}`,
-      MAX_API_REQUESTS_PER_WINDOW,
-      "too many event connections"
-    )
-  ) {
-    return;
-  }
-  if (activeConnectionCount(ticketRecord.username) >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
-    sendJson(res, 429, { error: "too many concurrent connections" });
-    return;
-  }
-
-  res.writeHead(
-    200,
-    securityHeaders({
-      "Content-Type": "text/event-stream; charset=utf-8",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no"
-    })
-  );
-  res.write(": connected\n\n");
-
-  const connection = attachConnection(ticketRecord.username, res, ticketRecord.token);
-  writeSse(res, "ready", {
-    me: ticketRecord.username,
-    onlineUsers: listOnlineUsers().filter((username) => isPresenceVisibleTo(ticketRecord.username, username))
-  });
-  markPendingDeliveries(ticketRecord.username);
-
-  req.on("close", () => {
-    detachConnection(ticketRecord.username, connection);
-  });
 }
 
 try {
@@ -4899,6 +2818,301 @@ setInterval(cleanEventTickets, EVENT_TICKET_TTL_MS).unref();
 setInterval(cleanAdminLoginFailures, ADMIN_LOGIN_FAILURE_WINDOW_MS).unref();
 setInterval(cleanUserLoginFailures, USER_LOGIN_FAILURE_WINDOW_MS).unref();
 setInterval(purgeStoredMessagePlaintext, 60 * 60 * 1000).unref();
+
+const supportRoutes = createSupportRoutes({
+  getClientAddress,
+  rejectIfForbiddenOrLimited,
+  readJsonBody,
+  sendJsonBodyError,
+  normalizeClientMetaPayload,
+  accessLogMiddleware,
+  accessLogStore,
+  getSessionFromRequest,
+  sendJson,
+  requireSession,
+  normalizeBoundedText,
+  listUsersForSearch,
+  ENABLE_ACCESS_LOG,
+  MAX_API_REQUESTS_PER_WINDOW
+});
+
+const adminRoutes = createAdminRoutes({
+  syncRuntimeAdminConfigFromConfiguredSources,
+  sendJson,
+  getClientAddress,
+  rejectIfForbiddenOrLimited,
+  readJsonBody,
+  sendJsonBodyError,
+  readSubmittedUsername,
+  adminLoginLockState,
+  adminLoginLockActive,
+  findAdminAccount,
+  verifyConfiguredAdminPassword,
+  recordAdminLoginFailure,
+  recordAdminAction,
+  issueSession,
+  accessLogMiddleware,
+  clearAdminLoginFailures,
+  sessionResponseFields,
+  sessionCookieHeader,
+  clearSessionCookieHeader,
+  verifyAdminUpdatePassphrase,
+  normalizeUsername,
+  normalizePassword,
+  hashPassword,
+  persistAdminConfigToEnvironmentSafe,
+  getAdminUsername: () => adminConfig.username,
+  updateRuntimeAdminConfig,
+  sessions,
+  schedulePersistSessions,
+  requireAdminSession,
+  revokeSession,
+  purgeSessionEventTickets,
+  disconnectSessionRealtime,
+  adminBasicStats,
+  adminHealthSnapshot,
+  parseAdminDashboardDays,
+  adminDashboardSnapshot,
+  normalizeBoundedText,
+  parsePositiveInteger,
+  users,
+  adminPublicUser,
+  parseAdminUserPath,
+  findUserByUsername,
+  buildAdminUserDetail,
+  isReservedUsernameKey,
+  findUserByKey,
+  messages,
+  rebuildMessageBuckets,
+  onlineConnections,
+  purgeUserEventTickets,
+  accessLogStore,
+  broadcastUserRename,
+  normalizeAuditReason,
+  persistUsers,
+  deleteSessionsForUsername,
+  disconnectUserRealtime,
+  schedulePersistMessages,
+  readRecentAdminAuditEntries,
+  parseMessageCursor,
+  readOptionalUsernameFilter,
+  collectPagedMessages,
+  adminMessageView,
+  readAccessLogFilters,
+  ADMIN_SESSION_COOKIE,
+  MAX_AUTH_REQUESTS_PER_WINDOW,
+  MAX_API_REQUESTS_PER_WINDOW
+});
+
+const accountRoutes = createAccountRoutes({
+  getClientAddress,
+  rejectIfForbiddenOrLimited,
+  readJsonBody,
+  sendJsonBodyError,
+  normalizeUsername,
+  readSubmittedUsername,
+  normalizePassword,
+  sendJson,
+  isReservedUsernameKey,
+  findUserByKey,
+  normalizeKeyBundle,
+  isBase64Blob,
+  hashPassword,
+  users,
+  persistUsers,
+  recordAdminAction,
+  issueSession,
+  accessLogMiddleware,
+  publicUser,
+  accountKeyBundleView,
+  sessionResponseFields,
+  sessionCookieHeader,
+  userLoginLockState,
+  userLoginLockActive,
+  verifyPassword,
+  recordUserLoginFailure,
+  clearUserLoginFailures,
+  touchUserLogin,
+  requireSession,
+  revokeSession,
+  purgeSessionEventTickets,
+  disconnectSessionRealtime,
+  clearSessionCookieHeader,
+  deleteSessionsForUsername,
+  purgeUserEventTickets,
+  disconnectUserRealtime,
+  findUserByUsername,
+  publicKeyBundleForUser,
+  prekeyBundleForUser,
+  decodeBase64Blob,
+  normalizeUserList,
+  pushPresence,
+  isUserOnline,
+  sessions,
+  normalizeBoundedText,
+  listUserSessions,
+  USER_SESSION_COOKIE,
+  MAX_AUTH_REQUESTS_PER_WINDOW,
+  MAX_API_REQUESTS_PER_WINDOW,
+  PUBLIC_KEY_BYTES,
+  DUMMY_PASSWORD_HASH
+});
+
+const contactRoutes = createContactRoutes({
+  requireSession,
+  sendJson,
+  listContactsFor,
+  getClientAddress,
+  rejectIfForbiddenOrLimited,
+  readJsonBody,
+  sendJsonBodyError,
+  findUserByUsername,
+  readSubmittedUsername,
+  isUserBlocked,
+  contactEntryFor,
+  upsertUserContact,
+  persistUsers,
+  publicContactView,
+  parseContactPath,
+  relationshipStateFor,
+  setRelationshipState,
+  removeUserContact,
+  pushPresence,
+  isUserOnline,
+  pushEventToUser,
+  MAX_API_REQUESTS_PER_WINDOW
+});
+
+const messageRoutes = createMessageRoutes({
+  requireSession,
+  getClientAddress,
+  rejectIfForbiddenOrLimited,
+  sendJson,
+  sendJsonBodyError,
+  readJsonBody,
+  normalizeClientId,
+  parsePositiveInteger,
+  parseMessageCursor,
+  findUserByUsername,
+  userShowsPresence,
+  isUserBlocked,
+  isBlockedBetween,
+  isPresenceVisibleTo,
+  isUserOnline,
+  isBase64Blob,
+  isRateLimited,
+  messageNonceReplayKey,
+  makeAvatarSeed,
+  contactEntryFor,
+  upsertUserContact,
+  persistUsers,
+  appendMessageBucket,
+  schedulePersistMessages,
+  messagesBetween,
+  pagedMessagesBetween,
+  isMessageDeletedFor,
+  createMessageView,
+  buildConversationSummary,
+  resolveReplyTarget,
+  listConversationsFor,
+  pushEventToUser,
+  recordAdminAction,
+  nextMessageSequence: () => nextMessageSequence++,
+  messages,
+  messageClientIndex,
+  messageNonceIndex,
+  messageIdIndex,
+  conversationRateBuckets,
+  limits: {
+    MAX_BODY_BYTES,
+    MAX_MESSAGE_BODY_BYTES,
+    MAX_API_REQUESTS_PER_WINDOW,
+    MAX_MESSAGES_PER_CONVERSATION_WINDOW,
+    RATE_WINDOW_MS,
+    MESSAGE_RECALL_WINDOW_MS,
+    MESSAGE_NONCE_BYTES,
+    MESSAGE_CIPHERTEXT_BYTES
+  }
+});
+
+const eventRoutes = createEventRoutes({
+  requireSession,
+  getClientAddress,
+  rejectIfForbiddenOrLimited,
+  sendJson,
+  activeConnectionCount,
+  createEventTicketForSession,
+  consumeEventTicket,
+  sessions,
+  findUserByUsername,
+  securityHeaders,
+  attachConnection,
+  writeSse,
+  listOnlineUsers,
+  isPresenceVisibleTo,
+  markPendingDeliveries,
+  detachConnection,
+  MAX_API_REQUESTS_PER_WINDOW,
+  MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER,
+  EVENT_TICKET_TTL_MS
+});
+
+const exactRoutes = [
+  { method: "GET", path: "/health", handler: (req, res) => sendJson(res, 200, { ok: true }) },
+  { method: "POST", path: "/api/client-meta", async: true, handler: supportRoutes.handleClientMeta },
+  { method: "POST", path: "/api/admin/login", async: true, handler: adminRoutes.handleAdminLogin },
+  { method: "POST", path: "/api/admin/account/reset", async: true, handler: adminRoutes.handleAdminAccountReset },
+  { method: "POST", path: "/api/admin/logout", handler: adminRoutes.handleAdminLogout },
+  { method: "GET", path: "/api/admin/me", handler: adminRoutes.handleAdminMe },
+  { method: "GET", path: "/api/admin/stats", handler: adminRoutes.handleAdminStats },
+  { method: "GET", path: "/api/admin/health", handler: adminRoutes.handleAdminHealth },
+  { method: "GET", path: "/api/admin/dashboard/stats", async: true, handler: adminRoutes.handleAdminDashboardStats },
+  { method: "GET", path: "/api/admin/users", handler: adminRoutes.handleAdminUsers },
+  { method: "POST", path: "/api/admin/users/batch", async: true, handler: adminRoutes.handleAdminUsersBatch },
+  { method: "GET", path: "/api/admin/messages", handler: adminRoutes.handleAdminMessages },
+  { method: "GET", path: "/api/admin/audit", handler: adminRoutes.handleAdminAuditLogs },
+  { method: "GET", path: "/api/admin/access/summary", async: true, handler: adminRoutes.handleAdminAccessSummary },
+  { method: "GET", path: "/api/admin/access/logs", async: true, handler: adminRoutes.handleAdminAccessLogs },
+  { method: "GET", path: "/api/admin/access/profile", async: true, handler: adminRoutes.handleAdminAccessProfile },
+  { method: "POST", path: "/api/register", async: true, handler: accountRoutes.handleRegister },
+  { method: "POST", path: "/api/login", async: true, handler: accountRoutes.handleLogin },
+  { method: "POST", path: "/api/logout", handler: accountRoutes.handleLogout },
+  { method: "POST", path: "/api/logout-all", handler: accountRoutes.handleLogoutAll },
+  { method: "GET", path: "/api/me", handler: accountRoutes.handleMe },
+  { method: "GET", path: "/api/me/key-bundle", handler: accountRoutes.handleMeKeyBundle },
+  { method: "POST", path: "/api/me/key-bundle", async: true, handler: accountRoutes.handleMeKeyBundlePatch },
+  { method: "POST", path: "/upload-public-key", async: true, handler: accountRoutes.handleUploadPublicKey },
+  { method: "GET", path: "/api/me/settings", handler: accountRoutes.handleMeSettings },
+  { method: "PATCH", path: "/api/me/settings", async: true, handler: accountRoutes.handleMeSettingsPatch },
+  { method: "POST", path: "/api/me/password", async: true, handler: accountRoutes.handleMePassword },
+  { method: "GET", path: "/api/me/sessions", handler: accountRoutes.handleMeSessions },
+  { method: "POST", path: "/api/me/sessions/revoke", async: true, handler: accountRoutes.handleMeSessionRevoke },
+  { method: "GET", path: "/api/contacts", handler: contactRoutes.handleContacts },
+  { method: "POST", path: "/api/contacts", async: true, handler: contactRoutes.handleContactCreate },
+  { method: "GET", path: "/api/users", handler: supportRoutes.handleUsers },
+  { method: "GET", path: "/api/conversations", handler: messageRoutes.handleConversations },
+  { method: "GET", path: "/api/messages", handler: messageRoutes.handleMessages },
+  { method: "POST", path: "/api/messages", async: true, handler: messageRoutes.handleSendMessage },
+  { method: "POST", path: "/api/messages/attachment", async: true, handler: messageRoutes.handleSendMessage },
+  { method: "POST", path: "/api/messages/recall", async: true, handler: messageRoutes.handleRecallMessage },
+  { method: "POST", path: "/api/messages/delete", async: true, handler: messageRoutes.handleDeleteMessage },
+  { method: "POST", path: "/api/messages/read", async: true, handler: messageRoutes.handleMarkRead },
+  { method: "POST", path: "/api/messages/typing", async: true, handler: messageRoutes.handleTypingSignal },
+  { method: "POST", path: "/api/events/token", handler: eventRoutes.handleCreateEventTicket },
+  { method: "GET", path: "/api/events", handler: eventRoutes.handleEvents }
+];
+
+function dispatchExactRoute(req, res, url) {
+  const route = exactRoutes.find((entry) => entry.method === req.method && entry.path === url.pathname);
+  if (!route) {
+    return false;
+  }
+  const result = route.handler(req, res, url);
+  if (route.async) {
+    runAsyncRoute(result, res);
+  }
+  return true;
+}
 
 const server = http.createServer((req, res) => {
   const originalWriteHead = res.writeHead;
@@ -4940,206 +3154,42 @@ const server = http.createServer((req, res) => {
   const publicKeyUserId = readPathSuffix(pathname, "/public-key/");
   const prekeyBundleUserId = readPathSuffix(pathname, "/prekey-bundle/");
 
-  if (req.method === "GET" && pathname === "/health") {
-    sendJson(res, 200, { ok: true });
+  if (dispatchExactRoute(req, res, url)) {
     return;
   }
 
-  if (req.method === "POST" && pathname === "/api/client-meta") {
-    runAsyncRoute(handleClientMeta(req, res, url), res);
+  const adminUserPath = parseAdminUserPath(pathname);
+  if (req.method === "GET" && adminUserPath) {
+    runAsyncRoute(adminRoutes.handleAdminUserDetail(req, res, url, pathname), res);
     return;
   }
-
-  if (req.method === "POST" && pathname === "/api/admin/login") {
-    runAsyncRoute(handleAdminLogin(req, res), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/admin/account/reset") {
-    runAsyncRoute(handleAdminAccountReset(req, res), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/admin/logout") {
-    handleAdminLogout(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/me") {
-    handleAdminMe(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/stats") {
-    handleAdminStats(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/health") {
-    handleAdminHealth(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/dashboard/stats") {
-    runAsyncRoute(handleAdminDashboardStats(req, res, url), res);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/users") {
-    handleAdminUsers(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && parseAdminUserPath(pathname)) {
-    runAsyncRoute(handleAdminUserDetail(req, res, url, pathname), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/admin/users/batch") {
-    runAsyncRoute(handleAdminUsersBatch(req, res, url), res);
-    return;
-  }
-  if (req.method === "PATCH" && parseAdminUserPath(pathname)) {
-    runAsyncRoute(handleAdminUserPatch(req, res, url, pathname), res);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/messages") {
-    handleAdminMessages(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/audit") {
-    handleAdminAuditLogs(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/access/summary") {
-    runAsyncRoute(handleAdminAccessSummary(req, res, url), res);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/access/logs") {
-    runAsyncRoute(handleAdminAccessLogs(req, res, url), res);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/admin/access/profile") {
-    runAsyncRoute(handleAdminAccessProfile(req, res, url), res);
-    return;
-  }
-
-  if (req.method === "POST" && pathname === "/api/register") {
-    runAsyncRoute(handleRegister(req, res), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/login") {
-    runAsyncRoute(handleLogin(req, res), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/logout") {
-    handleLogout(req, res, url);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/logout-all") {
-    handleLogoutAll(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/me") {
-    handleMe(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/me/key-bundle") {
-    handleMeKeyBundle(req, res, url);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/me/key-bundle") {
-    runAsyncRoute(handleMeKeyBundlePatch(req, res, url), res);
+  if (req.method === "PATCH" && adminUserPath) {
+    runAsyncRoute(adminRoutes.handleAdminUserPatch(req, res, url, pathname), res);
     return;
   }
   if (req.method === "GET" && publicKeyUserId) {
-    handlePublicKeyLookup(req, res, url, publicKeyUserId);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/upload-public-key") {
-    runAsyncRoute(handleUploadPublicKey(req, res, url), res);
+    accountRoutes.handlePublicKeyLookup(req, res, url, publicKeyUserId);
     return;
   }
   if (req.method === "GET" && prekeyBundleUserId) {
-    handlePrekeyBundleLookup(req, res, url, prekeyBundleUserId);
+    accountRoutes.handlePrekeyBundleLookup(req, res, url, prekeyBundleUserId);
     return;
   }
-  if (req.method === "GET" && pathname === "/api/me/settings") {
-    handleMeSettings(req, res, url);
-    return;
-  }
-  if (req.method === "PATCH" && pathname === "/api/me/settings") {
-    runAsyncRoute(handleMeSettingsPatch(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/me/password") {
-    runAsyncRoute(handleMePassword(req, res, url), res);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/me/sessions") {
-    handleMeSessions(req, res, url);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/me/sessions/revoke") {
-    runAsyncRoute(handleMeSessionRevoke(req, res, url), res);
-    return;
-  }
+
   const contactPath = parseContactPath(pathname);
-  if (req.method === "GET" && pathname === "/api/contacts") {
-    handleContacts(req, res, url);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/contacts") {
-    runAsyncRoute(handleContactCreate(req, res, url), res);
-    return;
-  }
   if (contactPath && req.method === "PATCH" && !contactPath.action) {
-    runAsyncRoute(handleContactPatch(req, res, url, pathname), res);
+    runAsyncRoute(contactRoutes.handleContactPatch(req, res, url, pathname), res);
     return;
   }
   if (contactPath && req.method === "DELETE" && !contactPath.action) {
-    handleContactDelete(req, res, url, pathname);
+    contactRoutes.handleContactDelete(req, res, url, pathname);
     return;
   }
   if (contactPath && req.method === "POST" && contactPath.action === "block") {
-    runAsyncRoute(handleContactBlock(req, res, url, pathname), res);
+    runAsyncRoute(contactRoutes.handleContactBlock(req, res, url, pathname), res);
     return;
   }
-  if (req.method === "GET" && pathname === "/api/users") {
-    handleUsers(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/conversations") {
-    handleConversations(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/messages") {
-    handleMessages(req, res, url);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/messages") {
-    runAsyncRoute(handleSendMessage(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/messages/attachment") {
-    runAsyncRoute(handleSendMessage(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/messages/recall") {
-    runAsyncRoute(handleRecallMessage(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/messages/delete") {
-    runAsyncRoute(handleDeleteMessage(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/messages/read") {
-    runAsyncRoute(handleMarkRead(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/messages/typing") {
-    runAsyncRoute(handleTypingSignal(req, res, url), res);
-    return;
-  }
-  if (req.method === "POST" && pathname === "/api/events/token") {
-    handleCreateEventTicket(req, res, url);
-    return;
-  }
-  if (req.method === "GET" && pathname === "/api/events") {
-    handleEvents(req, res, url);
-    return;
-  }
+
   if (req.method === "GET" || req.method === "HEAD") {
     serveStatic(req, res, url);
     return;

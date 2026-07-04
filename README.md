@@ -142,6 +142,13 @@ cd /var/www/onlieencryptedmsgweb
 sudo bash scripts/update-debian.sh
 ```
 
+Hot update notes for VPS:
+
+- The update script keeps the currently running service online while it pulls, installs dependencies, lints, builds, and verifies assets.
+- The only planned interruption is the final `systemctl restart secure-chat`.
+- If the new revision fails to restart or `/health` does not respond, the script checks out the previous commit, rebuilds it, restarts the service, and exits with an error so you can inspect logs before retrying.
+- Use the same command as before on the VPS; no new update command is required.
+
 更新脚本现在会按下面的顺序执行：
 
 - 自动还原允许覆盖的构建产物，避免 `git pull` 被压缩文件卡住
@@ -311,7 +318,7 @@ npm run check
 The chat path is client-encrypted and server zero-knowledge:
 
 - Browser clients generate a long-lived P-256 ECDH identity key pair.
-- The private identity key stays in the browser's local device vault; it is never uploaded, wrapped, restored, or decrypted by the server.
+- The private identity key stays in the browser's local device vault. For multi-device recovery, the browser can upload a password-encrypted identity bundle; the server stores only that ciphertext and never decrypts or restores the private key.
 - Public identity keys are published through `GET /public-key/:userId` and `GET /prekey-bundle/:userId`; an existing identity key cannot be silently replaced.
 - Clients derive a non-extractable session message key with ECDH shared secret + HKDF-SHA256.
 - Every message uses AES-GCM with a fresh nonce and non-null AAD bound to `{ from, to }`.
@@ -320,7 +327,7 @@ The chat path is client-encrypted and server zero-knowledge:
 - The server stores message ciphertext, nonce, sender, recipient, id, and timestamp metadata only.
 - The server keeps a per-sender nonce replay index and rejects duplicate nonces with `409 duplicate message nonce`.
 - There is no base64 plaintext fallback and no server-side message decrypt path.
-- The current `prekey-bundle` response is an identity-key compatibility bundle. It does not claim Signal Double Ratchet, one-time prekey pools, or multi-device key bundles.
+- The current `prekey-bundle` response is an identity-key compatibility bundle. It does not claim Signal Double Ratchet or one-time prekey pools; multi-device recovery is limited to the owner-only password-encrypted identity bundle returned after authentication.
 
 Key exchange endpoints:
 
