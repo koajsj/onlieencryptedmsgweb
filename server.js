@@ -21,7 +21,9 @@ const {
 } = require("./services/admin-config");
 const {
   securityHeaders, sendJson, getClientAddress, normalizedRequestHost,
-  parseRequestUrl, isSameOriginRequest
+  parseRequestUrl, isSameOriginRequest, parseCookies, cookieAttributes,
+  mergeSetCookieValues, readPathSuffix, parsePositiveInteger,
+  readJsonBody, sendJsonBodyError
 } = require("./utils/http");
 const {
   readJsonFile,
@@ -1350,66 +1352,12 @@ function sessionClientMeta(req) {
   };
 }
 
-function parseCookies(req) {
-  const header = String(req.headers.cookie || "");
-  const cookies = new Map();
-  for (const item of header.split(";")) {
-    const separatorIndex = item.indexOf("=");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-    const name = item.slice(0, separatorIndex).trim();
-    const value = item.slice(separatorIndex + 1).trim();
-    if (!name) {
-      continue;
-    }
-    try {
-      cookies.set(name, decodeURIComponent(value));
-    } catch (error) {
-      cookies.set(name, value);
-    }
-  }
-  return cookies;
-}
-
-function cookieAttributes(maxAgeSeconds, pathValue = "/") {
-  return [
-    `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
-    `Path=${pathValue}`,
-    "HttpOnly",
-    "SameSite=Strict",
-    COOKIE_SECURE ? "Secure" : ""
-  ]
-    .filter(Boolean)
-    .join("; ");
-}
-
 function sessionCookieHeader(name, session, maxAgeMs = SESSION_TTL_MS) {
   return `${name}=${encodeURIComponent(sessionTokenValue(session))}; ${cookieAttributes(maxAgeMs / 1000)}`;
 }
 
 function clearSessionCookieHeader(name) {
   return `${name}=; ${cookieAttributes(0)}`;
-}
-
-function normalizeSetCookieValues(value) {
-  if (!value) {
-    return [];
-  }
-  const values = Array.isArray(value) ? value : [value];
-  return values.map((item) => String(item || "")).filter(Boolean);
-}
-
-function mergeSetCookieValues(...sources) {
-  const merged = [];
-  for (const source of sources) {
-    for (const value of normalizeSetCookieValues(source)) {
-      if (!merged.includes(value)) {
-        merged.push(value);
-      }
-    }
-  }
-  return merged;
 }
 
 function sessionCookieNameForPath(pathname) {
@@ -1548,10 +1496,6 @@ function consumeEventTicket(ticket) {
     return null;
   }
   return record;
-}
-
-function isUserOnline(username) {
-  return Boolean(onlineConnections.get(username)?.size);
 }
 
 function listOnlineUsers() {
@@ -2446,25 +2390,6 @@ function parseMessageCursor(rawValue) {
   return { id: value };
 }
 
-function readPathSuffix(pathname, prefix) {
-  if (!pathname.startsWith(prefix)) {
-    return "";
-  }
-  try {
-    return decodeURIComponent(pathname.slice(prefix.length));
-  } catch (error) {
-    return "";
-  }
-}
-
-function parsePositiveInteger(rawValue, fallback, min, max) {
-  const parsed = Number.parseInt(String(rawValue || ""), 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.min(max, Math.max(min, parsed));
-}
-
 function collectPagedMessages(sourceMessages, limit, beforeCursor, predicate = null) {
   let beforeIndex = sourceMessages.length;
   if (beforeCursor?.id) {
@@ -2696,65 +2621,6 @@ function purgeUserEventTickets(username) {
       eventTickets.delete(ticket);
     }
   }
-}
-
-function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    let tooLarge = false;
-    const chunks = [];
-
-    req.on("data", (chunk) => {
-      if (tooLarge) {
-        return;
-      }
-      size += chunk.length;
-      if (size > maxBytes) {
-        tooLarge = true;
-        chunks.length = 0;
-        req.resume();
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on("end", () => {
-      if (tooLarge) {
-        reject(new Error("body too large"));
-        return;
-      }
-      try {
-        const contentType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
-        if (contentType && contentType !== "application/json") {
-          reject(new Error("unsupported media type"));
-          return;
-        }
-        const raw = Buffer.concat(chunks).toString("utf8");
-        const parsed = raw ? JSON.parse(raw) : {};
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-          reject(new Error("invalid json"));
-          return;
-        }
-        resolve(parsed);
-      } catch (error) {
-        reject(error);
-      }
-    });
-
-    req.on("error", reject);
-  });
-}
-
-function sendJsonBodyError(res, error) {
-  if (error?.message === "body too large") {
-    sendJson(res, 413, { error: "body too large" });
-    return;
-  }
-  if (error?.message === "unsupported media type") {
-    sendJson(res, 415, { error: "content type must be application/json" });
-    return;
-  }
-  sendJson(res, 400, { error: "invalid json" });
 }
 
 function runAsyncRoute(promise, res) {

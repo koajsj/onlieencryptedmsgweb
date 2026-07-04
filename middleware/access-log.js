@@ -1,31 +1,10 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { parseCookies } = require("../utils/http");
 
 const ACCESS_SESSION_COOKIE = "secure_chat_visit";
 const ACCESS_SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
-
-function parseCookies(req) {
-  const header = String(req.headers.cookie || "");
-  const cookies = new Map();
-  for (const item of header.split(";")) {
-    const separatorIndex = item.indexOf("=");
-    if (separatorIndex <= 0) {
-      continue;
-    }
-    const name = item.slice(0, separatorIndex).trim();
-    const value = item.slice(separatorIndex + 1).trim();
-    if (!name) {
-      continue;
-    }
-    try {
-      cookies.set(name, decodeURIComponent(value));
-    } catch (error) {
-      cookies.set(name, value);
-    }
-  }
-  return cookies;
-}
 
 function buildCookieHeader(name, value, secure) {
   return [
