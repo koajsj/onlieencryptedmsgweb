@@ -22,6 +22,7 @@ const CONFIG_SOURCE = path.join(ROOT_DIR, "config.js");
 const DEPLOY_SCRIPT = path.join(ROOT_DIR, "scripts", "deploy-debian.sh");
 const UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "update-debian.sh");
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
+const KEY_BUNDLE_ITERATIONS = 210000;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const webcrypto = nodeCrypto.webcrypto;
@@ -177,6 +178,76 @@ async function createIdentity() {
   };
 }
 
+async function createKeyBundle(identity, password) {
+  const salt = webcrypto.getRandomValues(new Uint8Array(16));
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const material = await webcrypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(String(password || "")),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  const key = await webcrypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt,
+      iterations: KEY_BUNDLE_ITERATIONS
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"]
+  );
+  const ciphertext = await webcrypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    key,
+    base64ToBytes(identity.privateKeyPkcs8Base64)
+  );
+  return {
+    version: 1,
+    iterations: KEY_BUNDLE_ITERATIONS,
+    salt: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+  };
+}
+
+async function decryptKeyBundle(keyBundle, password) {
+  const material = await webcrypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(String(password || "")),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  const key = await webcrypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: base64ToBytes(keyBundle.salt),
+      iterations: keyBundle.iterations
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+  const plaintext = await webcrypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv: base64ToBytes(keyBundle.iv)
+    },
+    key,
+    base64ToBytes(keyBundle.ciphertext)
+  );
+  return bytesToBase64(new Uint8Array(plaintext));
+}
+
 async function importPublicKey(publicKeyBase64) {
   return webcrypto.subtle.importKey(
     "raw",
@@ -252,16 +323,18 @@ async function decryptMessage(selfIdentity, selfUsername, peerUsername, peerPubl
   return textDecoder.decode(plaintext);
 }
 
-test("browser client never uploads or restores server-side private key bundles", () => {
+test("browser client restores password-encrypted key bundles without reviving legacy private-key fields", () => {
   const appSource = fs.readFileSync(APP_SOURCE, "utf8");
   const adminUserSource = fs.readFileSync(ADMIN_USER_SOURCE, "utf8");
   const configSource = fs.readFileSync(CONFIG_SOURCE, "utf8");
   assert.doesNotMatch(appSource, /encryptedPrivateKey/);
   assert.doesNotMatch(appSource, /privateKeySalt/);
   assert.doesNotMatch(appSource, /privateKeyIv/);
-  assert.doesNotMatch(appSource, /derivePasswordKey/);
+  assert.match(appSource, /buildPortableKeyBundle/);
+  assert.match(appSource, /restoreIdentityFromPortableBundle/);
   assert.match(appSource, /window\.indexedDB\.open/);
   assert.match(appSource, /writeDeviceVaultRecord/);
+  assert.match(appSource, /\/api\/me\/key-bundle/);
   assert.match(appSource, /publicKey:\s*identity\.publicKeyBase64/);
   assert.match(appSource, /deleteScopedStorageRecord\(STORAGE\.deviceIdentities/);
   assert.doesNotMatch(appSource, /同一账号可多端进入/);
@@ -343,31 +416,34 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
       body: {
         username: "Alice",
         password: "hello123",
-        publicKey: aliceIdentity.publicKeyBase64
+        publicKey: aliceIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(aliceIdentity, "hello123")
       }
     });
     assert.equal(aliceRegister.status, 201);
     assert.equal(aliceRegister.json.user.publicKey, aliceIdentity.publicKeyBase64);
-    assert.equal(aliceRegister.json.keyBundle, undefined);
+    assert.ok(aliceRegister.json.keyBundle);
 
     const bobRegister = await requestJson(server.port, "/api/register", {
       method: "POST",
       body: {
         username: "Bob",
         password: "world123",
-        publicKey: bobIdentity.publicKeyBase64
+        publicKey: bobIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(bobIdentity, "world123")
       }
     });
     assert.equal(bobRegister.status, 201);
     assert.equal(bobRegister.json.user.publicKey, bobIdentity.publicKeyBase64);
-    assert.equal(bobRegister.json.keyBundle, undefined);
+    assert.ok(bobRegister.json.keyBundle);
 
     const charlieRegister = await requestJson(server.port, "/api/register", {
       method: "POST",
       body: {
         username: "Charlie",
         password: "earth123",
-        publicKey: charlieIdentity.publicKeyBase64
+        publicKey: charlieIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(charlieIdentity, "earth123")
       }
     });
     assert.equal(charlieRegister.status, 201);
@@ -382,6 +458,8 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     });
     assert.equal(aliceLogin.status, 200);
     assert.equal(bobLogin.status, 200);
+    assert.equal(await decryptKeyBundle(aliceLogin.json.keyBundle, "hello123"), aliceIdentity.privateKeyPkcs8Base64);
+    assert.equal(await decryptKeyBundle(bobLogin.json.keyBundle, "world123"), bobIdentity.privateKeyPkcs8Base64);
 
     const prekey = await requestJson(server.port, "/prekey-bundle/Bob", {
       session: aliceLogin.session
@@ -539,7 +617,8 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     const keyBundle = await requestJson(server.port, "/api/me/key-bundle", {
       session: aliceLogin.session
     });
-    assert.equal(keyBundle.status, 410);
+    assert.equal(keyBundle.status, 200);
+    assert.equal(await decryptKeyBundle(keyBundle.json.keyBundle, "hello123"), aliceIdentity.privateKeyPkcs8Base64);
 
     await delay(300);
     const usersJson = fs.readFileSync(path.join(server.dataDir, "users.json"), "utf8");
@@ -588,7 +667,7 @@ test("startup strips legacy server-side private key material from user records",
   }
 });
 
-test("password change no longer sends or requires private key material", async () => {
+test("password change rotates the password hash while keeping the encrypted key bundle recoverable", async () => {
   const server = await startServer();
   try {
     const identity = await createIdentity();
@@ -597,7 +676,8 @@ test("password change no longer sends or requires private key material", async (
       body: {
         username: "Changer",
         password: "hello123",
-        publicKey: identity.publicKeyBase64
+        publicKey: identity.publicKeyBase64,
+        keyBundle: await createKeyBundle(identity, "hello123")
       }
     });
     assert.equal(register.status, 201);
@@ -607,7 +687,8 @@ test("password change no longer sends or requires private key material", async (
       session: register.session,
       body: {
         currentPassword: "hello123",
-        newPassword: "hello456"
+        newPassword: "hello456",
+        keyBundle: await createKeyBundle(identity, "hello456")
       }
     });
     assert.equal(changed.status, 200);
@@ -629,7 +710,7 @@ test("password change no longer sends or requires private key material", async (
       }
     });
     assert.equal(newLogin.status, 200);
-    assert.equal(newLogin.json.keyBundle, undefined);
+    assert.equal(await decryptKeyBundle(newLogin.json.keyBundle, "hello456"), identity.privateKeyPkcs8Base64);
   } finally {
     await server.stop();
   }
@@ -644,7 +725,8 @@ test("session management can revoke another active device without logging out th
       body: {
         username: "SessionRevokeUser",
         password: "hello123",
-        publicKey: identity.publicKeyBase64
+        publicKey: identity.publicKeyBase64,
+        keyBundle: await createKeyBundle(identity, "hello123")
       }
     });
     assert.equal(register.status, 201);
@@ -704,7 +786,8 @@ test("public key upload is idempotent and refuses identity key rotation", async 
       body: {
         username: "Rotator",
         password: "hello123",
-        publicKey: identity.publicKeyBase64
+        publicKey: identity.publicKeyBase64,
+        keyBundle: await createKeyBundle(identity, "hello123")
       }
     });
     assert.equal(register.status, 201);
@@ -736,6 +819,49 @@ test("public key upload is idempotent and refuses identity key rotation", async 
     assert.match(usersJson, new RegExp(identity.publicKeyBase64.replace(/[+/=]/g, "\\$&")));
     assert.doesNotMatch(usersJson, new RegExp(nextIdentity.publicKeyBase64.replace(/[+/=]/g, "\\$&")));
     assert.doesNotMatch(usersJson, /encryptedPrivateKey|privateKeySalt|privateKeyIv/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("authenticated users can rotate to a new password-encrypted identity bundle for device recovery", async () => {
+  const server = await startServer();
+  try {
+    const identity = await createIdentity();
+    const nextIdentity = await createIdentity();
+    const register = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "RecoveryUser",
+        password: "hello123",
+        publicKey: identity.publicKeyBase64,
+        keyBundle: await createKeyBundle(identity, "hello123")
+      }
+    });
+    assert.equal(register.status, 201);
+
+    const rotated = await requestJson(server.port, "/api/me/key-bundle", {
+      method: "POST",
+      session: register.session,
+      body: {
+        publicKey: nextIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(nextIdentity, "hello123"),
+        rotateIdentity: true
+      }
+    });
+    assert.equal(rotated.status, 200);
+    assert.equal(rotated.json.user.publicKey, nextIdentity.publicKeyBase64);
+
+    const login = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: {
+        username: "RecoveryUser",
+        password: "hello123"
+      }
+    });
+    assert.equal(login.status, 200);
+    assert.equal(login.json.user.publicKey, nextIdentity.publicKeyBase64);
+    assert.equal(await decryptKeyBundle(login.json.keyBundle, "hello123"), nextIdentity.privateKeyPkcs8Base64);
   } finally {
     await server.stop();
   }

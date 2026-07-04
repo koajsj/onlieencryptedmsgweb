@@ -18,6 +18,8 @@ const AVATAR_TONES = 6;
 const DEVICE_VAULT_DB = "private-chat-device-vault";
 const DEVICE_VAULT_STORE = "identities";
 const DEVICE_VAULT_VERSION = 1;
+const KEY_BUNDLE_VERSION = 1;
+const KEY_BUNDLE_ITERATIONS = 210000;
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
 const MESSAGE_VIRTUAL_THRESHOLD = 140;
 const MESSAGE_VIRTUAL_OVERSCAN = 480;
@@ -1531,6 +1533,27 @@ function normalizeStoredIdentity(value) {
   };
 }
 
+function normalizeKeyBundlePayload(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const version = Number.parseInt(String(value.version || KEY_BUNDLE_VERSION), 10) || 0;
+  const iterations = Number.parseInt(String(value.iterations || "0"), 10) || 0;
+  const salt = String(value.salt || "").trim();
+  const iv = String(value.iv || "").trim();
+  const ciphertext = String(value.ciphertext || "").trim();
+  if (!salt || !iv || !ciphertext || version !== KEY_BUNDLE_VERSION || iterations < 100000) {
+    return null;
+  }
+  return {
+    version,
+    iterations,
+    salt,
+    iv,
+    ciphertext
+  };
+}
+
 function normalizeVaultIdentityRecord(record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -1542,7 +1565,8 @@ function normalizeVaultIdentityRecord(record) {
   return {
     publicKeyBase64,
     privateKey: record.privateKey,
-    storageKey: record.storageKey
+    storageKey: record.storageKey,
+    privateKeyPkcs8Base64: String(record.privateKeyPkcs8Base64 || "")
   };
 }
 
@@ -1552,6 +1576,119 @@ async function createDeviceStorageKey() {
     false,
     ["encrypt", "decrypt"]
   );
+}
+
+async function buildPortableKeyBundle(privateKeyPkcs8Base64, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const material = await crypto.subtle.importKey(
+    "raw",
+    textEncoder.encode(String(password || "")),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt,
+      iterations: KEY_BUNDLE_ITERATIONS
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"]
+  );
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    key,
+    base64ToBytes(privateKeyPkcs8Base64)
+  );
+  return {
+    version: KEY_BUNDLE_VERSION,
+    iterations: KEY_BUNDLE_ITERATIONS,
+    salt: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+  };
+}
+
+function base64UrlToBytes(value) {
+  const normalized = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return base64ToBytes(`${normalized}${padding}`);
+}
+
+async function publicKeyFromPrivateKeyPkcs8(privateKeyPkcs8Base64) {
+  const extractablePrivateKey = await importPrivateKey(privateKeyPkcs8Base64, true);
+  const jwk = await crypto.subtle.exportKey("jwk", extractablePrivateKey);
+  if (!jwk?.x || !jwk?.y) {
+    throw new Error("私钥材料无效");
+  }
+  const x = base64UrlToBytes(jwk.x);
+  const y = base64UrlToBytes(jwk.y);
+  const raw = new Uint8Array(1 + x.length + y.length);
+  raw[0] = 4;
+  raw.set(x, 1);
+  raw.set(y, 1 + x.length);
+  return bytesToBase64(raw);
+}
+
+async function restoreIdentityFromPortableBundle(username, expectedPublicKeyBase64, keyBundle, password) {
+  const bundle = normalizeKeyBundlePayload(keyBundle);
+  if (!bundle) {
+    return null;
+  }
+  try {
+    const material = await crypto.subtle.importKey(
+      "raw",
+      textEncoder.encode(String(password || "")),
+      "PBKDF2",
+      false,
+      ["deriveKey"]
+    );
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: "PBKDF2",
+        hash: "SHA-256",
+        salt: base64ToBytes(bundle.salt),
+        iterations: bundle.iterations
+      },
+      material,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"]
+    );
+    const pkcs8 = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(bundle.iv)
+      },
+      key,
+      base64ToBytes(bundle.ciphertext)
+    );
+    const privateKeyPkcs8Base64 = bytesToBase64(new Uint8Array(pkcs8));
+    const derivedPublicKeyBase64 = await publicKeyFromPrivateKeyPkcs8(privateKeyPkcs8Base64);
+    if (expectedPublicKeyBase64 && derivedPublicKeyBase64 !== expectedPublicKeyBase64) {
+      throw new Error("账号加密身份校验失败");
+    }
+    const privateKey = await importPrivateKey(privateKeyPkcs8Base64, false);
+    const publicKey = await importPublicKey(derivedPublicKeyBase64);
+    return {
+      username,
+      publicKey,
+      privateKey,
+      publicKeyBase64: derivedPublicKeyBase64,
+      privateKeyPkcs8Base64,
+      storageKey: await createDeviceStorageKey()
+    };
+  } catch (error) {
+    throw new Error("无法恢复该账号的加密身份，请检查密码后重试");
+  }
 }
 
 async function migrateLegacyStoredIdentity(username) {
@@ -1568,13 +1705,15 @@ async function migrateLegacyStoredIdentity(username) {
     username,
     publicKeyBase64: legacy.publicKeyBase64,
     privateKey: migratedPrivateKey,
-    storageKey: migratedStorageKey
+    storageKey: migratedStorageKey,
+    privateKeyPkcs8Base64: legacy.privateKeyPkcs8Base64
   });
   deleteScopedStorageRecord(STORAGE.deviceIdentities, username);
   return {
     publicKeyBase64: legacy.publicKeyBase64,
     privateKey: migratedPrivateKey,
-    storageKey: migratedStorageKey
+    storageKey: migratedStorageKey,
+    privateKeyPkcs8Base64: legacy.privateKeyPkcs8Base64
   };
 }
 
@@ -1598,7 +1737,8 @@ async function persistSessionIdentity(identity, username = state.me?.username ||
     username,
     publicKeyBase64: String(identity.publicKeyBase64 || ""),
     privateKey: identity.privateKey,
-    storageKey: identity.storageKey || await createDeviceStorageKey()
+    storageKey: identity.storageKey || await createDeviceStorageKey(),
+    privateKeyPkcs8Base64: String(identity.privateKeyPkcs8Base64 || "")
   });
   deleteScopedStorageRecord(STORAGE.deviceIdentities, username);
 }
@@ -1794,8 +1934,8 @@ function setAuthMode(mode) {
   elements.authSubmitButton.textContent = state.authMode === "login" ? "登录" : "注册";
   setAuthFeedback(
     state.authMode === "login"
-      ? "登录需使用当前设备保存的本地私钥，新设备不会自动同步私钥。"
-      : "注册后会在本机生成并保存私钥，服务端只保存公钥和必要账号资料。"
+      ? "登录后会优先恢复当前设备密钥；新设备会使用登录密码同步加密身份。"
+      : "注册后会创建本机私钥，并同步保存一份仅密码可解密的加密身份备份。"
   );
   elements.authPasswordInput.autocomplete = state.authMode === "login" ? "current-password" : "new-password";
   setPasswordVisibility(false);
@@ -2167,13 +2307,14 @@ function translateApiError(pathname, status, payload) {
     "username already exists": "用户名已存在",
     "username is reserved": "该用户名不可使用",
     "account banned": "账号已被禁用",
-    "account key material is missing": "账号缺少公钥，请在原设备重新登录或重新注册",
+    "account key material is missing": "账号缺少加密身份，请重新登录后恢复。",
+    "invalid account key bundle": "账号加密身份数据无效，请重新登录后重试。",
     "too many auth requests": "请求过于频繁，请稍后再试",
     "current password invalid": "当前密码不正确",
     "invalid private key bundle": "服务端不再接受私钥材料",
     "public key cannot be changed with password": "修改密码不会变更本地设备密钥",
     "encrypted account password must be changed by the user": "账号密码只能由用户本人修改",
-    "private key bundles are not available in zero-knowledge mode": "服务端不保存私钥包，请使用本地设备私钥",
+    "private key bundles are not available in zero-knowledge mode": "当前环境无法恢复加密身份，请重新登录。",
     "peer unavailable": "对方当前不可接收消息",
     "you blocked peer": "您已拉黑对方，解除后才能继续互动",
     "blocked by peer": "对方已将您拉黑，暂时无法发送消息",
@@ -3714,6 +3855,7 @@ async function createIdentity() {
     publicKey: keyPair.publicKey,
     privateKey,
     publicKeyBase64,
+    privateKeyPkcs8Base64: bytesToBase64(privateKeyPkcs8),
     storageKey
   };
 }
@@ -3724,7 +3866,7 @@ async function restoreIdentity(username, expectedPublicKeyBase64 = "") {
     return null;
   }
   if (expectedPublicKeyBase64 && stored.publicKeyBase64 !== expectedPublicKeyBase64) {
-    throw new Error("当前设备私钥与服务器公钥不匹配，请使用原设备登录或重新核对安全码");
+    throw new Error("当前设备密钥与账号加密身份不一致，请重新登录后恢复或重建设备身份");
   }
   try {
     const publicKey = await importPublicKey(stored.publicKeyBase64);
@@ -3734,10 +3876,11 @@ async function restoreIdentity(username, expectedPublicKeyBase64 = "") {
       publicKey,
       privateKey: stored.privateKey,
       publicKeyBase64: stored.publicKeyBase64,
+      privateKeyPkcs8Base64: stored.privateKeyPkcs8Base64,
       storageKey: stored.storageKey
     };
   } catch (error) {
-    throw new Error("当前设备本地私钥不可用，请使用原设备登录");
+    throw new Error("当前设备本地私钥不可用，请重新登录后恢复加密身份");
   }
 }
 
@@ -4990,6 +5133,40 @@ async function afterLogin() {
   }, { once: true });
 }
 
+async function syncServerKeyBundle(password, identity, options = {}) {
+  if (!identity?.privateKeyPkcs8Base64) {
+    return null;
+  }
+  const payload = {
+    keyBundle: await buildPortableKeyBundle(identity.privateKeyPkcs8Base64, password)
+  };
+  if (options.publicKey) {
+    payload.publicKey = options.publicKey;
+  }
+  if (options.rotateIdentity) {
+    payload.rotateIdentity = true;
+  }
+  return api("/api/me/key-bundle", {
+    method: "POST",
+    body: payload
+  });
+}
+
+async function recoverAccountIdentity(user, password) {
+  const identity = await createIdentity();
+  const response = await syncServerKeyBundle(password, identity, {
+    publicKey: identity.publicKeyBase64,
+    rotateIdentity: true
+  });
+  return {
+    user: response?.user || {
+      ...user,
+      publicKey: identity.publicKeyBase64
+    },
+    identity
+  };
+}
+
 async function submitAuth(event) {
   event.preventDefault();
   if (state.authBusy) {
@@ -5011,10 +5188,11 @@ async function submitAuth(event) {
   }
 
   setAuthBusy(true);
-  setAuthFeedback(state.authMode === "login" ? "正在验证账号并加载本地设备密钥..." : "正在创建账号和本地设备密钥...");
+  setAuthFeedback(state.authMode === "login" ? "正在验证账号并恢复加密身份..." : "正在创建账号和加密身份...");
   try {
     let payload;
     let identity;
+    let user;
 
     if (state.authMode === "register") {
       identity = await createIdentity();
@@ -5023,25 +5201,46 @@ async function submitAuth(event) {
         body: {
           username,
           password,
-          publicKey: identity.publicKeyBase64
+          publicKey: identity.publicKeyBase64,
+          keyBundle: await buildPortableKeyBundle(identity.privateKeyPkcs8Base64, password)
         }
       });
+      user = payload.user;
     } else {
       payload = await api("/api/login", {
         method: "POST",
         body: { username, password }
       });
+      user = payload.user;
       identity = await restoreIdentity(payload.user.username, payload.user.publicKey);
       if (!identity) {
-        throw new Error("当前设备不存在该账号私钥，服务端不保存私钥，请使用原设备登录");
+        identity = await restoreIdentityFromPortableBundle(
+          payload.user.username,
+          payload.user.publicKey,
+          payload.keyBundle,
+          password
+        );
+      }
+      if (!identity) {
+        const recovered = await recoverAccountIdentity(payload.user, password);
+        identity = recovered.identity;
+        user = recovered.user;
+        showToast("已在当前设备重新建立加密身份，旧消息可能需要重新验证或无法解密");
       }
     }
 
-    setSession(payload.user, identity);
-    await persistSessionIdentity(identity, payload.user.username);
+    setSession(user, identity);
+    await persistSessionIdentity(identity, user.username);
+    if (state.authMode === "login" && !normalizeKeyBundlePayload(payload?.keyBundle) && identity.privateKeyPkcs8Base64) {
+      try {
+        await syncServerKeyBundle(password, identity);
+      } catch (error) {
+        showToast("当前设备已登录，但尚未完成多设备密钥同步");
+      }
+    }
     elements.authPasswordInput.value = "";
     await afterLogin();
-    showToast(state.authMode === "login" ? "登录成功，已恢复本地加密会话" : "注册成功，已创建本地加密会话");
+    showToast(state.authMode === "login" ? "登录成功，已恢复加密会话" : "注册成功，已创建加密会话");
   } catch (error) {
     const message = error.message || "认证失败";
     setAuthFeedback(message, true);
@@ -6184,11 +6383,15 @@ function bindEvents() {
       return;
     }
     try {
+      if (!state.identity?.privateKeyPkcs8Base64) {
+        throw new Error("当前设备无法导出该账号密钥，请重新登录后再修改密码");
+      }
       await api("/api/me/password", {
         method: "POST",
         body: {
           currentPassword: currentPw,
-          newPassword: newPw
+          newPassword: newPw,
+          keyBundle: await buildPortableKeyBundle(state.identity.privateKeyPkcs8Base64, newPw)
         }
       });
       closeEventStream();
@@ -6232,7 +6435,7 @@ async function restoreAuthenticatedWorkspace() {
     elements.authUsernameInput.value = user.username;
     elements.authPasswordInput.value = "";
     setAuthMode("login");
-    setAuthFeedback(error.message || "当前设备本地私钥不可用，请使用原设备登录。", true);
+    setAuthFeedback(error.message || "当前设备本地私钥不可用，请重新输入密码恢复加密身份。", true);
     elements.workspace.hidden = true;
     elements.authScreen.hidden = false;
     return false;
@@ -6242,7 +6445,7 @@ async function restoreAuthenticatedWorkspace() {
     elements.authUsernameInput.value = user.username;
     elements.authPasswordInput.value = "";
     setAuthMode("login");
-    setAuthFeedback("当前设备不存在该账号私钥，服务端不保存私钥，请使用原设备登录。", true);
+    setAuthFeedback("当前设备尚未保存该账号密钥，请重新输入密码恢复或重建加密身份。", true);
     elements.workspace.hidden = true;
     elements.authScreen.hidden = false;
     return false;

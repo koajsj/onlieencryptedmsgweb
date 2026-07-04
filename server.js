@@ -88,6 +88,15 @@ const SESSION_ACTIVITY_PERSIST_MS = 60 * 1000;
 const SESSION_TOKEN_VERSION = "v1";
 const SESSION_BINDING_DOMAIN = "secure-chat/session-binding-v1";
 const SESSION_SIGNING_DOMAIN = "secure-chat/session-signing-v1";
+const KEY_BUNDLE_VERSION = 1;
+const KEY_BUNDLE_MIN_ITERATIONS = 100000;
+const KEY_BUNDLE_MAX_ITERATIONS = 1000000;
+const KEY_BUNDLE_SALT_BYTES = 16;
+const KEY_BUNDLE_IV_BYTES = 12;
+const KEY_BUNDLE_CIPHERTEXT_BYTES = {
+  min: 96,
+  max: 512
+};
 const ERROR_LOG_SENSITIVE_KEYS = new Set([
   "password",
   "currentpassword",
@@ -99,6 +108,7 @@ const ERROR_LOG_SENSITIVE_KEYS = new Set([
   "session",
   "sessiontoken",
   "csrftoken",
+  "keybundle",
   "encryptedprivatekey",
   "privatekeypkcs8base64"
 ]);
@@ -579,6 +589,7 @@ function loadData() {
       id: String(user?.id || crypto.randomUUID()),
       usernameKey: String(user?.usernameKey || normalizeUsername(user?.username)?.key || ""),
       publicKey: String(user?.publicKey || ""),
+      keyBundle: normalizeKeyBundle(user?.keyBundle),
       __legacyKeyMaterialDetected: Boolean(
         user && (
           Object.prototype.hasOwnProperty.call(user, "privateKeySalt") ||
@@ -610,6 +621,7 @@ function loadData() {
     timestamp: Number.parseInt(String(message?.timestamp || message?.createdAt || "0"), 10) || Date.now(),
     sequence: Number.parseInt(String(message?.sequence || "0"), 10) || 0,
     clientId: typeof message?.clientId === "string" ? message.clientId : "",
+    publicKey: typeof message?.publicKey === "string" ? message.publicKey : "",
     deletedFor: Array.isArray(message?.deletedFor)
       ? message.deletedFor
         .map((entry) => String(entry || "").trim())
@@ -894,6 +906,39 @@ function normalizeClientId(value) {
   return clientId;
 }
 
+function normalizeKeyBundle(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const version = Number.parseInt(String(value.version || KEY_BUNDLE_VERSION), 10) || 0;
+  const iterations = Number.parseInt(String(value.iterations || "0"), 10) || 0;
+  const salt = String(value.salt || "").trim();
+  const iv = String(value.iv || "").trim();
+  const ciphertext = String(value.ciphertext || "").trim();
+  if (version !== KEY_BUNDLE_VERSION) {
+    return null;
+  }
+  if (iterations < KEY_BUNDLE_MIN_ITERATIONS || iterations > KEY_BUNDLE_MAX_ITERATIONS) {
+    return null;
+  }
+  if (!isBase64Blob(salt, KEY_BUNDLE_SALT_BYTES, KEY_BUNDLE_SALT_BYTES)) {
+    return null;
+  }
+  if (!isBase64Blob(iv, KEY_BUNDLE_IV_BYTES, KEY_BUNDLE_IV_BYTES)) {
+    return null;
+  }
+  if (!isBase64Blob(ciphertext, KEY_BUNDLE_CIPHERTEXT_BYTES.min, KEY_BUNDLE_CIPHERTEXT_BYTES.max)) {
+    return null;
+  }
+  return {
+    version,
+    iterations,
+    salt,
+    iv,
+    ciphertext
+  };
+}
+
 function messageNonceReplayKey(from, nonce) {
   return `${String(from || "")}\u0000${String(nonce || "")}`;
 }
@@ -915,6 +960,10 @@ function publicUser(user) {
       allowUserSearch: userAllowsSearch(user)
     }
   };
+}
+
+function accountKeyBundleView(user) {
+  return normalizeKeyBundle(user?.keyBundle);
 }
 
 function sessionResponseFields(session) {
@@ -2277,7 +2326,7 @@ function createMessageView(message, viewer) {
     to: message.to,
     peer,
     mine: message.from === viewer,
-    publicKey: peerUser?.publicKey || "",
+    publicKey: String(message.publicKey || peerUser?.publicKey || ""),
     text: null,
     recalled: Boolean(message.recalled),
     replyToId: String(message.replyToId || ""),
@@ -2755,9 +2804,14 @@ async function handleRegister(req, res) {
   }
 
   const publicKey = String(body.publicKey || "").trim();
+  const keyBundle = normalizeKeyBundle(body.keyBundle);
 
   if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
     sendJson(res, 400, { error: "invalid public key bundle" });
+    return;
+  }
+  if (!keyBundle) {
+    sendJson(res, 400, { error: "invalid account key bundle" });
     return;
   }
   const passwordHash = await hashPassword(password);
@@ -2773,6 +2827,7 @@ async function handleRegister(req, res) {
     usernameKey: normalizedUsername.key,
     passwordHash,
     publicKey,
+    keyBundle,
     banned: false,
     bannedReason: "",
     bannedAt: 0,
@@ -2792,6 +2847,7 @@ async function handleRegister(req, res) {
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 201, {
     user: publicUser(user),
+    keyBundle: accountKeyBundleView(user),
     ...sessionResponseFields(sessionRecord)
   }, {
     "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
@@ -2862,6 +2918,7 @@ async function handleLogin(req, res) {
   accessLogMiddleware.setUserId(req, user.username);
   sendJson(res, 200, {
     user: publicUser(user),
+    keyBundle: accountKeyBundleView(user),
     ...sessionResponseFields(sessionRecord)
   }, {
     "Set-Cookie": sessionCookieHeader(USER_SESSION_COOKIE, sessionRecord)
@@ -2945,7 +3002,15 @@ function handleMeKeyBundle(req, res, url) {
   if (!session) {
     return;
   }
-  sendJson(res, 410, { error: "private key bundles are not available in zero-knowledge mode" });
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    revokeSession(session);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  sendJson(res, 200, {
+    keyBundle: accountKeyBundleView(user)
+  });
 }
 
 function handlePublicKeyLookup(req, res, url, userId) {
@@ -3045,6 +3110,67 @@ async function handleUploadPublicKey(req, res, url) {
   sendJson(res, 200, {
     ok: true,
     publicKey: publicKeyBundleForUser(user)
+  });
+}
+
+async function handleMeKeyBundlePatch(req, res, url) {
+  const session = requireSession(req, res, url);
+  if (!session) {
+    return;
+  }
+  const address = getClientAddress(req);
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `api:me:key-bundle:${session.username}:${address}`,
+      MAX_AUTH_REQUESTS_PER_WINDOW,
+      "too many auth requests"
+    )
+  ) {
+    return;
+  }
+  const user = findUserByUsername(session.username);
+  if (!user) {
+    revokeSession(session);
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJsonBodyError(res, error);
+    return;
+  }
+  const keyBundle = normalizeKeyBundle(body.keyBundle);
+  const publicKey = String(body.publicKey || "").trim();
+  const rotateIdentity = body.rotateIdentity === true;
+  if (!keyBundle) {
+    sendJson(res, 400, { error: "invalid account key bundle" });
+    return;
+  }
+  if (publicKey) {
+    if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
+      sendJson(res, 400, { error: "invalid public key bundle" });
+      return;
+    }
+    if (user.publicKey && user.publicKey !== publicKey && !rotateIdentity) {
+      sendJson(res, 409, { error: "identity public key already registered" });
+      return;
+    }
+    user.publicKey = publicKey;
+  }
+  user.keyBundle = keyBundle;
+  persistUsers();
+  recordAdminAction("user_key_bundle_update", { username: user.username, role: "user" }, req, {
+    rotatedIdentity: Boolean(publicKey && rotateIdentity),
+    publicKeyBytes: decodeBase64Blob(user.publicKey)?.length || 0
+  });
+  sendJson(res, 200, {
+    ok: true,
+    user: publicUser(user),
+    keyBundle: accountKeyBundleView(user)
   });
 }
 
@@ -3149,8 +3275,14 @@ async function handleMePassword(req, res, url) {
   }
   const currentPassword = normalizePassword(body.currentPassword);
   const nextPassword = normalizePassword(body.newPassword);
+  const providedKeyBundle = Object.prototype.hasOwnProperty.call(body || {}, "keyBundle");
+  const keyBundle = normalizeKeyBundle(body.keyBundle);
   if (!currentPassword || !nextPassword) {
     sendJson(res, 400, { error: "currentPassword and newPassword are required" });
+    return;
+  }
+  if (providedKeyBundle && !keyBundle) {
+    sendJson(res, 400, { error: "invalid account key bundle" });
     return;
   }
   if (nextPassword.length < 4 || nextPassword.length > 72) {
@@ -3163,6 +3295,9 @@ async function handleMePassword(req, res, url) {
     return;
   }
   user.passwordHash = await hashPassword(nextPassword);
+  if (keyBundle) {
+    user.keyBundle = keyBundle;
+  }
   persistUsers();
   const revoked = deleteSessionsForUsername(user.username, "user");
   purgeUserEventTickets(user.username);
@@ -4378,6 +4513,7 @@ async function handleSendMessage(req, res, url) {
     sequence: nextMessageSequence++,
     from: session.username,
     to: peer.username,
+    publicKey: String(senderUser?.publicKey || ""),
     nonce,
     ciphertext,
     createdAt,
@@ -4901,6 +5037,10 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === "GET" && pathname === "/api/me/key-bundle") {
     handleMeKeyBundle(req, res, url);
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/me/key-bundle") {
+    runAsyncRoute(handleMeKeyBundlePatch(req, res, url), res);
     return;
   }
   if (req.method === "GET" && publicKeyUserId) {
