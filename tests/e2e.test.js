@@ -502,6 +502,11 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
     appSource.indexOf("function clearSession")
   );
   assert.match(appSource, /function setSubmitInFlight/);
+  assert.match(appSource, /outboundInFlight: new Set\(\)/);
+  assert.match(appSource, /state\.outboundInFlight\.has\(tempId\)/);
+  assert.match(appSource, /state\.outboundInFlight\.delete\(tempId\)/);
+  assert.match(appSource, /state\.outboundInFlight\.clear\(\)/);
+  assert.match(appSource, /pending\.sendStatus === "sending" \|\| state\.outboundInFlight\.has\(tempId\)/);
   assert.match(appSource, /state\.submitInFlight \|\| !state\.activePeer \|\| blocked/);
   assert.match(appSource, /setAttribute\("aria-busy", "true"\)/);
   assert.match(appSource, /setAttribute\("aria-label", "正在发送消息"\)/);
@@ -510,6 +515,8 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(appSource, /function scheduleViewportOnlySync/);
   assert.match(appSource, /const viewportChanged = syncViewportHeight\(\);[\s\S]*if \(!viewportChanged\) \{[\s\S]*return;/);
   assert.match(appSource, /visualViewport\?\.\addEventListener\("resize", scheduleViewportOnlySync\)/);
+  assert.match(appSource, /document\.activeElement !== elements\.messageInput/);
+  assert.doesNotMatch(appSource, /document\.activeElement === elements\.messageInput && state\.activePeer\) \{\s*scrollMessagesToBottom\(false\)/);
   assert.doesNotMatch(closeEventStreamBody, /manualEventSourceClose = false/);
   assert.match(appSource, /setComposerBusy\(false\);\s*syncReplyState\(\);/);
   assert.match(appSource, /if \(virtualWindow\) \{\s*elements\.messageList\.scrollTop = previousScrollTop;\s*updateScrollBottomButton\(\);\s*return;/);
@@ -524,6 +531,8 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(adminSource, /window\.clearTimeout\(state\.toastTimer\)/);
   assert.match(adminUserSource, /formatIpLocation\(sessionItem\)/);
   assert.match(adminUserSource, /window\.clearTimeout\(state\.toastTimer\)/);
+  assert.match(appSource, /消息会在本页联网后自动发送，刷新页面会丢失/);
+  assert.match(appSource, /Offline retries stay in-memory only to avoid persisting plaintext locally/);
 });
 
 test("browser client recall flow waits for the server and server source stays free of redaction mojibake", () => {
@@ -867,6 +876,14 @@ test("recalled messages stay single after append log reload", async () => {
       }
     });
     assert.equal(bobLogin.status, 200);
+    const aliceReplayLogin = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: {
+        username: "RecallAlice",
+        password: "hello123"
+      }
+    });
+    assert.equal(aliceReplayLogin.status, 200);
 
     const history = await requestJson(server.port, "/api/messages?with=RecallAlice", {
       session: bobLogin.session
@@ -875,6 +892,21 @@ test("recalled messages stay single after append log reload", async () => {
     assert.equal(history.json.messages.length, 1);
     assert.equal(history.json.messages[0].id, sent.json.message.id);
     assert.equal(history.json.messages[0].recalled, true);
+    assert.equal(history.json.messages[0].ciphertext, "");
+    assert.equal(history.json.messages[0].nonce, "");
+
+    const replayAfterRecall = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceReplayLogin.session,
+      body: {
+        to: "RecallBob",
+        clientId: "recall-message-0001-replay",
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(replayAfterRecall.status, 409);
+    assert.equal(replayAfterRecall.json.error, "duplicate message nonce");
   } finally {
     if (server?.child?.exitCode === null) {
       await server.stop();
@@ -993,6 +1025,8 @@ test("message lifecycle events stay consistent across realtime streams and histo
       [firstMessageId]
     );
     assert.equal(bobHistory.json.messages[0].recalled, true);
+    assert.equal(bobHistory.json.messages[0].ciphertext, "");
+    assert.equal(bobHistory.json.messages[0].nonce, "");
 
     const aliceHistory = await requestJson(server.port, "/api/messages?with=LifeBob", {
       session: aliceRegister.session

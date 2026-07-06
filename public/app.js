@@ -192,6 +192,7 @@ const state = {
   conversationSearchIndex: new Map(),
   pendingMessages: new Map(),
   pendingOutbox: [],
+  outboundInFlight: new Set(),
   messagePageState: new Map(),
   pendingSequence: 0,
   eventSource: null,
@@ -2262,6 +2263,11 @@ function scheduleViewportOnlySync() {
   if (state.resizeRenderRaf) {
     return;
   }
+  const keepBottomAnchored = Boolean(
+    elements.messageList &&
+    document.activeElement !== elements.messageInput &&
+    isNearBottom(elements.messageList, 120)
+  );
   state.resizeRenderRaf = window.requestAnimationFrame(() => {
     state.resizeRenderRaf = 0;
     const viewportChanged = syncViewportHeight();
@@ -2270,7 +2276,7 @@ function scheduleViewportOnlySync() {
     }
     syncLayoutState();
     updateScrollBottomButton();
-    if (document.activeElement === elements.messageInput && state.activePeer) {
+    if (keepBottomAnchored && state.activePeer) {
       scrollMessagesToBottom(false);
     }
   });
@@ -2448,6 +2454,7 @@ function clearSession(showAuth = true, clearIdentity = true) {
   state.conversationSearchIndex.clear();
   state.pendingMessages.clear();
   state.pendingOutbox = [];
+  state.outboundInFlight.clear();
   state.drafts = {};
   state.messagePageState.clear();
   state.pendingSequence = 0;
@@ -4768,6 +4775,7 @@ async function handleUserRenamed(payload) {
   state.importedPeerKeys.clear();
   state.peerKeys.clear();
   state.pendingMessages.clear();
+  state.outboundInFlight.clear();
   state.contacts = [];
 
   await loadConversations();
@@ -5270,18 +5278,22 @@ async function logoutAllDevices() {
 }
 
 async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silent = false, replyToId = "") {
-  if (state.connectionState !== "online") {
-    setPendingMessageState(tempId, "queued");
-    setAttachmentTransferForTempId(tempId, "failed", "离线状态下不支持附件发送");
-    renderThread({ scrollBehavior: "bottom" });
-    if (!silent) {
-      showToast("当前离线，消息已加入待发送队列");
-    }
+  if (state.outboundInFlight.has(tempId)) {
     return false;
   }
-  setPendingMessageState(tempId, "sending");
-  setAttachmentTransferForTempId(tempId, "sending", "正在上传密文附件");
+  state.outboundInFlight.add(tempId);
   try {
+    if (state.connectionState !== "online") {
+      setPendingMessageState(tempId, "queued");
+      setAttachmentTransferForTempId(tempId, "failed", "离线状态下不支持附件发送");
+      renderThread({ scrollBehavior: "bottom" });
+      if (!silent) {
+        showToast("当前离线，消息会在本页联网后自动发送，刷新页面会丢失");
+      }
+      return false;
+    }
+    setPendingMessageState(tempId, "sending");
+    setAttachmentTransferForTempId(tempId, "sending", "正在上传密文附件");
     const encrypted = await encryptOutboundMessage(peer, text);
     const payload = await api(parseAttachmentMessage(text) ? "/api/messages/attachment" : "/api/messages", {
       method: "POST",
@@ -5318,6 +5330,8 @@ async function sendMessageWithRetry(tempId, peer, text, clientId = tempId, silen
       showToast(error.message);
     }
     return false;
+  } finally {
+    state.outboundInFlight.delete(tempId);
   }
 }
 
@@ -5390,7 +5404,7 @@ async function submitMessage(event) {
 
 async function retryPendingMessage(tempId) {
   const pending = state.pendingMessages.get(tempId);
-  if (!pending) {
+  if (!pending || pending.sendStatus === "sending" || state.outboundInFlight.has(tempId)) {
     return;
   }
   setPendingMessageState(tempId, "sending");

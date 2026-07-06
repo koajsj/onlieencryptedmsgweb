@@ -630,6 +630,7 @@ function loadData() {
     sequence: Number.parseInt(String(message?.sequence || "0"), 10) || 0,
     clientId: typeof message?.clientId === "string" ? message.clientId : "",
     publicKey: typeof message?.publicKey === "string" ? message.publicKey : "",
+    recalledNonce: typeof message?.recalledNonce === "string" ? message.recalledNonce : "",
     deletedFor: Array.isArray(message?.deletedFor)
       ? message.deletedFor
         .map((entry) => String(entry || "").trim())
@@ -744,8 +745,9 @@ function rebuildMessageBuckets() {
     if (message.clientId) {
       messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
     }
-    if (message.nonce) {
-      messageNonceIndex.add(messageNonceReplayKey(message.from, message.nonce));
+    const replayNonce = message.nonce || message.recalledNonce;
+    if (replayNonce) {
+      messageNonceIndex.add(messageNonceReplayKey(message.from, replayNonce));
     }
   }
   for (const bucket of messageBuckets.values()) {
@@ -783,8 +785,9 @@ function appendMessageBucket(message) {
   if (message.clientId) {
     messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
   }
-  if (message.nonce) {
-    messageNonceIndex.add(messageNonceReplayKey(message.from, message.nonce));
+  const replayNonce = message.nonce || message.recalledNonce;
+  if (replayNonce) {
+    messageNonceIndex.add(messageNonceReplayKey(message.from, replayNonce));
   }
 }
 
@@ -1605,13 +1608,12 @@ function buildMessageSecurityDistribution() {
   let invalid = 0;
   let recalled = 0;
   for (const message of messages) {
-    if (message.ciphertext) {
+    if (message.recalled) {
+      recalled += 1;
+    } else if (message.ciphertext) {
       encrypted += 1;
     } else {
       invalid += 1;
-    }
-    if (message.recalled) {
-      recalled += 1;
     }
   }
   return {
@@ -1981,18 +1983,19 @@ function ciphertextAdminMetadata(value) {
 function adminUserMessageView(message, username) {
   const peer = message.from === username ? message.to : message.from;
   const deliveryState = messageDeliveryState(message);
-  const ciphertextMeta = ciphertextAdminMetadata(message.ciphertext);
+  const redacted = Boolean(message.recalled);
+  const ciphertextMeta = ciphertextAdminMetadata(redacted ? "" : message.ciphertext);
   return {
     id: message.id,
     peer,
     direction: message.from === username ? "sent" : "received",
     from: message.from,
     to: message.to,
-    encrypted: Boolean(message.ciphertext),
+    encrypted: Boolean(!redacted && message.ciphertext),
     deliveryState,
     deliveryLabel: deliveryStateLabel(deliveryState),
     auditLabel: messageAuditLabel(message),
-    nonce: String(message.nonce || ""),
+    nonce: redacted ? "" : String(message.nonce || ""),
     ciphertextBytes: ciphertextMeta.bytes,
     ciphertextSha256: ciphertextMeta.sha256,
     recalled: Boolean(message.recalled),
@@ -2207,15 +2210,16 @@ async function adminDashboardSnapshot(session, req, options = {}) {
 
 function adminMessageView(message) {
   const deliveryState = messageDeliveryState(message);
-  const ciphertextMeta = ciphertextAdminMetadata(message.ciphertext);
+  const redacted = Boolean(message.recalled);
+  const ciphertextMeta = ciphertextAdminMetadata(redacted ? "" : message.ciphertext);
   return {
     id: message.id,
     from: message.from,
     to: message.to,
-    nonce: message.nonce,
+    nonce: redacted ? "" : message.nonce,
     ciphertextBytes: ciphertextMeta.bytes,
     ciphertextSha256: ciphertextMeta.sha256,
-    encrypted: Boolean(message.ciphertext),
+    encrypted: Boolean(!redacted && message.ciphertext),
     recalled: Boolean(message.recalled),
     deliveryState,
     deliveryLabel: deliveryStateLabel(deliveryState),
@@ -2270,6 +2274,7 @@ function visibleMessagesBetween(viewer, peer) {
 function createMessageView(message, viewer) {
   const peer = message.from === viewer ? message.to : message.from;
   const peerUser = findUserByUsername(peer);
+  const redacted = Boolean(message.recalled);
   return {
     id: message.id,
     clientId: String(message.clientId || ""),
@@ -2282,8 +2287,8 @@ function createMessageView(message, viewer) {
     recalled: Boolean(message.recalled),
     replyToId: String(message.replyToId || ""),
     replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
-    nonce: message.nonce,
-    ciphertext: message.ciphertext,
+    nonce: redacted ? "" : message.nonce,
+    ciphertext: redacted ? "" : message.ciphertext,
     createdAt: message.createdAt,
     timestamp: Number(message.timestamp || message.createdAt || 0),
     deliveredAt: Number.parseInt(String(message.deliveredAt || "0"), 10) || 0,
@@ -2322,8 +2327,8 @@ function buildConversationSummary(viewer, peer) {
           recalled: Boolean(latest.recalled),
           replyToId: String(latest.replyToId || ""),
           replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
-          nonce: latest.nonce,
-          ciphertext: latest.ciphertext,
+          nonce: latest.recalled ? "" : latest.nonce,
+          ciphertext: latest.recalled ? "" : latest.ciphertext,
           createdAt: latest.createdAt,
           timestamp: Number(latest.timestamp || latest.createdAt || 0)
         }

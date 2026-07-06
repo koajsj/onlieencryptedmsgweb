@@ -46,6 +46,23 @@ function createMessageRoutes(context) {
     limits
   } = context;
 
+  function redactRecalledMessagePayload(message) {
+    if (!message) {
+      return false;
+    }
+    let changed = false;
+    if (message.nonce) {
+      message.recalledNonce = message.recalledNonce || message.nonce;
+      message.nonce = "";
+      changed = true;
+    }
+    if (message.ciphertext) {
+      message.ciphertext = "";
+      changed = true;
+    }
+    return changed;
+  }
+
   function handleConversations(req, res, url) {
     const session = requireSession(req, res, url);
     if (!session) {
@@ -303,12 +320,16 @@ function createMessageRoutes(context) {
       return;
     }
     if (target.recalled) {
+      if (redactRecalledMessagePayload(target)) {
+        schedulePersistMessages();
+      }
       sendJson(res, 200, { ok: true });
       return;
     }
     target.recalled = true;
     target.recalledAt = Date.now();
     target.recalledBy = session.username;
+    redactRecalledMessagePayload(target);
     schedulePersistMessages();
     const peer = target.to === session.username ? target.from : target.to;
     recordAdminAction("message_recall", session, req, {
