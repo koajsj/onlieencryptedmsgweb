@@ -25,6 +25,51 @@ const MESSAGE_VIRTUAL_THRESHOLD = 140;
 const MESSAGE_VIRTUAL_OVERSCAN = 480;
 const ATTACHMENT_MARKER = "[[echo-attachment-v1]]";
 const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
+const MAX_ATTACHMENT_BATCH_BYTES = 8 * 1024 * 1024;
+const SAFE_ATTACHMENT_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/vnd.rar",
+  "application/x-rar-compressed",
+  "application/x-7z-compressed",
+  "audio/mpeg",
+  "video/mp4",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+]);
+const SAFE_ATTACHMENT_EXTENSIONS = new Set([
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "pdf",
+  "txt",
+  "zip",
+  "rar",
+  "7z",
+  "mp3",
+  "mp4",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx"
+]);
+const ZIP_FAMILY_ATTACHMENT_TYPES = new Set([
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+]);
+const ZIP_FAMILY_ATTACHMENT_EXTENSIONS = new Set(["zip", "docx", "xlsx"]);
 const DANGEROUS_ATTACHMENT_TYPES = new Set([
   "text/html",
   "application/xhtml+xml",
@@ -70,6 +115,8 @@ const elements = {
   sidebarSearchInput: document.querySelector("#sidebarSearchInput"),
   globalSearchInput: document.querySelector("#globalSearchInput"),
   settingsButton: document.querySelector("#settingsButton"),
+  notificationBellButton: document.querySelector("#notificationBellButton"),
+  notificationPanel: document.querySelector("#notificationPanel"),
   navMessagesButton: document.querySelector("#navMessagesButton"),
   navContactsButton: document.querySelector("#navContactsButton"),
   accountMenuButton: document.querySelector("#accountMenuButton"),
@@ -231,12 +278,17 @@ const state = {
   appViewportHeight: 0,
   activeNavSection: "messages",
   emojiPanelOpen: false,
+  emojiPanelAnchor: null,
+  notificationPanelOpen: false,
+  notificationPanelAnchor: null,
   accountMenuOpen: false,
   accountMenuAnchor: null,
   settingsDialogOpen: false,
   settingsDialogSection: "account",
   settingsDialogReturnFocus: null,
   contextMenuMessageId: "",
+  contextMenuX: 0,
+  contextMenuY: 0,
   previewMode: false,
   workspaceLoading: false,
   typingPeer: "",
@@ -246,8 +298,15 @@ const state = {
   typingStopTimer: 0
 };
 
-if (elements.accountMenu && elements.accountMenu.parentElement !== document.body) {
-  document.body.append(elements.accountMenu);
+for (const floatingSurface of [
+  elements.accountMenu,
+  elements.emojiPanel,
+  elements.messageContextMenu,
+  elements.notificationPanel
+]) {
+  if (floatingSurface && floatingSurface.parentElement !== document.body) {
+    document.body.append(floatingSurface);
+  }
 }
 
 function readJsonStorage(key, fallback) {
@@ -576,14 +635,21 @@ function addNotification(from, text, timestamp) {
   item.className = "notification-item";
   item.dataset.peer = from;
   const tone = avatarTone(from);
-  const initial = escapeHtml(avatarInitial(from));
-  const displayName = escapeHtml(contactDisplayName(from));
-  const preview = escapeHtml(String(text || "").slice(0, 60));
-  const time = escapeHtml(formatTime(timestamp || Date.now()));
-  item.innerHTML = `<div class="avatar avatar-tone-${tone}">${initial}</div><div class="notification-item-copy"><strong>${displayName}</strong><span>${preview}</span><small>${time}</small></div>`;
+  const avatar = document.createElement("div");
+  avatar.className = `avatar avatar-tone-${tone}`;
+  avatar.textContent = avatarInitial(from);
+  const copy = document.createElement("div");
+  copy.className = "notification-item-copy";
+  const strong = document.createElement("strong");
+  strong.textContent = contactDisplayName(from);
+  const preview = document.createElement("span");
+  preview.textContent = String(text || "").slice(0, 60);
+  const time = document.createElement("small");
+  time.textContent = formatTime(timestamp || Date.now());
+  copy.append(strong, preview, time);
+  item.append(avatar, copy);
   item.addEventListener("click", () => {
-    const panel = document.querySelector("#notificationPanel");
-    if (panel) panel.hidden = true;
+    closeNotificationPanel();
     void openConversation(from);
   });
   list.prepend(item);
@@ -608,13 +674,6 @@ function updateNotificationBadge() {
   document.title = total > 0 ? `(${total > 99 ? "99+" : total}) Echo` : "Echo";
 }
 
-function clearNotificationBadge() {
-  const badge = document.querySelector("#notificationBadge");
-  if (badge) {
-    badge.hidden = true;
-  }
-}
-
 function setAccountMenuExpanded(expanded) {
   const value = expanded ? "true" : "false";
   elements.accountMenuButton?.setAttribute("aria-expanded", value);
@@ -627,6 +686,26 @@ function isAccountMenuEventTarget(target) {
   return Boolean(
     target.closest(".account-menu-wrap") ||
     target.closest("#accountMenu")
+  );
+}
+
+function isNotificationPanelEventTarget(target) {
+  if (!isElementNode(target)) {
+    return false;
+  }
+  return Boolean(
+    target.closest("#notificationBellButton") ||
+    target.closest("#notificationPanel")
+  );
+}
+
+function isEmojiPanelEventTarget(target) {
+  if (!isElementNode(target)) {
+    return false;
+  }
+  return Boolean(
+    target.closest("[data-composer-action='emoji']") ||
+    target.closest("#emojiPanel")
   );
 }
 
@@ -656,6 +735,19 @@ function positionFloatingMenu(menu, anchor) {
   menu.style.top = `${top}px`;
 }
 
+function positionFloatingMenuAtPoint(menu, x, y) {
+  if (!menu) {
+    return;
+  }
+  const viewportGap = 12;
+  const width = menu.offsetWidth || 188;
+  const height = menu.offsetHeight || 120;
+  const left = Math.max(viewportGap, Math.min(Number(x || 0), window.innerWidth - width - viewportGap));
+  const top = Math.max(viewportGap, Math.min(Number(y || 0), window.innerHeight - height - viewportGap));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+
 function closeAccountMenu() {
   state.accountMenuOpen = false;
   state.accountMenuAnchor = null;
@@ -667,9 +759,41 @@ function closeAccountMenu() {
   }
 }
 
+function closeNotificationPanel() {
+  state.notificationPanelOpen = false;
+  state.notificationPanelAnchor = null;
+  if (elements.notificationPanel) {
+    elements.notificationPanel.hidden = true;
+    elements.notificationPanel.style.removeProperty("left");
+    elements.notificationPanel.style.removeProperty("top");
+    elements.notificationPanel.style.removeProperty("right");
+  }
+}
+
+function toggleNotificationPanel(force, anchor = elements.notificationBellButton) {
+  state.notificationPanelOpen = typeof force === "boolean" ? force : !state.notificationPanelOpen;
+  state.notificationPanelAnchor = state.notificationPanelOpen ? (anchor || elements.notificationBellButton) : null;
+  if (state.notificationPanelOpen) {
+    closeAccountMenu();
+    closeEmojiPanel();
+    hideMessageContextMenu();
+  }
+  if (elements.notificationPanel) {
+    elements.notificationPanel.hidden = !state.notificationPanelOpen;
+    if (state.notificationPanelOpen && state.notificationPanelAnchor) {
+      positionFloatingMenu(elements.notificationPanel, state.notificationPanelAnchor);
+      elements.notificationPanel.style.removeProperty("right");
+    }
+  }
+}
+
 function toggleAccountMenu(force, anchor = elements.accountMenuButton) {
   state.accountMenuOpen = typeof force === "boolean" ? force : !state.accountMenuOpen;
   state.accountMenuAnchor = state.accountMenuOpen ? (anchor || elements.accountMenuButton) : null;
+  if (state.accountMenuOpen) {
+    closeNotificationPanel();
+    closeEmojiPanel();
+  }
   setAccountMenuExpanded(state.accountMenuOpen);
   if (elements.accountMenu) {
     elements.accountMenu.hidden = !state.accountMenuOpen;
@@ -738,6 +862,8 @@ function populateSettingsDialog() {
   const currentPw = document.querySelector("#currentPasswordInput");
   const newPw = document.querySelector("#newPasswordInput");
   const confirmPw = document.querySelector("#confirmPasswordInput");
+  const passwordUsername = document.querySelector("#accountPasswordUsernameInput");
+  if (passwordUsername) passwordUsername.value = state.me?.username || "";
   if (currentPw) currentPw.value = "";
   if (newPw) newPw.value = "";
   if (confirmPw) confirmPw.value = "";
@@ -793,20 +919,33 @@ function trapSettingsDialogFocus(event) {
 
 function closeEmojiPanel() {
   state.emojiPanelOpen = false;
+  state.emojiPanelAnchor = null;
   if (elements.emojiPanel) {
     elements.emojiPanel.hidden = true;
+    elements.emojiPanel.style.removeProperty("left");
+    elements.emojiPanel.style.removeProperty("top");
   }
 }
 
-function toggleEmojiPanel(force) {
+function toggleEmojiPanel(force, anchor = document.querySelector("[data-composer-action='emoji']")) {
   state.emojiPanelOpen = typeof force === "boolean" ? force : !state.emojiPanelOpen;
+  state.emojiPanelAnchor = state.emojiPanelOpen ? anchor : null;
+  if (state.emojiPanelOpen) {
+    closeAccountMenu();
+    closeNotificationPanel();
+  }
   if (elements.emojiPanel) {
     elements.emojiPanel.hidden = !state.emojiPanelOpen;
+    if (state.emojiPanelOpen && state.emojiPanelAnchor) {
+      positionFloatingMenu(elements.emojiPanel, state.emojiPanelAnchor);
+    }
   }
 }
 
 function hideMessageContextMenu() {
   state.contextMenuMessageId = "";
+  state.contextMenuX = 0;
+  state.contextMenuY = 0;
   if (elements.messageContextMenu) {
     elements.messageContextMenu.hidden = true;
     elements.messageContextMenu.style.removeProperty("left");
@@ -836,11 +975,10 @@ function showMessageContextMenu(messageId, x, y) {
   setContextMenuButtonState(elements.contextRecallButton, canRecall, !message?.mine);
   setContextMenuButtonState(elements.contextDeleteButton, canDelete);
   state.contextMenuMessageId = messageId;
+  state.contextMenuX = x;
+  state.contextMenuY = y;
   elements.messageContextMenu.hidden = false;
-  const maxX = window.innerWidth - 180;
-  const maxY = window.innerHeight - 220;
-  elements.messageContextMenu.style.left = `${Math.min(x, maxX)}px`;
-  elements.messageContextMenu.style.top = `${Math.min(y, maxY)}px`;
+  positionFloatingMenuAtPoint(elements.messageContextMenu, x, y);
 }
 
 function insertEmoji(value) {
@@ -900,10 +1038,19 @@ function parseAttachmentMessage(text) {
   try {
     const payload = JSON.parse(value.slice(ATTACHMENT_MARKER.length));
     const name = sanitizeAttachmentName(payload?.name);
+    const ext = attachmentExtension(name);
     const type = String(payload?.type || "application/octet-stream").toLowerCase().slice(0, 100);
     const size = Number(payload?.size || 0);
     const data = String(payload?.data || "");
-    if (!Number.isInteger(size) || size < 0 || size > MAX_ATTACHMENT_BYTES || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+    if (
+      !Number.isInteger(size) ||
+      size <= 0 ||
+      size > MAX_ATTACHMENT_BYTES ||
+      DANGEROUS_ATTACHMENT_TYPES.has(type) ||
+      DANGEROUS_ATTACHMENT_EXTENSIONS.has(ext) ||
+      !isAllowedAttachmentType(type, ext) ||
+      !/^[A-Za-z0-9+/]*={0,2}$/.test(data)
+    ) {
       return null;
     }
     const estimatedSize = Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
@@ -926,6 +1073,20 @@ function attachmentExtension(name) {
   const value = String(name || "");
   const index = value.lastIndexOf(".");
   return index >= 0 ? value.slice(index + 1).trim().toLowerCase() : "";
+}
+
+function isAllowedAttachmentType(type, ext) {
+  return SAFE_ATTACHMENT_TYPES.has(type) || SAFE_ATTACHMENT_EXTENSIONS.has(ext);
+}
+
+function attachmentMagicMatches(type, ext, magicType) {
+  if (!magicType) {
+    return true;
+  }
+  if (magicType === "application/zip") {
+    return ZIP_FAMILY_ATTACHMENT_TYPES.has(type) || ZIP_FAMILY_ATTACHMENT_EXTENSIONS.has(ext);
+  }
+  return !type || type === magicType;
 }
 
 function detectAttachmentMagic(bytes) {
@@ -963,9 +1124,12 @@ async function validateAttachmentFile(file) {
   if (DANGEROUS_ATTACHMENT_TYPES.has(type) || DANGEROUS_ATTACHMENT_EXTENSIONS.has(ext)) {
     throw new Error("为避免脚本或可执行文件传播，禁止发送该附件类型");
   }
+  if (!isAllowedAttachmentType(type, ext)) {
+    throw new Error("当前仅允许发送常见图片、文档、压缩包、音频和视频附件");
+  }
   const bytes = new Uint8Array(await file.arrayBuffer());
   const magicType = detectAttachmentMagic(bytes);
-  if (magicType && type && magicType !== type) {
+  if (!attachmentMagicMatches(type, ext, magicType)) {
     throw new Error("附件类型与文件头不匹配，已拒绝发送");
   }
   return bytes;
@@ -980,13 +1144,17 @@ function renderAttachmentTransfers() {
   for (const transfer of visibleTransfers) {
     const row = document.createElement("div");
     row.className = `attachment-transfer is-${transfer.stage}`;
-    row.innerHTML = `
-      <div class="attachment-transfer-copy">
-        <strong>${escapeHtml(transfer.name)}</strong>
-        <span>${escapeHtml(transfer.note || formatBytes(transfer.size || 0))}</span>
-      </div>
-      <span class="attachment-transfer-state">${escapeHtml(transfer.label)}</span>
-    `;
+    const copy = document.createElement("div");
+    copy.className = "attachment-transfer-copy";
+    const strong = document.createElement("strong");
+    strong.textContent = transfer.name;
+    const note = document.createElement("span");
+    note.textContent = transfer.note || formatBytes(transfer.size || 0);
+    copy.append(strong, note);
+    const status = document.createElement("span");
+    status.className = "attachment-transfer-state";
+    status.textContent = transfer.label;
+    row.append(copy, status);
     elements.attachmentTransferList.append(row);
   }
   elements.attachmentTransferList.hidden = visibleTransfers.length === 0;
@@ -1069,6 +1237,12 @@ async function sendAttachmentFiles(fileList) {
     return;
   }
   const files = Array.from(fileList || []).filter(Boolean).slice(0, 3);
+  const totalBytes = files.reduce((sum, file) => sum + Math.max(0, Number(file?.size || 0)), 0);
+  if (totalBytes > MAX_ATTACHMENT_BATCH_BYTES) {
+    showToast("单次最多发送 8MB 附件，请分批发送", "error");
+    return;
+  }
+  const batchReplyTarget = state.replyTarget ? { ...state.replyTarget } : null;
   for (const file of files) {
     const transferId = crypto.randomUUID();
     upsertAttachmentTransfer(transferId, {
@@ -1097,7 +1271,7 @@ async function sendAttachmentFiles(fileList) {
         note: "正在生成端到端密文"
       });
       const text = await buildAttachmentMessageText(file, bytes);
-      const replyTo = state.replyTarget ? { ...state.replyTarget } : null;
+      const replyTo = batchReplyTarget ? { ...batchReplyTarget } : null;
       const tempId = addPendingMessage(state.activePeer, text, replyTo);
       upsertAttachmentTransfer(transferId, {
         tempId,
@@ -1985,22 +2159,46 @@ function validateAuthInput(username, password) {
   return { ok: true };
 }
 
+function renderSecurityStatusCard({ tone, title, summary, actions = [] }) {
+  elements.securityStatus.className = `security-status is-${tone}`;
+  elements.securityStatus.textContent = "";
+  const copy = document.createElement("div");
+  copy.className = "security-status-copy";
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const span = document.createElement("span");
+  span.textContent = summary;
+  copy.append(strong, span);
+  elements.securityStatus.append(copy);
+  if (actions.length > 0) {
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "security-status-actions";
+    for (const action of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = action.className;
+      button.dataset.securityCardAction = action.action;
+      button.textContent = action.label;
+      actionsWrap.append(button);
+    }
+    elements.securityStatus.append(actionsWrap);
+  }
+}
+
 function updateSecurityStatus(peer = activePeerMeta()) {
   if (!elements.securityStatus) {
     return;
   }
   if (!peer) {
-    elements.securityStatus.className = "security-status is-idle";
-    elements.securityStatus.innerHTML = `
-      <div class="security-status-copy">
-        <strong>请选择会话查看加密状态</strong>
-        <span>打开任意会话后，这里会显示密钥固定、连接和核验状态。</span>
-      </div>
-    `;
+    renderSecurityStatusCard({
+      tone: "idle",
+      title: "请选择会话查看加密状态",
+      summary: "打开任意会话后，这里会显示密钥固定、连接和核验状态。"
+    });
     return;
   }
   const parts = [];
-  const actions = ['<button class="ghost-button compact" type="button" data-security-card-action="verify">核对安全码</button>'];
+  const actions = [{ className: "ghost-button compact", action: "verify", label: "核对安全码" }];
   const securityMeta = peerSecurityMetaFor(peer.username);
   let headline = "端到端会话已建立";
   let tone = "ok";
@@ -2009,24 +2207,22 @@ function updateSecurityStatus(peer = activePeerMeta()) {
     tone = "warn";
     parts.push("发送已暂停");
     parts.push("请先线下核验对方身份");
-    actions.push('<button class="primary-button compact security-status-cta" type="button" data-security-card-action="trust">信任新密钥</button>');
+    actions.push({ className: "primary-button compact security-status-cta", action: "trust", label: "信任新密钥" });
   } else if (!state.peerKeys.has(peer.username)) {
     headline = "等待联系人公钥";
     tone = "idle";
     parts.push("首次会话将自动固定对方密钥");
   }
   if (state.peerKeyUnverified.has(peer.username)) {
-    elements.securityStatus.className = "security-status is-warn";
-    elements.securityStatus.innerHTML = `
-      <div class="security-status-copy">
-        <strong>首次看到该联系人的密钥</strong>
-        <span>发送已暂停，请先核对安全码，再手动信任这把密钥。</span>
-      </div>
-      <div class="security-status-actions">
-        <button class="ghost-button compact" type="button" data-security-card-action="verify">核对安全码</button>
-        <button class="primary-button compact security-status-cta" type="button" data-security-card-action="trust">验证并信任</button>
-      </div>
-    `;
+    renderSecurityStatusCard({
+      tone: "warn",
+      title: "首次看到该联系人的密钥",
+      summary: "发送已暂停，请先核对安全码，再手动信任这把密钥。",
+      actions: [
+        { className: "ghost-button compact", action: "verify", label: "核对安全码" },
+        { className: "primary-button compact security-status-cta", action: "trust", label: "验证并信任" }
+      ]
+    });
     return;
   }
   parts.push(state.identity?.privateKey ? "\u5bc6\u94a5\u5df2\u5c31\u7eea" : "\u5bc6\u94a5\u5df2\u9501\u5b9a");
@@ -2058,14 +2254,12 @@ function updateSecurityStatus(peer = activePeerMeta()) {
   } else if (contactRecord(peer.username)?.blockedByPeer) {
     parts.push("对方已将您拉黑，暂时无法发送消息");
   }
-  elements.securityStatus.className = `security-status is-${tone}`;
-  elements.securityStatus.innerHTML = `
-    <div class="security-status-copy">
-      <strong>${escapeHtml(headline)}</strong>
-      <span>${escapeHtml(parts.join(" · "))}</span>
-    </div>
-    <div class="security-status-actions">${actions.join("")}</div>
-  `;
+  renderSecurityStatusCard({
+    tone,
+    title: headline,
+    summary: parts.join(" · "),
+    actions
+  });
 }
 
 function setAuthBusy(busy) {
@@ -2155,6 +2349,24 @@ function syncLayoutState() {
   }
   if (state.accountMenuOpen && elements.accountMenu && state.accountMenuAnchor) {
     positionFloatingMenu(elements.accountMenu, state.accountMenuAnchor);
+  }
+  if (state.notificationPanelOpen && state.notificationPanelAnchor && state.notificationPanelAnchor.offsetParent === null) {
+    closeNotificationPanel();
+    return;
+  }
+  if (state.notificationPanelOpen && elements.notificationPanel && state.notificationPanelAnchor) {
+    positionFloatingMenu(elements.notificationPanel, state.notificationPanelAnchor);
+    elements.notificationPanel.style.removeProperty("right");
+  }
+  if (state.emojiPanelOpen && state.emojiPanelAnchor && state.emojiPanelAnchor.offsetParent === null) {
+    closeEmojiPanel();
+    return;
+  }
+  if (state.emojiPanelOpen && elements.emojiPanel && state.emojiPanelAnchor) {
+    positionFloatingMenu(elements.emojiPanel, state.emojiPanelAnchor);
+  }
+  if (state.contextMenuMessageId && elements.messageContextMenu && !elements.messageContextMenu.hidden) {
+    positionFloatingMenuAtPoint(elements.messageContextMenu, state.contextMenuX, state.contextMenuY);
   }
 }
 
@@ -2271,12 +2483,9 @@ function scheduleViewportOnlySync() {
   state.resizeRenderRaf = window.requestAnimationFrame(() => {
     state.resizeRenderRaf = 0;
     const viewportChanged = syncViewportHeight();
-    if (!viewportChanged) {
-      return;
-    }
     syncLayoutState();
     updateScrollBottomButton();
-    if (keepBottomAnchored && state.activePeer) {
+    if (viewportChanged && keepBottomAnchored && state.activePeer) {
       scrollMessagesToBottom(false);
     }
   });
@@ -2292,11 +2501,16 @@ function createSpacer(height) {
 
 function clearStoredSessionArtifacts(owner, clearIdentity = true, clearActivePeer = true, clearPending = true) {
   if (clearActivePeer) {
-    writeScopedStorageRecord(STORAGE.activePeer, owner, {});
+    deleteScopedStorageRecord(STORAGE.activePeer, owner);
   }
   if (clearPending) {
     deleteScopedStorageRecord(STORAGE.pendingOutbox, owner);
   }
+  deleteScopedStorageRecord(STORAGE.accountProfile, owner);
+  deleteScopedStorageRecord(STORAGE.contactProfiles, owner);
+  deleteScopedStorageRecord(STORAGE.conversationPrefs, owner);
+  deleteScopedStorageRecord(STORAGE.peerSecurityMeta, owner);
+  deleteScopedStorageRecord(STORAGE.peerKeyPins, owner);
   if (clearIdentity) {
     clearSessionIdentityCache();
   }
@@ -2315,6 +2529,7 @@ function translateApiError(pathname, status, payload) {
     "account banned": "账号已被禁用",
     "account key material is missing": "账号缺少加密身份，请重新登录后恢复。",
     "invalid account key bundle": "账号加密身份数据无效，请重新登录后重试。",
+    "forbidden origin": "当前请求来源不受信任，请从本站页面重新操作。",
     "too many auth requests": "请求过于频繁，请稍后再试",
     "current password invalid": "当前密码不正确",
     "invalid private key bundle": "服务端不再接受私钥材料",
@@ -2325,6 +2540,7 @@ function translateApiError(pathname, status, payload) {
     "you blocked peer": "您已拉黑对方，解除后才能继续互动",
     "blocked by peer": "对方已将您拉黑，暂时无法发送消息",
     "invalid csrf token": "当前页面安全令牌已失效，请重新登录。",
+    "clientId required": "消息缺少幂等编号，请刷新页面后重试。",
     "clientId already used": "消息幂等编号重复，请勿重复提交。",
     "recall window expired": "撤回时间窗口已过。",
     "relationship is blocked": "当前关系处于拉黑状态，无法直接切换免打扰。",
@@ -3006,13 +3222,23 @@ function syncViewportHeight() {
 function renderSimpleDetailRow(title, meta, actionLabel = "", action = "") {
   const wrapper = document.createElement("div");
   wrapper.className = "detail-file-row detail-file-row-simple";
-  wrapper.innerHTML = `
-    <div class="detail-file-copy">
-      <strong>${escapeHtml(title)}</strong>
-      <span class="detail-file-meta">${escapeHtml(meta)}</span>
-    </div>
-    ${actionLabel ? `<button class="detail-file-download" type="button" data-security-action="${escapeHtml(action)}">${escapeHtml(actionLabel)}</button>` : ""}
-  `;
+  const copy = document.createElement("div");
+  copy.className = "detail-file-copy";
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const span = document.createElement("span");
+  span.className = "detail-file-meta";
+  span.textContent = meta;
+  copy.append(strong, span);
+  wrapper.append(copy);
+  if (actionLabel) {
+    const button = document.createElement("button");
+    button.className = "detail-file-download";
+    button.type = "button";
+    button.dataset.securityAction = action;
+    button.textContent = actionLabel;
+    wrapper.append(button);
+  }
   return wrapper;
 }
 
@@ -3042,7 +3268,9 @@ function renderSecurityLists(deviceSessions = state.deviceSessions) {
     if (!deviceSessions.length) {
       const empty = document.createElement("div");
       empty.className = "detail-file-row detail-file-empty";
-      empty.innerHTML = "<span>暂无可展示的登录设备。</span>";
+      const span = document.createElement("span");
+      span.textContent = "暂无可展示的登录设备。";
+      empty.append(span);
       elements.deviceSessionsList.append(empty);
     } else {
       for (const sessionItem of deviceSessions) {
@@ -3069,7 +3297,9 @@ function renderSecurityLists(deviceSessions = state.deviceSessions) {
     if (!state.securitySettings.blockedUsers.length) {
       const empty = document.createElement("div");
       empty.className = "detail-file-row detail-file-empty";
-      empty.innerHTML = "<span>黑名单为空。</span>";
+      const span = document.createElement("span");
+      span.textContent = "黑名单为空。";
+      empty.append(span);
       elements.blockedUsersList.append(empty);
     } else {
       for (const username of state.securitySettings.blockedUsers) {
@@ -3424,13 +3654,6 @@ function renderSidebar() {
 function renderListItem(item, isSearchResult) {
   const prefs = peerPrefs(item.username);
   const draft = isSearchResult ? "" : draftTextForPeer(item.username).trim();
-  const indicators = [];
-  if (item.unread) {
-    indicators.push(`<b class="unread-badge${prefs.muted ? " is-muted" : ""}">${item.unread > 99 ? "99+" : item.unread}</b>`);
-  }
-  if (!isSearchResult && draft) {
-    indicators.push('<span class="draft-badge">草稿</span>');
-  }
 
   const button = document.createElement("button");
   button.type = "button";
@@ -3455,31 +3678,54 @@ function renderListItem(item, isSearchResult) {
 
   const meta = document.createElement("div");
   meta.className = "list-item-meta";
-  meta.innerHTML = `
-    <div class="list-row">
-      <strong>${escapeHtml(contactDisplayName(item.username))}</strong>
-      <span>${escapeHtml(isSearchResult ? (item.sourceLabel || (item.online ? "在线" : "离线")) : formatRelative(item.lastAt))}</span>
-    </div>
-    <div class="list-row is-subtle">
-      <span class="list-preview">${escapeHtml(isSearchResult ? (item.searchHint || "发起新的加密会话") : messagePreview(item.previewText || "加密消息"))}</span>
-      <span class="list-indicators">${indicators.join("")}</span>
-    </div>
-  `;
+  const primaryRow = document.createElement("div");
+  primaryRow.className = "list-row";
+  const primaryName = document.createElement("strong");
+  primaryName.textContent = contactDisplayName(item.username);
+  const primaryMeta = document.createElement("span");
+  primaryMeta.textContent = isSearchResult ? (item.sourceLabel || (item.online ? "在线" : "离线")) : formatRelative(item.lastAt);
+  primaryRow.append(primaryName, primaryMeta);
+  const secondaryRow = document.createElement("div");
+  secondaryRow.className = "list-row is-subtle";
+  const preview = document.createElement("span");
+  preview.className = "list-preview";
+  preview.textContent = isSearchResult ? (item.searchHint || "发起新的加密会话") : messagePreview(item.previewText || "加密消息");
+  const indicatorWrap = document.createElement("span");
+  indicatorWrap.className = "list-indicators";
+  if (!isSearchResult && draft) {
+    const draftBadge = document.createElement("span");
+    draftBadge.className = "draft-badge";
+    draftBadge.textContent = "草稿";
+    indicatorWrap.append(draftBadge);
+  }
+  if (item.unread) {
+    const unread = document.createElement("b");
+    unread.className = `unread-badge${prefs.muted ? " is-muted" : ""}`;
+    unread.textContent = item.unread > 99 ? "99+" : String(item.unread);
+    indicatorWrap.append(unread);
+  }
+  secondaryRow.append(preview, indicatorWrap);
+  meta.append(primaryRow, secondaryRow);
 
   const flags = [];
   if (prefs.pinned) {
-    flags.push('<em class="list-flag">已置顶</em>');
+    flags.push("已置顶");
   }
   if (prefs.muted) {
-    flags.push('<em class="list-flag">免打扰</em>');
+    flags.push("免打扰");
   }
   if (isSearchResult && item.sourceLabel) {
-    flags.push(`<em class="list-flag">${escapeHtml(item.sourceLabel)}</em>`);
+    flags.push(item.sourceLabel);
   }
   if (flags.length > 0) {
     const flagRow = document.createElement("div");
     flagRow.className = "list-flags";
-    flagRow.innerHTML = flags.join("");
+    for (const flag of flags) {
+      const em = document.createElement("em");
+      em.className = "list-flag";
+      em.textContent = flag;
+      flagRow.append(em);
+    }
     meta.append(flagRow);
   }
 
@@ -3510,7 +3756,9 @@ function formatDaySeparator(timestamp) {
 function createDaySeparator(timestamp) {
   const sep = document.createElement("div");
   sep.className = "message-day-sep";
-  sep.innerHTML = `<span>${escapeHtml(formatDaySeparator(timestamp))}</span>`;
+  const span = document.createElement("span");
+  span.textContent = formatDaySeparator(timestamp);
+  sep.append(span);
   return sep;
 }
 
@@ -3675,14 +3923,34 @@ function renderThread(options = {}) {
   const threadQuery = state.threadSearchQuery.trim().toLowerCase();
   const basePresence = peer.online ? "在线" : contact?.lastSeenAt ? `最后在线 ${formatLastSeen(contact.lastSeenAt)}` : "离线";
   const peerStatusParts = [
-    escapeHtml(basePresence),
-    `<span class="secure-status-label">端到端加密${LOCK_ICON_MARKUP}</span>`
+    basePresence,
+    { secureLabel: true }
   ];
   if (connectionLabel) {
-    peerStatusParts.push(escapeHtml(connectionLabel.replace(/^\s*·\s*/, "")));
+    peerStatusParts.push(connectionLabel.replace(/^\s*·\s*/, ""));
   }
-  peerStatusParts.push(...statusTags.map((tag) => escapeHtml(tag)));
-  elements.peerStatus.innerHTML = peerStatusParts.join('<span class="message-meta-sep">·</span>');
+  peerStatusParts.push(...statusTags);
+  elements.peerStatus.textContent = "";
+  peerStatusParts.forEach((part, index) => {
+    if (index > 0) {
+      const sep = document.createElement("span");
+      sep.className = "message-meta-sep";
+      sep.textContent = "·";
+      elements.peerStatus.append(sep);
+    }
+    if (part && typeof part === "object" && part.secureLabel) {
+      const secureLabel = document.createElement("span");
+      secureLabel.className = "secure-status-label";
+      secureLabel.textContent = "端到端加密";
+      const lockWrap = document.createElement("span");
+      lockWrap.innerHTML = LOCK_ICON_MARKUP;
+      secureLabel.append(lockWrap.firstElementChild || document.createTextNode(""));
+      elements.peerStatus.append(secureLabel);
+      return;
+    }
+    const textNode = document.createTextNode(String(part || ""));
+    elements.peerStatus.append(textNode);
+  });
   updateSecurityStatus(peer);
   setAvatar(elements.peerAvatar, peer.username);
 
@@ -3718,12 +3986,20 @@ function renderThread(options = {}) {
   if (messages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "message-empty";
-    empty.innerHTML = `<strong>${escapeHtml(peer.username)}</strong><span>暂无消息，发送第一条加密消息开始会话。</span>`;
+    const strong = document.createElement("strong");
+    strong.textContent = peer.username;
+    const span = document.createElement("span");
+    span.textContent = "暂无消息，发送第一条加密消息开始会话。";
+    empty.append(strong, span);
     elements.messageList.append(empty);
   } else if (visibleMessages.length === 0) {
     const empty = document.createElement("div");
     empty.className = "message-empty";
-    empty.innerHTML = `<strong>没有匹配的消息</strong><span>请尝试缩短关键词，或清空当前会话搜索。</span>`;
+    const strong = document.createElement("strong");
+    strong.textContent = "没有匹配的消息";
+    const span = document.createElement("span");
+    span.textContent = "请尝试缩短关键词，或清空当前会话搜索。";
+    empty.append(strong, span);
     elements.messageList.append(empty);
   } else {
     if (virtualWindow && virtualWindow.start > 0) {
@@ -5182,7 +5458,7 @@ async function submitAuth(event) {
   }
 
   const username = elements.authUsernameInput.value.trim();
-  const password = elements.authPasswordInput.value.trim();
+  const password = String(elements.authPasswordInput.value || "");
   const validation = validateAuthInput(username, password);
   if (!validation.ok) {
     setAuthFeedback(validation.message, true);
@@ -5650,7 +5926,17 @@ function previewAttachment(messageId) {
   overlay.className = "attachment-lightbox";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
-  overlay.innerHTML = `<button class="attachment-lightbox-close" type="button" aria-label="关闭预览">×</button><img src="data:${escapeHtml(attachment.type)};base64,${attachment.data}" alt="${escapeHtml(attachment.name)}" /><span>${escapeHtml(attachment.name)} · ${escapeHtml(formatBytes(attachment.size))}</span>`;
+  const closeButton = document.createElement("button");
+  closeButton.className = "attachment-lightbox-close";
+  closeButton.type = "button";
+  closeButton.setAttribute("aria-label", "关闭预览");
+  closeButton.textContent = "×";
+  const image = document.createElement("img");
+  image.src = `data:${attachment.type};base64,${attachment.data}`;
+  image.alt = attachment.name;
+  const meta = document.createElement("span");
+  meta.textContent = `${attachment.name} · ${formatBytes(attachment.size)}`;
+  overlay.append(closeButton, image, meta);
   const close = () => {
     document.body.classList.remove("is-lightbox-open");
     document.removeEventListener("keydown", handleKeydown);
@@ -5669,7 +5955,7 @@ function previewAttachment(messageId) {
   document.body.classList.add("is-lightbox-open");
   document.addEventListener("keydown", handleKeydown);
   document.body.append(overlay);
-  overlay.querySelector(".attachment-lightbox-close")?.focus();
+  closeButton.focus();
 }
 
 function handleMessageListClick(event) {
@@ -5842,7 +6128,7 @@ function handleComposerActionClick(event) {
     return;
   }
   if (action === "emoji") {
-    toggleEmojiPanel();
+    toggleEmojiPanel(undefined, actionButton);
     return;
   }
 }
@@ -5909,6 +6195,10 @@ function handleGlobalKeydown(event) {
   }
   if (event.key === "Escape" && state.emojiPanelOpen) {
     closeEmojiPanel();
+    return;
+  }
+  if (event.key === "Escape" && state.notificationPanelOpen) {
+    closeNotificationPanel();
     return;
   }
   if (event.key === "Escape" && state.accountMenuOpen) {
@@ -6314,11 +6604,16 @@ function bindEvents() {
   window.addEventListener("keydown", handleGlobalKeydown);
   window.addEventListener("resize", scheduleResponsiveRender);
   window.visualViewport?.addEventListener("resize", scheduleViewportOnlySync);
+  window.addEventListener("scroll", scheduleViewportOnlySync, { passive: true });
+  window.visualViewport?.addEventListener("scroll", scheduleViewportOnlySync);
   document.addEventListener("click", (event) => {
     if (!isAccountMenuEventTarget(event.target)) {
       closeAccountMenu();
     }
-    if (!isElementNode(event.target) || !event.target.closest(".composer")) {
+    if (!isNotificationPanelEventTarget(event.target)) {
+      closeNotificationPanel();
+    }
+    if (!isEmojiPanelEventTarget(event.target) && (!isElementNode(event.target) || !event.target.closest(".composer"))) {
       closeEmojiPanel();
     }
     if (!isElementNode(event.target) || !event.target.closest(".message-context-menu")) {
@@ -6356,26 +6651,9 @@ function bindEvents() {
     }
   });
 
-  const notificationBellButton = document.querySelector("#notificationBellButton");
-  const notificationPanel = document.querySelector("#notificationPanel");
-  notificationBellButton?.addEventListener("click", (event) => {
+  elements.notificationBellButton?.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (notificationPanel) {
-      const isOpen = !notificationPanel.hidden;
-      notificationPanel.hidden = isOpen;
-      if (!isOpen) {
-        const rect = notificationBellButton.getBoundingClientRect();
-        notificationPanel.style.top = `${rect.bottom + 8}px`;
-        notificationPanel.style.right = `${window.innerWidth - rect.right}px`;
-        notificationPanel.style.left = "auto";
-        clearNotificationBadge();
-      }
-    }
-  });
-  document.addEventListener("click", (origEvent) => {
-    if (notificationPanel && !notificationPanel.hidden && !origEvent.target.closest("#notificationPanel") && !origEvent.target.closest("#notificationBellButton")) {
-      notificationPanel.hidden = true;
-    }
+    toggleNotificationPanel(undefined, elements.notificationBellButton);
   });
 
   const avatarPicker = document.querySelector("#avatarPicker");

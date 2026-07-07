@@ -1045,6 +1045,10 @@ img {
   pointer-events: none;
 }
 
+.button-align-start {
+  justify-self: start;
+}
+
 .send-button {
   min-width: 116px;
 }
@@ -1713,13 +1717,13 @@ img {
 }
 
 .emoji-panel {
-  position: absolute;
-  left: 20px;
-  bottom: calc(100% + 12px);
+  position: fixed;
+  left: 0;
+  top: 0;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  width: 240px;
+  width: min(240px, calc(100vw - 24px));
   padding: 12px;
   border-radius: 20px;
   border: 1px solid var(--line);
@@ -2752,10 +2756,7 @@ body.is-lightbox-open {
   }
 
   .emoji-panel {
-    left: 8px;
-    right: 8px;
-    width: auto;
-    bottom: calc(100% + 8px);
+    width: min(320px, calc(100vw - 16px));
     gap: 6px;
     padding: 8px;
   }

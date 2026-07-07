@@ -1,6 +1,6 @@
 "use strict";
 
-const { escapeHtml, formatDateTime } = window.EchoUi;
+const { formatDateTime } = window.EchoUi;
 
 const elements = {
   title: document.querySelector("#detailTitle"),
@@ -122,6 +122,47 @@ function formatIpLocation(row) {
   return location ? `${ip} · ${location}` : ip;
 }
 
+function createEmptyState(text) {
+  const article = document.createElement("article");
+  article.className = "empty-state";
+  article.textContent = text;
+  return article;
+}
+
+function createDetailItem(title, meta) {
+  const article = document.createElement("article");
+  article.className = "detail-item";
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const metaEl = createDetailMeta(meta);
+  article.append(strong, metaEl);
+  return article;
+}
+
+function createDetailMeta(text) {
+  const metaEl = document.createElement("div");
+  metaEl.className = "detail-item-meta";
+  metaEl.textContent = text;
+  return metaEl;
+}
+
+function createMessageAuditItem(left, right, text) {
+  const article = document.createElement("article");
+  article.className = "msg-item";
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  const leftSpan = document.createElement("span");
+  leftSpan.textContent = left;
+  const rightSpan = document.createElement("span");
+  rightSpan.textContent = right;
+  meta.append(leftSpan, rightSpan);
+  const body = document.createElement("div");
+  body.className = "msg-text";
+  body.textContent = text;
+  article.append(meta, body);
+  return article;
+}
+
 function renderOverview(detail) {
   const messageStats = detail.messageStats || {};
   const access = detail.access || {};
@@ -133,12 +174,17 @@ function renderOverview(detail) {
     { label: "会话对象", value: `${messageStats.peers || 0}` },
     { label: "访问日志", value: `${access.totalLogs || 0}` }
   ];
-  elements.overviewGrid.innerHTML = cards.map((card) => `
-      <article class="overview-card">
-        <span>${escapeHtml(card.label)}</span>
-        <strong>${escapeHtml(card.value)}</strong>
-      </article>
-    `).join("");
+  elements.overviewGrid.textContent = "";
+  for (const card of cards) {
+    const article = document.createElement("article");
+    article.className = "overview-card";
+    const span = document.createElement("span");
+    span.textContent = card.label;
+    const strong = document.createElement("strong");
+    strong.textContent = card.value;
+    article.append(span, strong);
+    elements.overviewGrid.append(article);
+  }
 }
 
 function renderIdentity(detail) {
@@ -155,12 +201,10 @@ function renderIdentity(detail) {
     { title: "首条消息时间", meta: formatDateTime(detail.messageStats?.firstMessageAt) },
     { title: "最后消息时间", meta: formatDateTime(detail.messageStats?.lastMessageAt) }
   ];
-  elements.identityList.innerHTML = rows.map((row) => `
-      <article class="detail-item">
-        <strong>${escapeHtml(row.title)}</strong>
-        <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
-      </article>
-    `).join("");
+  elements.identityList.textContent = "";
+  for (const row of rows) {
+    elements.identityList.append(createDetailItem(row.title, row.meta));
+  }
 }
 
 function renderCrypto(detail) {
@@ -184,28 +228,34 @@ function renderCrypto(detail) {
       summary: "仅密文元数据与公钥摘要，不展示私钥材料"
     }
   ];
-  elements.cryptoList.innerHTML = rows.map((row) => `
-      <article class="detail-item">
-        <strong>${escapeHtml(row.title)}</strong>
-        <div class="detail-item-meta">${escapeHtml(row.summary)}</div>
-      </article>
-    `).join("");
+  elements.cryptoList.textContent = "";
+  for (const row of rows) {
+    elements.cryptoList.append(createDetailItem(row.title, row.summary));
+  }
 }
 
 function renderSessions(detail) {
   const sessions = detail.sessions || [];
-  elements.sessionList.innerHTML = sessions.length > 0
-    ? sessions.map((sessionItem) => `
-          <article class="detail-item">
-            <strong>活跃会话</strong>
-            <div class="detail-item-meta">${escapeHtml(`${sessionItem.browser || "-"} · ${sessionItem.os || "-"} · ${sessionItem.device || "-"}`)}</div>
-            <div class="detail-item-meta">IP ${escapeHtml(formatIpLocation(sessionItem))}</div>
-            <div class="detail-item-meta">创建时间 ${escapeHtml(formatDateTime(sessionItem.createdAt))}</div>
-            <div class="detail-item-meta">最近活动 ${escapeHtml(formatDateTime(sessionItem.lastSeenAt))}</div>
-            <div class="detail-item-meta">过期时间 ${escapeHtml(formatDateTime(sessionItem.expiresAt))}</div>
-          </article>
-        `).join("")
-    : `<article class="empty-state">当前没有活跃会话</article>`;
+  elements.sessionList.textContent = "";
+  if (sessions.length === 0) {
+    elements.sessionList.append(createEmptyState("当前没有活跃会话"));
+    return;
+  }
+  for (const sessionItem of sessions) {
+    const article = document.createElement("article");
+    article.className = "detail-item";
+    const strong = document.createElement("strong");
+    strong.textContent = "活跃会话";
+    article.append(
+      strong,
+      createDetailMeta(`${sessionItem.browser || "-"} · ${sessionItem.os || "-"} · ${sessionItem.device || "-"}`),
+      createDetailMeta(`IP ${formatIpLocation(sessionItem)}`),
+      createDetailMeta(`创建时间 ${formatDateTime(sessionItem.createdAt)}`),
+      createDetailMeta(`最近活动 ${formatDateTime(sessionItem.lastSeenAt)}`),
+      createDetailMeta(`过期时间 ${formatDateTime(sessionItem.expiresAt)}`)
+    );
+    elements.sessionList.append(article);
+  }
 }
 
 function renderAccess(detail) {
@@ -214,7 +264,8 @@ function renderAccess(detail) {
   elements.accessBadge.textContent = `最近 ${logs.length} 条日志`;
 
   if (!profile) {
-    elements.accessProfileList.innerHTML = `<article class="empty-state">没有该用户的访问画像</article>`;
+    elements.accessProfileList.textContent = "";
+    elements.accessProfileList.append(createEmptyState("没有该用户的访问画像"));
   } else {
     const rows = [
       { title: "首次访问", meta: formatDateTime(profile.firstVisitAt) },
@@ -230,78 +281,89 @@ function renderAccess(detail) {
         meta: `${profile.clientMeta?.language || "-"} · ${profile.clientMeta?.timezone || "-"} · ${profile.clientMeta?.screenResolution || "-"}`
       }
     ];
-    elements.accessProfileList.innerHTML = rows.map((row) => `
-        <article class="detail-item">
-          <strong>${escapeHtml(row.title)}</strong>
-          <div class="detail-item-meta">${escapeHtml(row.meta)}</div>
-        </article>
-      `).join("");
+    elements.accessProfileList.textContent = "";
+    for (const row of rows) {
+      elements.accessProfileList.append(createDetailItem(row.title, row.meta));
+    }
   }
 
   if (logs.length === 0) {
-    elements.accessLogsList.innerHTML = `<article class="empty-state">暂无可展示的访问明细</article>`;
+    elements.accessLogsList.textContent = "";
+    elements.accessLogsList.append(createEmptyState("暂无可展示的访问明细"));
     return;
   }
-  elements.accessLogsList.innerHTML = logs.map((row) => `
-      <article class="detail-item">
-        <strong>${escapeHtml(`${row.method || "GET"} ${row.path || "/"}`)}</strong>
-        <div class="detail-item-meta">${escapeHtml(formatDateTime(row.createdAt))}</div>
-        <div class="detail-item-meta">${escapeHtml(`${formatIpLocation(row)} · ${row.browser || "-"} · ${row.os || "-"}`)}</div>
-      </article>
-    `).join("");
+  elements.accessLogsList.textContent = "";
+  for (const row of logs) {
+    const article = document.createElement("article");
+    article.className = "detail-item";
+    const strong = document.createElement("strong");
+    strong.textContent = `${row.method || "GET"} ${row.path || "/"}`;
+    article.append(
+      strong,
+      createDetailMeta(formatDateTime(row.createdAt)),
+      createDetailMeta(`${formatIpLocation(row)} · ${row.browser || "-"} · ${row.os || "-"}`)
+    );
+    elements.accessLogsList.append(article);
+  }
 }
 
 function renderConversations(detail) {
   const rows = detail.conversations || [];
+  elements.conversationList.textContent = "";
   if (rows.length === 0) {
-    elements.conversationList.innerHTML = `<article class="empty-state">该用户还没有会话关系</article>`;
+    elements.conversationList.append(createEmptyState("该用户还没有会话关系"));
     return;
   }
-  elements.conversationList.innerHTML = rows.map((row) => `
-      <article class="detail-item">
-        <strong>${escapeHtml(row.username)}</strong>
-        <div class="detail-item-meta">${escapeHtml(`${row.online ? "在线" : "离线"} · 总消息 ${row.totalMessages || 0}`)}</div>
-        <div class="detail-item-meta">${escapeHtml(`发送 ${row.sentMessages || 0} / 接收 ${row.receivedMessages || 0}`)}</div>
-        <div class="detail-item-meta">${escapeHtml(`最后互动 ${formatDateTime(row.lastAt)}`)}</div>
-      </article>
-    `).join("");
+  for (const row of rows) {
+    const article = document.createElement("article");
+    article.className = "detail-item";
+    const strong = document.createElement("strong");
+    strong.textContent = row.username;
+    article.append(
+      strong,
+      createDetailMeta(`${row.online ? "在线" : "离线"} · 总消息 ${row.totalMessages || 0}`),
+      createDetailMeta(`发送 ${row.sentMessages || 0} / 接收 ${row.receivedMessages || 0}`),
+      createDetailMeta(`最后互动 ${formatDateTime(row.lastAt)}`)
+    );
+    elements.conversationList.append(article);
+  }
 }
 
 function renderMessages(detail) {
   const rows = detail.recentMessages || [];
+  elements.messageList.textContent = "";
   if (rows.length === 0) {
-    elements.messageList.innerHTML = `<article class="empty-state">暂无消息记录</article>`;
+    elements.messageList.append(createEmptyState("暂无消息记录"));
     return;
   }
-  elements.messageList.innerHTML = rows.map((message) => {
+  for (const message of rows) {
     const text = `${message.auditLabel || "端到端加密密文，后台不可读取明文"} | ${message.deliveryLabel || "未知状态"} | ${formatCiphertextMeta(message)}`;
-    return `
-      <article class="msg-item">
-        <div class="msg-meta">
-          <span>${escapeHtml(`${message.direction === "sent" ? "发送给" : "收到自"} ${message.peer}`)}</span>
-          <span>${escapeHtml(formatDateTime(message.createdAt))}</span>
-        </div>
-        <div class="msg-text">${escapeHtml(text)}</div>
-      </article>
-    `;
-  }).join("");
+    elements.messageList.append(
+      createMessageAuditItem(
+        `${message.direction === "sent" ? "发送给" : "收到自"} ${message.peer}`,
+        formatDateTime(message.createdAt),
+        text
+      )
+    );
+  }
 }
 
 function renderAudit(detail) {
   const rows = detail.audit || [];
+  elements.auditList.textContent = "";
   if (rows.length === 0) {
-    elements.auditList.innerHTML = `<article class="empty-state">暂无与该用户相关的管理员审计记录</article>`;
+    elements.auditList.append(createEmptyState("暂无与该用户相关的管理员审计记录"));
     return;
   }
-  elements.auditList.innerHTML = rows.map((item) => `
-      <article class="msg-item">
-        <div class="msg-meta">
-          <span>${escapeHtml(item.action || "-")}</span>
-          <span>${escapeHtml(formatDateTime(item.at))}</span>
-        </div>
-        <div class="msg-text">${escapeHtml(JSON.stringify(item.details || {}, null, 2))}</div>
-      </article>
-    `).join("");
+  for (const item of rows) {
+    elements.auditList.append(
+      createMessageAuditItem(
+        item.action || "-",
+        formatDateTime(item.at),
+        JSON.stringify(item.details || {}, null, 2)
+      )
+    );
+  }
 }
 
 function renderDetail(detail) {

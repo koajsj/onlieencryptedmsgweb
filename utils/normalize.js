@@ -18,7 +18,7 @@ function normalizePassword(value) {
   if (typeof value !== "string") {
     return "";
   }
-  return value.trim();
+  return value;
 }
 
 function normalizeBoundedText(value, maxLength) {

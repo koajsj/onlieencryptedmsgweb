@@ -1477,12 +1477,21 @@ function deleteSessionsForUsername(username, role = null) {
   return deleted;
 }
 
-function createEventTicketForSession(session) {
+function eventTicketAgentHash(req) {
+  return crypto
+    .createHash("sha256")
+    .update(String(req?.headers?.["user-agent"] || "").slice(0, 512))
+    .digest("base64url");
+}
+
+function createEventTicketForSession(session, req) {
   const ticket = crypto.randomBytes(24).toString("base64url");
   eventTickets.set(ticket, {
     username: session.username,
     role: session.role,
     token: session.id,
+    address: getClientAddress(req),
+    agentHash: eventTicketAgentHash(req),
     issuedAt: Date.now(),
     expiresAt: Date.now() + EVENT_TICKET_TTL_MS
   });
@@ -1499,6 +1508,14 @@ function consumeEventTicket(ticket) {
     return null;
   }
   return record;
+}
+
+function requirePublicWriteOrigin(req, res) {
+  if (isSameOriginRequest(req)) {
+    return true;
+  }
+  sendJson(res, 403, { error: "forbidden origin" });
+  return false;
 }
 
 function listOnlineUsers() {
@@ -2692,6 +2709,7 @@ setInterval(purgeStoredMessagePlaintext, 60 * 60 * 1000).unref();
 
 const supportRoutes = createSupportRoutes({
   getClientAddress,
+  requirePublicWriteOrigin,
   rejectIfForbiddenOrLimited,
   readJsonBody,
   sendJsonBodyError,
@@ -2711,6 +2729,7 @@ const adminRoutes = createAdminRoutes({
   syncRuntimeAdminConfigFromConfiguredSources,
   sendJson,
   getClientAddress,
+  requirePublicWriteOrigin,
   rejectIfForbiddenOrLimited,
   readJsonBody,
   sendJsonBodyError,
@@ -2777,6 +2796,7 @@ const adminRoutes = createAdminRoutes({
 
 const accountRoutes = createAccountRoutes({
   getClientAddress,
+  requirePublicWriteOrigin,
   rejectIfForbiddenOrLimited,
   readJsonBody,
   sendJsonBodyError,
@@ -2909,6 +2929,8 @@ const messageRoutes = createMessageRoutes({
 const eventRoutes = createEventRoutes({
   requireSession,
   getClientAddress,
+  eventTicketAgentHash,
+  isSameOriginRequest,
   rejectIfForbiddenOrLimited,
   sendJson,
   activeConnectionCount,

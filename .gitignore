@@ -4,6 +4,7 @@ npm-debug.log*
 .codex-admin-server*.log
 .codex-start-check*.log
 .codex-ui-check/
+.playwright-cli/
 .claude/
 .cache/
 cache/
@@ -18,10 +19,12 @@ temp/
 .env
 .DS_Store
 Thumbs.db
+.secure-chat/
 data/users.json
 data/messages.json
 data/message-key.json
 data/*.json
 data/*.jsonl
 data/*.sqlite*
+data/*.txt
 !data/.gitkeep

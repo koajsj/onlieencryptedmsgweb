@@ -3,6 +3,7 @@
 function createSupportRoutes(context) {
   const {
     getClientAddress,
+    requirePublicWriteOrigin,
     rejectIfForbiddenOrLimited,
     readJsonBody,
     sendJsonBodyError,
@@ -19,6 +20,9 @@ function createSupportRoutes(context) {
   } = context;
 
 async function handleClientMeta(req, res, url) {
+  if (!requirePublicWriteOrigin(req, res)) {
+    return;
+  }
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(

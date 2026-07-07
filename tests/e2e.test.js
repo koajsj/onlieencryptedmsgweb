@@ -20,6 +20,8 @@ const INDEX_HTML = path.join(ROOT_DIR, "public", "index.html");
 const ADMIN_HTML = path.join(ROOT_DIR, "public", "admin.html");
 const ADMIN_USER_HTML = path.join(ROOT_DIR, "public", "admin-user.html");
 const CONFIG_SOURCE = path.join(ROOT_DIR, "config.js");
+const NORMALIZE_SOURCE = path.join(ROOT_DIR, "utils", "normalize.js");
+const GITIGNORE_FILE = path.join(ROOT_DIR, ".gitignore");
 const DEPLOY_SCRIPT = path.join(ROOT_DIR, "scripts", "deploy-debian.sh");
 const UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "update-debian.sh");
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
@@ -119,7 +121,7 @@ async function startServer(extraEnv = {}) {
   };
 }
 
-async function requestJson(port, pathname, { method = "GET", body, session } = {}) {
+async function requestJson(port, pathname, { method = "GET", body, session, headers: extraHeaders } = {}) {
   const headers = {
     Accept: "application/json"
   };
@@ -131,6 +133,9 @@ async function requestJson(port, pathname, { method = "GET", body, session } = {
   }
   if (!["GET", "HEAD"].includes(method) && session?.csrfToken) {
     headers["X-CSRF-Token"] = session.csrfToken;
+  }
+  if (extraHeaders && typeof extraHeaders === "object") {
+    Object.assign(headers, extraHeaders);
   }
 
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
@@ -524,6 +529,12 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(appSource, /bundle\.capabilities\.zeroKnowledgeMessages !== true/);
   assert.match(appSource, /return bytes;\s*\}\s*function renderAttachmentTransfers/);
   assert.match(appSource, /const bytes = await validateAttachmentFile\(file\);[\s\S]*buildAttachmentMessageText\(file, bytes\)/);
+  assert.match(appSource, /const batchReplyTarget = state\.replyTarget \? \{ \.\.\.state\.replyTarget \} : null;/);
+  assert.match(appSource, /const replyTo = batchReplyTarget \? \{ \.\.\.batchReplyTarget \} : null;/);
+  assert.match(appSource, /MAX_ATTACHMENT_BATCH_BYTES = 8 \* 1024 \* 1024/);
+  assert.match(appSource, /function isAllowedAttachmentType\(type, ext\)/);
+  assert.match(appSource, /deleteScopedStorageRecord\(STORAGE\.peerSecurityMeta, owner\);/);
+  assert.match(appSource, /deleteScopedStorageRecord\(STORAGE\.peerKeyPins, owner\);/);
   assert.match(appSource, /sendAttachmentFiles\(input\?\.files\)[\s\S]*input\.value = ""/);
   assert.match(uiUtilsSource, /CLIENT_META_REFRESH_MS = 6 \* 60 \* 60 \* 1000/);
   assert.match(uiUtilsSource, /setItem\(CLIENT_META_SENT_STORAGE_KEY, String\(now\)\)/);
@@ -533,6 +544,15 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(adminUserSource, /window\.clearTimeout\(state\.toastTimer\)/);
   assert.match(appSource, /消息会在本页联网后自动发送，刷新页面会丢失/);
   assert.match(appSource, /Offline retries stay in-memory only to avoid persisting plaintext locally/);
+  assert.doesNotMatch(appSource, /elements\.authPasswordInput\.value\.trim\(\)/);
+  assert.doesNotMatch(appSource, /clearNotificationBadge\(\)/);
+  assert.match(appSource, /document\.title = total > 0 \? `\(\$\{total > 99 \? "99\+" : total\}\) Echo` : "Echo";/);
+  assert.match(appSource, /function closeNotificationPanel\(\)/);
+  assert.match(appSource, /function toggleNotificationPanel\(force, anchor = elements\.notificationBellButton\)/);
+  assert.match(appSource, /window\.visualViewport\?\.addEventListener\("scroll", scheduleViewportOnlySync\)/);
+  assert.match(appSource, /elements\.notificationBellButton\?\.addEventListener\("click"/);
+  assert.match(fs.readFileSync(NORMALIZE_SOURCE, "utf8"), /function normalizePassword\(value\) \{[\s\S]*return value;[\s\S]*\}/);
+  assert.match(fs.readFileSync(GITIGNORE_FILE, "utf8"), /data\/\*\.txt/);
 });
 
 test("browser client recall flow waits for the server and server source stays free of redaction mojibake", () => {
@@ -551,6 +571,7 @@ test("browser client recall flow waits for the server and server source stays fr
 test("deployment scripts preserve generated assets and verify the build without rotating admin credentials by default", () => {
   const deployScript = fs.readFileSync(DEPLOY_SCRIPT, "utf8");
   const updateScript = fs.readFileSync(UPDATE_SCRIPT, "utf8");
+  const configSource = fs.readFileSync(CONFIG_SOURCE, "utf8");
   assert.match(deployScript, /public\/ui-utils\.min\.js/);
   assert.match(updateScript, /public\/ui-utils\.min\.js/);
   assert.match(deployScript, /npm run lint/);
@@ -564,7 +585,176 @@ test("deployment scripts preserve generated assets and verify the build without 
   assert.match(deployScript, /public\/index\.html/);
   assert.match(updateScript, /public\/index\.html/);
   assert.doesNotMatch(updateScript, /ensure_line "ADMIN_PASSWORD_HASH" "\$\(hash_password "\$\{ADMIN_PASSWORD\}"\)"/);
-  assert.doesNotMatch(fs.readFileSync(path.join(ROOT_DIR, "config.js"), "utf8"), /ADMIN_IP_ALLOWLIST/);
+  assert.match(deployScript, /AUDIT_HMAC_KEY/);
+  assert.match(updateScript, /AUDIT_HMAC_KEY/);
+  assert.match(configSource, /DEFAULT_DEV_DATA_DIR/);
+  assert.match(configSource, /AUDIT_HMAC_KEY_FILE/);
+  assert.doesNotMatch(configSource, /ADMIN_IP_ALLOWLIST/);
+});
+
+test("public auth endpoints reject cross-origin requests", async () => {
+  const server = await startServer();
+  try {
+    const register = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      headers: {
+        Origin: "https://evil.example"
+      },
+      body: {
+        username: "CrossOriginAlice",
+        password: "hello1234",
+        publicKey: Buffer.alloc(65, 9).toString("base64"),
+        keyBundle: {
+          version: 1,
+          iterations: 210000,
+          salt: Buffer.alloc(16, 1).toString("base64"),
+          iv: Buffer.alloc(12, 2).toString("base64"),
+          ciphertext: Buffer.alloc(128, 3).toString("base64")
+        }
+      }
+    });
+    assert.equal(register.status, 403);
+    assert.equal(register.json.error, "forbidden origin");
+
+    const login = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      headers: {
+        Origin: "https://evil.example"
+      },
+      body: {
+        username: "admin",
+        password: "hello1234"
+      }
+    });
+    assert.equal(login.status, 403);
+    assert.equal(login.json.error, "forbidden origin");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("state-changing endpoints reject csrf bypasses and malformed patch payloads", async () => {
+  const server = await startServer();
+  try {
+    const aliceIdentity = await createIdentity();
+    const bobIdentity = await createIdentity();
+    const aliceRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "Alice",
+        password: "hello1234",
+        publicKey: aliceIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(aliceIdentity, "hello1234")
+      }
+    });
+    const bobRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "Bob",
+        password: "world1234",
+        publicKey: bobIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(bobIdentity, "world1234")
+      }
+    });
+    assert.equal(aliceRegister.status, 201);
+    assert.equal(bobRegister.status, 201);
+
+    const missingCsrf = await fetch(`http://127.0.0.1:${server.port}/api/me/settings`, {
+      method: "PATCH",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Cookie: aliceRegister.session.cookie
+      },
+      body: JSON.stringify({ showOnlineStatus: false })
+    });
+    assert.equal(missingCsrf.status, 403);
+    assert.equal((await missingCsrf.json()).error, "invalid csrf token");
+
+    const badSettings = await requestJson(server.port, "/api/me/settings", {
+      method: "PATCH",
+      session: aliceRegister.session,
+      body: { showOnlineStatus: false, unexpected: true }
+    });
+    assert.equal(badSettings.status, 400);
+    assert.equal(badSettings.json.error, "unknown request fields");
+
+    const badTyping = await requestJson(server.port, "/api/messages/typing", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: { to: "Bob", typing: "yes" }
+    });
+    assert.equal(badTyping.status, 400);
+    assert.equal(badTyping.json.error, "typing must be a boolean");
+
+    const badMessage = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: {
+        to: "Bob",
+        clientId: "extra-field-message",
+        nonce: Buffer.alloc(12, 12).toString("base64"),
+        ciphertext: Buffer.alloc(32, 13).toString("base64"),
+        text: "plaintext should not be accepted"
+      }
+    });
+    assert.equal(badMessage.status, 400);
+    assert.equal(badMessage.json.error, "unknown request fields");
+
+    const adminLogin = await requestJson(server.port, "/api/admin/login", {
+      method: "POST",
+      body: { username: "admin", password: "qwer@1234" }
+    });
+    assert.equal(adminLogin.status, 200);
+
+    const inconsistentAdminPatch = await requestJson(server.port, "/api/admin/users/Bob", {
+      method: "PATCH",
+      session: adminLogin.session,
+      body: { bannedReason: "no-op" }
+    });
+    assert.equal(inconsistentAdminPatch.status, 400);
+    assert.equal(inconsistentAdminPatch.json.error, "bannedReason requires banned");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("event stream tickets are one-time use", async () => {
+  const server = await startServer();
+  try {
+    const identity = await createIdentity();
+    const registered = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "TicketUser",
+        password: "ticket123",
+        publicKey: identity.publicKeyBase64,
+        keyBundle: await createKeyBundle(identity, "ticket123")
+      }
+    });
+    assert.equal(registered.status, 201);
+
+    const ticketResponse = await requestJson(server.port, "/api/events/token", {
+      method: "POST",
+      session: registered.session
+    });
+    assert.equal(ticketResponse.status, 200);
+    assert.ok(ticketResponse.json.ticket);
+
+    const first = await fetch(`http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(ticketResponse.json.ticket)}`, {
+      headers: { Accept: "text/event-stream" }
+    });
+    assert.equal(first.status, 200);
+    await first.body?.cancel();
+
+    const second = await fetch(`http://127.0.0.1:${server.port}/api/events?ticket=${encodeURIComponent(ticketResponse.json.ticket)}`, {
+      headers: { Accept: "text/event-stream" }
+    });
+    assert.equal(second.status, 401);
+    assert.equal((await second.json()).error, "unauthorized");
+  } finally {
+    await server.stop();
+  }
 });
 
 test("server stores only public keys and ciphertext while clients can decrypt each other", async () => {
@@ -657,6 +847,18 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.equal(malformedNonce.status, 400);
     assert.equal(malformedNonce.json.error, "invalid message payload");
 
+    const missingClientId = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceLogin.session,
+      body: {
+        to: "Bob",
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(missingClientId.status, 400);
+    assert.equal(missingClientId.json.error, "clientId required");
+
     const sent = await requestJson(server.port, "/api/messages", {
       method: "POST",
       session: aliceLogin.session,
@@ -747,11 +949,12 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
       session: aliceLogin.session,
       body: {
         to: "Bob",
+        clientId: "test-message-plain1",
         text: plaintext
       }
     });
     assert.equal(plaintextOnly.status, 400);
-    assert.equal(plaintextOnly.json.error, "invalid message payload");
+    assert.equal(plaintextOnly.json.error, "unknown request fields");
 
     const history = await requestJson(server.port, "/api/messages?with=Alice", {
       session: bobLogin.session

@@ -21,6 +21,7 @@ ADMIN_USERNAME="${ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
+AUDIT_HMAC_KEY="${AUDIT_HMAC_KEY:-}"
 PREVIOUS_REV=""
 CURRENT_REV=""
 SAFE_RESET_PATHS=(
@@ -114,6 +115,12 @@ normalize_environment_file() {
   if [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
     ADMIN_UPDATE_PASSPHRASE="admin"
   fi
+  if [ -z "${AUDIT_HMAC_KEY}" ]; then
+    AUDIT_HMAC_KEY="$(read_env_value "AUDIT_HMAC_KEY" 2>/dev/null || true)"
+  fi
+  if [ -z "${AUDIT_HMAC_KEY}" ]; then
+    AUDIT_HMAC_KEY="$(generate_secret 32)"
+  fi
   ensure_line "HOST" "${APP_HOST}"
   ensure_line "PORT" "${APP_PORT}"
   ensure_line "NODE_ENV" "production"
@@ -124,6 +131,7 @@ normalize_environment_file() {
   ensure_line "ADMIN_USERNAME" "${ADMIN_USERNAME}"
   ensure_line "ADMIN_PASSWORD_HASH" "${ADMIN_PASSWORD_HASH}"
   ensure_line "ADMIN_UPDATE_PASSPHRASE" "${ADMIN_UPDATE_PASSPHRASE}"
+  ensure_line "AUDIT_HMAC_KEY" "${AUDIT_HMAC_KEY}"
   remove_line "ADMIN_PASSWORD"
   ensure_line_if_missing "TRUSTED_PROXY_ADDRESSES" "127.0.0.1,::1,::ffff:127.0.0.1"
   ensure_line_if_missing "ALLOW_BEARER_AUTH" "0"
@@ -133,7 +141,6 @@ normalize_environment_file() {
   ensure_line_if_missing "IP_GEO_TIMEOUT_MS" "1500"
   ensure_line_if_missing "IP_GEO_CACHE_TTL_MS" "86400000"
   remove_line "MANAGE_CADDY"
-
   chmod 0600 "${ENV_FILE}" 2>/dev/null || true
 }
 

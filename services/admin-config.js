@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   ADMIN_CONFIG_ENV_FILE,
+  AUDIT_HMAC_KEY_FILE,
   DEFAULT_ADMIN_USERNAME_VALUE,
   DEFAULT_ADMIN_PASSWORD_VALUE,
   DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE
@@ -123,14 +124,61 @@ function warnIfWeakAdminCredential(config) {
   }
 }
 
-function readAuditHmacKeyState(credential) {
-  const fromEnv = String(process.env.AUDIT_HMAC_KEY || "").trim();
-  if (fromEnv) {
-    const hexMatch = fromEnv.match(/^[a-f0-9]{32,128}$/i);
-    if (hexMatch) {
-      return { key: Buffer.from(fromEnv, "hex"), source: "env:hex" };
+function parseAuditHmacKey(value, source) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (/^[a-f0-9]{32,128}$/i.test(normalized)) {
+    return { key: Buffer.from(normalized, "hex"), source: `${source}:hex` };
+  }
+  return { key: crypto.createHash("sha256").update(normalized, "utf8").digest(), source: `${source}:utf8` };
+}
+
+function readAuditHmacKeyFromFile() {
+  const filePath = String(AUDIT_HMAC_KEY_FILE || "").trim();
+  if (!filePath || !path.isAbsolute(filePath) || !fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    return parseAuditHmacKey(fs.readFileSync(filePath, "utf8"), "file");
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeAuditHmacKeyFile() {
+  const filePath = String(AUDIT_HMAC_KEY_FILE || "").trim();
+  if (!filePath || !path.isAbsolute(filePath)) {
+    return null;
+  }
+  const generated = crypto.randomBytes(32).toString("hex");
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${generated}\n`, { encoding: "utf8", mode: 0o600 });
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch (error) {
+      // Ignore permission update failures on non-Linux environments.
     }
-    return { key: crypto.createHash("sha256").update(fromEnv, "utf8").digest(), source: "env:utf8" };
+    return parseAuditHmacKey(generated, "generated-file");
+  } catch (error) {
+    return null;
+  }
+}
+
+function readAuditHmacKeyState(credential) {
+  const fromEnv = parseAuditHmacKey(process.env.AUDIT_HMAC_KEY, "env");
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const fromFile = readAuditHmacKeyFromFile();
+  if (fromFile) {
+    return fromFile;
+  }
+  const generated = writeAuditHmacKeyFile();
+  if (generated) {
+    return generated;
   }
   const derived = crypto
     .createHmac("sha256", ADMIN_AUDIT_HMAC_DOMAIN)
@@ -140,11 +188,11 @@ function readAuditHmacKeyState(credential) {
 }
 
 function verifyAdminUpdatePassphrase(passphrase) {
-  const expected = normalizePassword(
+  const configured = normalizePassword(
     process.env.ADMIN_UPDATE_PASSPHRASE ||
-    readEnvFileValue("ADMIN_UPDATE_PASSPHRASE") ||
-    DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE
+    readEnvFileValue("ADMIN_UPDATE_PASSPHRASE")
   );
+  const expected = configured || DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE;
   if (!expected) {
     return { ok: false, reason: "missing" };
   }

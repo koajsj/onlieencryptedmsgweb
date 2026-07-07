@@ -5,6 +5,7 @@ const crypto = require("node:crypto");
 function createAccountRoutes(context) {
   const {
     getClientAddress,
+    requirePublicWriteOrigin,
     rejectIfForbiddenOrLimited,
     readJsonBody,
     sendJsonBodyError,
@@ -57,7 +58,24 @@ function createAccountRoutes(context) {
     DUMMY_PASSWORD_HASH
   } = context;
 
+function rejectUnknownBodyKeys(body, allowedKeys, res) {
+  const allowed = new Set(allowedKeys);
+  const unknown = Object.keys(body || {}).filter((key) => !allowed.has(key));
+  if (unknown.length === 0) {
+    return false;
+  }
+  sendJson(res, 400, { error: "unknown request fields" });
+  return true;
+}
+
+function hasAnyBodyKey(body, keys) {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(body || {}, key));
+}
+
 async function handleRegister(req, res) {
+  if (!requirePublicWriteOrigin(req, res)) {
+    return;
+  }
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
@@ -76,6 +94,9 @@ async function handleRegister(req, res) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["username", "account", "email", "password", "publicKey", "keyBundle"], res)) {
     return;
   }
 
@@ -150,6 +171,9 @@ async function handleRegister(req, res) {
 }
 
 async function handleLogin(req, res) {
+  if (!requirePublicWriteOrigin(req, res)) {
+    return;
+  }
   const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
@@ -168,6 +192,9 @@ async function handleLogin(req, res) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["username", "account", "email", "password"], res)) {
     return;
   }
 
@@ -388,6 +415,9 @@ async function handleUploadPublicKey(req, res, url) {
     sendJsonBodyError(res, error);
     return;
   }
+  if (rejectUnknownBodyKeys(body, ["publicKey", "identityKey"], res)) {
+    return;
+  }
   const publicKey = String(body.publicKey || body.identityKey || "").trim();
   if (!isBase64Blob(publicKey, PUBLIC_KEY_BYTES.min, PUBLIC_KEY_BYTES.max)) {
     sendJson(res, 400, { error: "invalid public key bundle" });
@@ -436,6 +466,9 @@ async function handleMeKeyBundlePatch(req, res, url) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["keyBundle", "publicKey", "rotateIdentity"], res)) {
     return;
   }
   const keyBundle = normalizeKeyBundle(body.keyBundle);
@@ -516,6 +549,13 @@ async function handleMeSettingsPatch(req, res, url) {
     sendJsonBodyError(res, error);
     return;
   }
+  if (rejectUnknownBodyKeys(body, ["showOnlineStatus", "allowUserSearch"], res)) {
+    return;
+  }
+  if (!hasAnyBodyKey(body, ["showOnlineStatus", "allowUserSearch"])) {
+    sendJson(res, 400, { error: "no changes requested" });
+    return;
+  }
   if (Object.prototype.hasOwnProperty.call(body, "showOnlineStatus")) {
     if (typeof body.showOnlineStatus !== "boolean") {
       sendJson(res, 400, { error: "showOnlineStatus must be a boolean" });
@@ -566,6 +606,9 @@ async function handleMePassword(req, res, url) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["currentPassword", "newPassword", "keyBundle"], res)) {
     return;
   }
   const currentPassword = normalizePassword(body.currentPassword);
@@ -651,6 +694,9 @@ async function handleMeSessionRevoke(req, res, url) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["sessionId"], res)) {
     return;
   }
   const targetSessionId = normalizeBoundedText(body?.sessionId || "", 128);

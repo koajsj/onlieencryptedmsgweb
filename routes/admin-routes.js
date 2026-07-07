@@ -5,6 +5,7 @@ function createAdminRoutes(context) {
     syncRuntimeAdminConfigFromConfiguredSources,
     sendJson,
     getClientAddress,
+    requirePublicWriteOrigin,
     rejectIfForbiddenOrLimited,
     readJsonBody,
     sendJsonBodyError,
@@ -69,7 +70,24 @@ function createAdminRoutes(context) {
     MAX_API_REQUESTS_PER_WINDOW
   } = context;
 
+function rejectUnknownBodyKeys(body, allowedKeys, res) {
+  const allowed = new Set(allowedKeys);
+  const unknown = Object.keys(body || {}).filter((key) => !allowed.has(key));
+  if (unknown.length === 0) {
+    return false;
+  }
+  sendJson(res, 400, { error: "unknown request fields" });
+  return true;
+}
+
+function hasAnyBodyKey(body, keys) {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(body || {}, key));
+}
+
 async function handleAdminLogin(req, res) {
+  if (!requirePublicWriteOrigin(req, res)) {
+    return;
+  }
   try {
     syncRuntimeAdminConfigFromConfiguredSources();
   } catch (error) {
@@ -93,6 +111,9 @@ async function handleAdminLogin(req, res) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["username", "account", "email", "password"], res)) {
     return;
   }
   const username = readSubmittedUsername(body);
@@ -129,6 +150,9 @@ async function handleAdminLogin(req, res) {
 }
 
 async function handleAdminAccountReset(req, res) {
+  if (!requirePublicWriteOrigin(req, res)) {
+    return;
+  }
   try {
     syncRuntimeAdminConfigFromConfiguredSources();
   } catch (error) {
@@ -152,6 +176,9 @@ async function handleAdminAccountReset(req, res) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["username", "account", "email", "password", "passphrase", "verificationPassphrase"], res)) {
     return;
   }
   const passphraseResult = verifyAdminUpdatePassphrase(String(body.verificationPassphrase || body.passphrase || ""));
@@ -443,9 +470,20 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     sendJsonBodyError(res, error);
     return;
   }
+  if (rejectUnknownBodyKeys(body, ["username", "banned", "bannedReason"], res)) {
+    return;
+  }
 
   if (Object.prototype.hasOwnProperty.call(body, "password")) {
     sendJson(res, 409, { error: "encrypted account password must be changed by the user" });
+    return;
+  }
+  if (Object.prototype.hasOwnProperty.call(body, "bannedReason") && !Object.prototype.hasOwnProperty.call(body, "banned")) {
+    sendJson(res, 400, { error: "bannedReason requires banned" });
+    return;
+  }
+  if (!hasAnyBodyKey(body, ["username", "banned"])) {
+    sendJson(res, 400, { error: "no changes requested" });
     return;
   }
 
@@ -568,6 +606,9 @@ async function handleAdminUsersBatch(req, res, url) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["usernames", "banned", "bannedReason"], res)) {
     return;
   }
   const usernames = Array.isArray(body.usernames)

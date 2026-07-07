@@ -32,6 +32,7 @@
 - `ADMIN_PASSWORD`：明文口令，服务会在写入 `/etc/default/secure-chat`（权限 0600）前自动哈希。
 - `ADMIN_PASSWORD_HASH`：`scrypt:salt:hash` 形式的预生成哈希，直接喂入。
 - `ADMIN_UPDATE_PASSPHRASE`：管理员账号热更新验证口令，默认是 `admin`。
+- `AUDIT_HMAC_KEY`：管理员审计链 HMAC 密钥。生产环境建议持久化保存，避免管理员密码调整后出现审计链误告警。
 
 部署脚本会把最终凭据写入 `/etc/default/secure-chat`；更新脚本会保留已有凭据，除非你显式传入新的管理员变量。
 
@@ -163,7 +164,7 @@ Hot update notes for VPS:
 
 如果仓库里还有其他手工改动，脚本会直接报错并列出文件，避免误覆盖。
 
-更新脚本默认会保留现有管理员用户名、密码哈希和热更新验证口令；只有你显式传入新的 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_PASSWORD_HASH` 或 `ADMIN_UPDATE_PASSPHRASE` 时才会覆盖。
+更新脚本默认会保留现有管理员用户名、密码哈希、热更新验证口令和审计 HMAC 密钥；只有你显式传入新的 `ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_PASSWORD_HASH` 或 `ADMIN_UPDATE_PASSPHRASE` 时才会覆盖。
 
 如果你之前临时改成 `PORT=3001` 或 `MANAGE_CADDY=0`，新版更新脚本会恢复默认 Caddy/443 部署方式。运行前要确保没有 `mtproto-proxy`、Nginx、Apache 等非 Caddy 服务占用 `80/443`。
 
@@ -282,6 +283,14 @@ npm start
 ```bash
 ADMIN_USERNAME=admin ADMIN_PASSWORD='你的口令' npm start
 ```
+
+本地运行数据默认写入：
+
+```text
+~/.secure-chat/data
+```
+
+这样不会把 session secret、审计链密钥或聊天运行数据混进仓库工作区。
 
 安装依赖：
 

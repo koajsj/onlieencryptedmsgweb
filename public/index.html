@@ -7,7 +7,8 @@
     <meta name="theme-color" content="#111512" media="(prefers-color-scheme: dark)" />
     <meta name="color-scheme" content="light dark" />
     <title>Echo</title>
-    <link rel="stylesheet" href="./styles.min.css?v=c0fb79beb1" />
+    <link rel="icon" href="./echo-logo.png" type="image/png" />
+    <link rel="stylesheet" href="./styles.min.css?v=207b8ab561" />
   </head>
   <body>
     <section class="auth-screen" id="authScreen" aria-label="身份认证">
@@ -384,6 +385,7 @@
               <strong>安全设置</strong>
               <span>修改密码、管理设备与隐私开关。</span>
             </div>
+            <input id="accountPasswordUsernameInput" class="sr-only" type="text" autocomplete="username" tabindex="-1" aria-hidden="true" />
             <div class="field">
               <label class="field-label" for="currentPasswordInput">当前密码</label>
               <input id="currentPasswordInput" type="password" autocomplete="current-password" placeholder="请输入当前密码" />
@@ -396,7 +398,7 @@
               <label class="field-label" for="confirmPasswordInput">确认新密码</label>
               <input id="confirmPasswordInput" type="password" autocomplete="new-password" minlength="4" maxlength="72" placeholder="请再次输入新密码" />
             </div>
-            <button class="primary-button" id="changePasswordButton" type="button" style="justify-self:start">修改密码</button>
+            <button class="primary-button button-align-start" id="changePasswordButton" type="button">修改密码</button>
             <div class="settings-divider"></div>
             <div class="dialog-note">
               <strong>隐私设置</strong>
@@ -455,6 +457,6 @@
     </div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="./ui-utils.min.js?v=29f345c17c" defer></script>
-    <script src="./app.min.js?v=90e042a849" defer></script>
+    <script src="./app.min.js?v=3af36ab541" defer></script>
   </body>
 </html>

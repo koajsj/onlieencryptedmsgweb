@@ -46,6 +46,16 @@ function createMessageRoutes(context) {
     limits
   } = context;
 
+  function rejectUnknownBodyKeys(body, allowedKeys, res) {
+    const allowed = new Set(allowedKeys);
+    const unknown = Object.keys(body || {}).filter((key) => !allowed.has(key));
+    if (unknown.length === 0) {
+      return false;
+    }
+    sendJson(res, 400, { error: "unknown request fields" });
+    return true;
+  }
+
   function redactRecalledMessagePayload(message) {
     if (!message) {
       return false;
@@ -154,6 +164,9 @@ function createMessageRoutes(context) {
       sendJsonBodyError(res, error);
       return;
     }
+    if (rejectUnknownBodyKeys(body, ["to", "nonce", "ciphertext", "clientId", "replyToId"], res)) {
+      return;
+    }
 
     const peer = findUserByUsername(body.to);
     const nonce = String(body.nonce || "").trim();
@@ -175,6 +188,10 @@ function createMessageRoutes(context) {
     }
     if (isUserBlocked(peer, session.username)) {
       sendJson(res, 403, { error: "blocked by peer" });
+      return;
+    }
+    if (!clientId) {
+      sendJson(res, 400, { error: "clientId required" });
       return;
     }
     if (clientId) {
@@ -304,6 +321,9 @@ function createMessageRoutes(context) {
       sendJsonBodyError(res, error);
       return;
     }
+    if (rejectUnknownBodyKeys(body, ["messageId"], res)) {
+      return;
+    }
     const messageId = String(body.messageId || "").trim();
     if (!messageId) {
       sendJson(res, 400, { error: "messageId required" });
@@ -367,6 +387,9 @@ function createMessageRoutes(context) {
       sendJsonBodyError(res, error);
       return;
     }
+    if (rejectUnknownBodyKeys(body, ["messageId"], res)) {
+      return;
+    }
 
     const messageId = String(body.messageId || "").trim();
     if (!messageId) {
@@ -415,6 +438,9 @@ function createMessageRoutes(context) {
       body = await readJsonBody(req);
     } catch (error) {
       sendJsonBodyError(res, error);
+      return;
+    }
+    if (rejectUnknownBodyKeys(body, ["peer"], res)) {
       return;
     }
 
@@ -477,6 +503,13 @@ function createMessageRoutes(context) {
       sendJsonBodyError(res, error);
       return;
     }
+    if (rejectUnknownBodyKeys(body, ["to", "typing"], res)) {
+      return;
+    }
+    if (typeof body.typing !== "boolean") {
+      sendJson(res, 400, { error: "typing must be a boolean" });
+      return;
+    }
     const peer = findUserByUsername(body.to);
     // Typing is best-effort and ephemeral; always answer 200 so a caller can't probe
     // block/online state, but only forward the signal when neither side is blocked.
@@ -485,7 +518,7 @@ function createMessageRoutes(context) {
       if (!isUserBlocked(senderUser, peer.username) && !isUserBlocked(peer, session.username)) {
         pushEventToUser(peer.username, "typing", {
           peer: session.username,
-          typing: Boolean(body.typing)
+          typing: body.typing
         });
       }
     }

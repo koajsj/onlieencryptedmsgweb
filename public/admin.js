@@ -125,8 +125,13 @@ const state = {
   lastRefreshAt: 0,
   toastTimer: 0,
   dialogResolver: null,
-  dialogOptions: null
+  dialogOptions: null,
+  adminProfileMenuOpen: false
 };
+
+if (adminProfileMenu && adminProfileMenu.parentElement !== document.body) {
+  document.body.append(adminProfileMenu);
+}
 
 function formatCiphertextMeta(message) {
   const bytes = Number(message?.ciphertextBytes || 0);
@@ -159,6 +164,7 @@ function resetAdminState(showLogin = false) {
   state.logs = [];
   state.admin = { username: "", role: "admin" };
   state.lastRefreshAt = 0;
+  closeAdminProfileMenu();
   updateAdminHeader();
   if (showLogin) {
     setLoggedIn(false);
@@ -361,8 +367,35 @@ function closeAdminProfileMenu() {
   if (!adminProfileMenu || !adminProfileButton) {
     return;
   }
+  state.adminProfileMenuOpen = false;
   adminProfileMenu.hidden = true;
+  adminProfileMenu.style.removeProperty("left");
+  adminProfileMenu.style.removeProperty("top");
   adminProfileButton.setAttribute("aria-expanded", "false");
+}
+
+function positionAdminProfileMenu() {
+  if (!adminProfileMenu || !adminProfileButton) {
+    return;
+  }
+  const rect = adminProfileButton.getBoundingClientRect();
+  const menuWidth = adminProfileMenu.offsetWidth || 240;
+  const menuHeight = adminProfileMenu.offsetHeight || 140;
+  const gap = 10;
+  const viewportGap = 12;
+  let left = rect.right - menuWidth;
+  let top = rect.bottom + gap;
+  if (left < viewportGap) {
+    left = rect.left;
+  }
+  if (left + menuWidth > window.innerWidth - viewportGap) {
+    left = window.innerWidth - menuWidth - viewportGap;
+  }
+  if (top + menuHeight > window.innerHeight - viewportGap) {
+    top = rect.top - menuHeight - gap;
+  }
+  adminProfileMenu.style.left = `${Math.max(viewportGap, left)}px`;
+  adminProfileMenu.style.top = `${Math.max(viewportGap, top)}px`;
 }
 
 function parseSortValue() {
@@ -1405,13 +1438,27 @@ function bindEvents() {
   adminProfileButton?.addEventListener("click", (event) => {
     event.stopPropagation();
     const open = adminProfileMenu?.hidden !== false;
+    state.adminProfileMenuOpen = open;
     if (adminProfileMenu) {
       adminProfileMenu.hidden = !open;
+      if (open) {
+        positionAdminProfileMenu();
+      }
     }
     adminProfileButton.setAttribute("aria-expanded", open ? "true" : "false");
   });
   adminProfileMenu?.addEventListener("click", (event) => event.stopPropagation());
   document.addEventListener("click", closeAdminProfileMenu);
+  window.addEventListener("resize", () => {
+    if (state.adminProfileMenuOpen) {
+      positionAdminProfileMenu();
+    }
+  });
+  window.addEventListener("scroll", () => {
+    if (state.adminProfileMenuOpen) {
+      positionAdminProfileMenu();
+    }
+  }, { passive: true });
   adminMenuRefreshButton?.addEventListener("click", async () => {
     closeAdminProfileMenu();
     try {
@@ -1454,6 +1501,10 @@ function bindEvents() {
     }
   });
   window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.adminProfileMenuOpen) {
+      closeAdminProfileMenu();
+      return;
+    }
     if (event.key === "Escape" && !elements.dialogBackdrop.hidden) {
       close();
     }

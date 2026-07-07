@@ -442,9 +442,9 @@ label span {
 }
 
 .profile-menu {
-  position: absolute;
+  position: fixed;
   left: 0;
-  bottom: calc(100% + 10px);
+  top: 0;
   z-index: 100;
   width: min(240px, calc(100vw - 24px));
   display: grid;

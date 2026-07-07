@@ -4,6 +4,8 @@ function createEventRoutes(context) {
   const {
     requireSession,
     getClientAddress,
+    eventTicketAgentHash,
+    isSameOriginRequest,
     rejectIfForbiddenOrLimited,
     sendJson,
     activeConnectionCount,
@@ -46,12 +48,16 @@ function handleCreateEventTicket(req, res, url) {
     return;
   }
   sendJson(res, 200, {
-    ticket: createEventTicketForSession(session),
+    ticket: createEventTicketForSession(session, req),
     expiresInMs: EVENT_TICKET_TTL_MS
   });
 }
 
 function handleEvents(req, res, url) {
+  if (!isSameOriginRequest(req)) {
+    sendJson(res, 403, { error: "forbidden origin" });
+    return;
+  }
   const ticket = String(url.searchParams.get("ticket") || "").trim();
   if (!ticket) {
     sendJson(res, 401, { error: "unauthorized" });
@@ -80,6 +86,13 @@ function handleEvents(req, res, url) {
   }
 
   const address = getClientAddress(req);
+  if (
+    (ticketRecord.address && address && ticketRecord.address !== address) ||
+    (ticketRecord.agentHash && ticketRecord.agentHash !== eventTicketAgentHash(req))
+  ) {
+    sendJson(res, 401, { error: "unauthorized" });
+    return;
+  }
   if (
     rejectIfForbiddenOrLimited(
       req,

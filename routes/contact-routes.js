@@ -26,6 +26,20 @@ function createContactRoutes(context) {
     MAX_API_REQUESTS_PER_WINDOW
   } = context;
 
+  function rejectUnknownBodyKeys(body, allowedKeys, res) {
+    const allowed = new Set(allowedKeys);
+    const unknown = Object.keys(body || {}).filter((key) => !allowed.has(key));
+    if (unknown.length === 0) {
+      return false;
+    }
+    sendJson(res, 400, { error: "unknown request fields" });
+    return true;
+  }
+
+  function hasAnyBodyKey(body, keys) {
+    return keys.some((key) => Object.prototype.hasOwnProperty.call(body || {}, key));
+  }
+
 function handleContacts(req, res, url) {
   const session = requireSession(req, res, url);
   if (!session) {
@@ -56,6 +70,9 @@ async function handleContactCreate(req, res, url) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["username", "account", "email", "note"], res)) {
     return;
   }
   const peer = findUserByUsername(readSubmittedUsername(body));
@@ -123,6 +140,13 @@ async function handleContactPatch(req, res, url, pathname) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["note", "pinned", "muted"], res)) {
+    return;
+  }
+  if (!hasAnyBodyKey(body, ["note", "pinned", "muted"])) {
+    sendJson(res, 400, { error: "no changes requested" });
     return;
   }
   if (Object.prototype.hasOwnProperty.call(body, "note") && typeof body.note !== "string") {
@@ -222,6 +246,9 @@ async function handleContactBlock(req, res, url, pathname) {
     body = await readJsonBody(req);
   } catch (error) {
     sendJsonBodyError(res, error);
+    return;
+  }
+  if (rejectUnknownBodyKeys(body, ["blocked"], res)) {
     return;
   }
   if (typeof body.blocked !== "boolean") {

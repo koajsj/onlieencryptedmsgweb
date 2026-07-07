@@ -4,6 +4,7 @@
 // variables (or sensible defaults) at process start, exactly as before; this
 // module only relocates the constants out of server.js without changing them.
 
+const os = require("node:os");
 const path = require("node:path");
 
 const HOST = process.env.HOST || "0.0.0.0";
@@ -17,7 +18,10 @@ const SESSION_ABSOLUTE_TTL_MS = Math.max(
   Number.parseInt(process.env.SESSION_ABSOLUTE_TTL_MS || `${30 * 24 * 60 * 60 * 1000}`, 10) || 30 * 24 * 60 * 60 * 1000
 );
 const PUBLIC_DIR = path.join(__dirname, "public");
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const DEFAULT_DEV_DATA_DIR = path.join(os.homedir(), ".secure-chat", "data");
+const DATA_DIR = process.env.DATA_DIR || (process.env.NODE_ENV === "production"
+  ? path.join(__dirname, "data")
+  : DEFAULT_DEV_DATA_DIR);
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 const MESSAGES_LOG_FILE = path.join(DATA_DIR, "messages.jsonl");
@@ -25,6 +29,7 @@ const ADMIN_AUDIT_FILE = path.join(DATA_DIR, "admin_audit.jsonl");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const ERROR_LOG_FILE = path.join(DATA_DIR, "errors.log");
 const SESSION_SECRET_FILE = path.join(DATA_DIR, "session-secret.txt");
+const AUDIT_HMAC_KEY_FILE = path.join(DATA_DIR, "audit-hmac-key.txt");
 
 const MAX_BODY_BYTES = 128 * 1024;
 const MAX_MESSAGE_BODY_BYTES = 8 * 1024 * 1024;
@@ -145,6 +150,7 @@ module.exports = {
   SESSION_ABSOLUTE_TTL_MS,
   PUBLIC_DIR,
   DATA_DIR,
+  DEFAULT_DEV_DATA_DIR,
   USERS_FILE,
   MESSAGES_FILE,
   MESSAGES_LOG_FILE,
@@ -152,6 +158,7 @@ module.exports = {
   SESSIONS_FILE,
   ERROR_LOG_FILE,
   SESSION_SECRET_FILE,
+  AUDIT_HMAC_KEY_FILE,
   MAX_BODY_BYTES,
   MAX_MESSAGE_BODY_BYTES,
   RATE_WINDOW_MS,

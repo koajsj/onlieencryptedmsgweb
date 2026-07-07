@@ -27,6 +27,7 @@ ADMIN_USERNAME="${ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
+AUDIT_HMAC_KEY="${AUDIT_HMAC_KEY:-}"
 SAFE_RESET_PATHS=(
   "public/index.html"
   "public/admin.html"
@@ -184,6 +185,12 @@ ensure_admin_credentials() {
   if [ -z "${ADMIN_UPDATE_PASSPHRASE}" ]; then
     ADMIN_UPDATE_PASSPHRASE="admin"
   fi
+  if [ -z "${AUDIT_HMAC_KEY}" ]; then
+    AUDIT_HMAC_KEY="$(read_env_value "AUDIT_HMAC_KEY" 2>/dev/null || true)"
+  fi
+  if [ -z "${AUDIT_HMAC_KEY}" ]; then
+    AUDIT_HMAC_KEY="$(generate_secret 32)"
+  fi
 }
 
 write_environment_file() {
@@ -207,6 +214,9 @@ write_environment_file() {
     printf 'ADMIN_PASSWORD_HASH=%s\n' "${ADMIN_PASSWORD_HASH}"
     if [ -n "${ADMIN_UPDATE_PASSPHRASE}" ]; then
       printf 'ADMIN_UPDATE_PASSPHRASE=%s\n' "${ADMIN_UPDATE_PASSPHRASE}"
+    fi
+    if [ -n "${AUDIT_HMAC_KEY}" ]; then
+      printf 'AUDIT_HMAC_KEY=%s\n' "${AUDIT_HMAC_KEY}"
     fi
   } > "${ENV_FILE}"
   chmod 0600 "${ENV_FILE}"
