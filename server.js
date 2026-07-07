@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const { createAccessLogMiddleware } = require("./middleware/access-log");
 const { createAccessLogStore } = require("./services/access-log-store");
+const { createMessageStore } = require("./services/message-store");
 const { createRealtimeHub } = require("./services/realtime-hub");
 const { createSessionStore } = require("./services/session-store");
 const { createStaticFileServer } = require("./services/static-file-server");
@@ -67,24 +68,13 @@ const {
 
 const rateBuckets = new Map();
 const conversationRateBuckets = new Map();
-const messageBuckets = new Map();
-const messageIdIndex = new Map();
-const messageClientIndex = new Map();
-const messageNonceIndex = new Set();
-const userPeersIndex = new Map();
 const usersByKey = new Map();
 const adminLoginFailures = new Map();
 const userLoginFailures = new Map();
 
 let users = [];
-let messages = [];
-let nextMessageSequence = 1;
 let adminAuditLastHash = "GENESIS";
 const adminAuditEntries = [];
-let pendingMessagesPersistTimer = null;
-let messagesDirty = false;
-let messagesRequireFullPersist = false;
-const pendingMessageAppends = [];
 const serverStartedAt = Date.now();
 const serveStatic = createStaticFileServer(PUBLIC_DIR);
 const SESSION_PERSIST_DEBOUNCE_MS = 150;
@@ -189,27 +179,6 @@ function findAdminAccount(username) {
         username: adminConfig.username
       }
     : null;
-}
-
-function purgeStoredMessagePlaintext() {
-  let changed = false;
-  for (const message of messages) {
-    if ("text" in message) {
-      delete message.text;
-      changed = true;
-    }
-    if ("auditText" in message) {
-      delete message.auditText;
-      changed = true;
-    }
-    if (message.replyTo && typeof message.replyTo === "object" && "text" in message.replyTo) {
-      delete message.replyTo.text;
-      changed = true;
-    }
-  }
-  if (changed) {
-    schedulePersistMessages();
-  }
 }
 
 function purgeStoredLegacyUserKeyMaterial() {
@@ -436,149 +405,12 @@ function loadData() {
   });
   rebuildUserIndex();
 
-  const logStat = fs.statSync(MESSAGES_LOG_FILE);
-  const loadedMessages = logStat.size > 0 ? readJsonLinesFile(MESSAGES_LOG_FILE) : readJsonFile(MESSAGES_FILE);
-  if (!Array.isArray(loadedMessages)) {
-    throw new Error(`expected ${MESSAGES_FILE} to contain a JSON array`);
-  }
-  messages = loadedMessages.map((message) => ({
-    ...message,
-    createdAt: Number.parseInt(String(message?.createdAt || message?.timestamp || "0"), 10) || Date.now(),
-    timestamp: Number.parseInt(String(message?.timestamp || message?.createdAt || "0"), 10) || Date.now(),
-    sequence: Number.parseInt(String(message?.sequence || "0"), 10) || 0,
-    clientId: typeof message?.clientId === "string" ? message.clientId : "",
-    publicKey: typeof message?.publicKey === "string" ? message.publicKey : "",
-    recalledNonce: typeof message?.recalledNonce === "string" ? message.recalledNonce : "",
-    deletedFor: Array.isArray(message?.deletedFor)
-      ? message.deletedFor
-        .map((entry) => String(entry || "").trim())
-        .filter(Boolean)
-      : []
-  }));
-  let sequenceCursor = messages.reduce(
-    (maxValue, message) => Math.max(maxValue, Number(message.sequence || 0)),
-    0
-  ) + 1;
-  messages = messages.map((message) => ({
-    ...message,
-    sequence: Number(message.sequence || 0) > 0 ? Number(message.sequence) : sequenceCursor++
-  }));
-  nextMessageSequence = sequenceCursor;
-  messages.sort((left, right) => {
-    if (Number(left.createdAt) !== Number(right.createdAt)) {
-      return Number(left.createdAt) - Number(right.createdAt);
-    }
-    if (Number(left.sequence) !== Number(right.sequence)) {
-      return Number(left.sequence) - Number(right.sequence);
-    }
-    return String(left.id || "").localeCompare(String(right.id || ""));
-  });
-  rebuildMessageBuckets();
+  messageStore.loadMessages();
 }
 
 function persistUsers() {
   writeJsonFile(USERS_FILE, users);
   rebuildUserIndex();
-}
-
-function persistMessagesNow() {
-  writeJsonFile(MESSAGES_FILE, messages);
-  rewriteJsonLinesFile(MESSAGES_LOG_FILE, messages);
-}
-
-function persistMessageAppendsNow(rows) {
-  if (rows.length === 0) {
-    return;
-  }
-  appendJsonLinesFile(MESSAGES_LOG_FILE, rows);
-}
-
-function flushPendingMessagePersist() {
-  if (pendingMessagesPersistTimer) {
-    clearTimeout(pendingMessagesPersistTimer);
-    pendingMessagesPersistTimer = null;
-  }
-  if (!messagesDirty) {
-    return;
-  }
-  const appends = pendingMessageAppends.splice(0);
-  const shouldFullPersist = messagesRequireFullPersist;
-  messagesDirty = false;
-  messagesRequireFullPersist = false;
-  if (shouldFullPersist) {
-    persistMessagesNow();
-    return;
-  }
-  persistMessageAppendsNow(appends);
-}
-
-function schedulePersistMessages(message = null) {
-  messagesDirty = true;
-  if (message) {
-    pendingMessageAppends.push(message);
-  } else {
-    messagesRequireFullPersist = true;
-    pendingMessageAppends.length = 0;
-  }
-  if (pendingMessagesPersistTimer) {
-    return;
-  }
-  pendingMessagesPersistTimer = setTimeout(() => {
-    pendingMessagesPersistTimer = null;
-    flushPendingMessagePersist();
-  }, MESSAGE_PERSIST_DEBOUNCE_MS);
-}
-
-function conversationBucketKey(leftUser, rightUser) {
-  return leftUser.localeCompare(rightUser) <= 0
-    ? `${leftUser}\u0000${rightUser}`
-    : `${rightUser}\u0000${leftUser}`;
-}
-
-function recordUserPeer(username, peer) {
-  if (!username || !peer || username === peer) {
-    return;
-  }
-  const peers = userPeersIndex.get(username) || new Set();
-  peers.add(peer);
-  userPeersIndex.set(username, peers);
-}
-
-function rebuildMessageBuckets() {
-  messageBuckets.clear();
-  messageIdIndex.clear();
-  messageClientIndex.clear();
-  messageNonceIndex.clear();
-  userPeersIndex.clear();
-  for (const message of messages) {
-    recordUserPeer(message.from, message.to);
-    recordUserPeer(message.to, message.from);
-    const key = conversationBucketKey(message.from, message.to);
-    const bucket = messageBuckets.get(key) || [];
-    bucket.push(message);
-    messageBuckets.set(key, bucket);
-    if (message.id) {
-      messageIdIndex.set(message.id, message);
-    }
-    if (message.clientId) {
-      messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
-    }
-    const replayNonce = message.nonce || message.recalledNonce;
-    if (replayNonce) {
-      messageNonceIndex.add(messageNonceReplayKey(message.from, replayNonce));
-    }
-  }
-  for (const bucket of messageBuckets.values()) {
-    bucket.sort((left, right) => {
-      if (Number(left.createdAt) !== Number(right.createdAt)) {
-        return Number(left.createdAt) - Number(right.createdAt);
-      }
-      if (Number(left.sequence) !== Number(right.sequence)) {
-        return Number(left.sequence) - Number(right.sequence);
-      }
-      return String(left.id || "").localeCompare(String(right.id || ""));
-    });
-  }
 }
 
 function rebuildUserIndex() {
@@ -589,27 +421,6 @@ function rebuildUserIndex() {
     }
   }
 }
-
-function appendMessageBucket(message) {
-  recordUserPeer(message.from, message.to);
-  recordUserPeer(message.to, message.from);
-  const key = conversationBucketKey(message.from, message.to);
-  const bucket = messageBuckets.get(key) || [];
-  bucket.push(message);
-  messageBuckets.set(key, bucket);
-  if (message.id) {
-    messageIdIndex.set(message.id, message);
-  }
-  if (message.clientId) {
-    messageClientIndex.set(`${message.from}\u0000${message.clientId}`, message);
-  }
-  const replayNonce = message.nonce || message.recalledNonce;
-  if (replayNonce) {
-    messageNonceIndex.add(messageNonceReplayKey(message.from, replayNonce));
-  }
-}
-
-
 
 function cleanRateBuckets() {
   cleanRateBucketMap(rateBuckets, RATE_WINDOW_MS);
@@ -729,11 +540,6 @@ function normalizeKeyBundle(value) {
     ciphertext
   };
 }
-
-function messageNonceReplayKey(from, nonce) {
-  return `${String(from || "")}\u0000${String(nonce || "")}`;
-}
-
 
 function publicUser(user) {
   return {
@@ -1117,6 +923,48 @@ function requirePublicWriteOrigin(req, res) {
   return false;
 }
 
+const messageStore = createMessageStore({
+  messagesFile: MESSAGES_FILE,
+  messagesLogFile: MESSAGES_LOG_FILE,
+  messagePersistDebounceMs: MESSAGE_PERSIST_DEBOUNCE_MS,
+  readJsonFile,
+  readJsonLinesFile,
+  writeJsonFile,
+  rewriteJsonLinesFile,
+  appendJsonLinesFile,
+  findUserByUsername,
+  userShowsPresence,
+  isUserBlocked,
+  isBlockedBetween,
+  isPresenceVisibleTo,
+  makeAvatarSeed
+});
+const {
+  messages,
+  messageBuckets,
+  messageIdIndex,
+  messageClientIndex,
+  messageNonceIndex,
+  userPeersIndex,
+  schedulePersistMessages,
+  flushPendingMessagePersist,
+  purgeStoredMessagePlaintext,
+  rebuildMessageBuckets,
+  appendMessageBucket,
+  messageNonceReplayKey,
+  normalizeReplyTargetView,
+  resolveReplyTarget,
+  isMessageDeletedFor,
+  messagesBetween,
+  createMessageView,
+  buildConversationSummary,
+  listConversationsFor,
+  parseMessageCursor,
+  collectPagedMessages,
+  pagedMessagesBetween,
+  getNextMessageSequence
+} = messageStore;
+
 function parseAdminUserPath(pathname) {
   const match = pathname.match(/^\/api\/admin\/users\/([A-Za-z0-9_]{3,24})$/);
   if (!match) {
@@ -1404,6 +1252,7 @@ function fileSizeBytes(filePath) {
 
 function adminHealthSnapshot() {
   const accessLogHealth = accessLogStore.healthSnapshot();
+  const messageHealth = messageStore.healthSnapshot();
   return {
     ok: true,
     startedAt: serverStartedAt,
@@ -1421,8 +1270,8 @@ function adminHealthSnapshot() {
       messages: messages.length,
       sessions: sessions.size,
       onlineUsers: listOnlineUsers().length,
-      pendingMessageAppends: pendingMessageAppends.length,
-      messagesDirty,
+      pendingMessageAppends: messageHealth.pendingMessageAppends,
+      messagesDirty: messageHealth.messagesDirty,
       accessLogQueue: Number(accessLogHealth.pendingQueue || 0)
     },
     accessLogs: accessLogHealth
@@ -1839,129 +1688,6 @@ function adminMessageView(message) {
   };
 }
 
-function normalizeReplyTargetView(replyTo) {
-  if (!replyTo || !replyTo.id) {
-    return null;
-  }
-  return {
-    id: String(replyTo.id),
-    from: String(replyTo.from || ""),
-    text: typeof replyTo.text === "string" ? replyTo.text : "",
-    createdAt: Number(replyTo.createdAt) || 0
-  };
-}
-
-function resolveReplyTarget(leftUser, rightUser, replyToId) {
-  const id = String(replyToId || "").trim();
-  if (!id) {
-    return null;
-  }
-  const message = messageIdIndex.get(id);
-  if (
-    !message ||
-    !(
-      (message.from === leftUser && message.to === rightUser) ||
-      (message.from === rightUser && message.to === leftUser)
-    )
-  ) {
-    return null;
-  }
-  return normalizeReplyTargetView(message);
-}
-
-function isMessageDeletedFor(message, viewer) {
-  if (!message || !viewer) {
-    return false;
-  }
-  return Array.isArray(message.deletedFor) && message.deletedFor.includes(viewer);
-}
-
-function visibleMessagesBetween(viewer, peer) {
-  return messagesBetween(viewer, peer).filter((message) => !isMessageDeletedFor(message, viewer));
-}
-
-function createMessageView(message, viewer) {
-  const peer = message.from === viewer ? message.to : message.from;
-  const peerUser = findUserByUsername(peer);
-  const redacted = Boolean(message.recalled);
-  return {
-    id: message.id,
-    clientId: String(message.clientId || ""),
-    from: message.from,
-    to: message.to,
-    peer,
-    mine: message.from === viewer,
-    publicKey: String(message.publicKey || peerUser?.publicKey || ""),
-    text: null,
-    recalled: Boolean(message.recalled),
-    replyToId: String(message.replyToId || ""),
-    replyTo: normalizeReplyTargetView(message.replyTo) || resolveReplyTarget(message.from, message.to, message.replyToId),
-    nonce: redacted ? "" : message.nonce,
-    ciphertext: redacted ? "" : message.ciphertext,
-    createdAt: message.createdAt,
-    timestamp: Number(message.timestamp || message.createdAt || 0),
-    deliveredAt: Number.parseInt(String(message.deliveredAt || "0"), 10) || 0,
-    readAt: Number.parseInt(String(message.readAt || "0"), 10) || 0
-  };
-}
-
-function buildConversationSummary(viewer, peer) {
-  const peerUser = findUserByUsername(peer);
-  if (!peerUser) {
-    return null;
-  }
-
-  const conversationMessages = visibleMessagesBetween(viewer, peer);
-  const latest = conversationMessages.at(-1) || null;
-  const blocked = isBlockedBetween(viewer, peer);
-
-  return {
-    username: peer,
-    online: isPresenceVisibleTo(viewer, peer),
-    avatarSeed: makeAvatarSeed(peer),
-    publicKey: peerUser.publicKey,
-    usernameKey: peerUser.usernameKey,
-    lastSeenAt: userShowsPresence(peerUser) && !isUserBlocked(peerUser, viewer)
-      ? Number.parseInt(String(peerUser.lastSeenAt || "0"), 10) || 0
-      : 0,
-    unread: blocked
-      ? 0
-      : conversationMessages.filter((message) => message.to === viewer && !message.readAt && !message.recalled).length,
-    latestMessage: latest
-      ? {
-          id: latest.id,
-          from: latest.from,
-          to: latest.to,
-          text: null,
-          recalled: Boolean(latest.recalled),
-          replyToId: String(latest.replyToId || ""),
-          replyTo: normalizeReplyTargetView(latest.replyTo) || resolveReplyTarget(latest.from, latest.to, latest.replyToId),
-          nonce: latest.recalled ? "" : latest.nonce,
-          ciphertext: latest.recalled ? "" : latest.ciphertext,
-          createdAt: latest.createdAt,
-          timestamp: Number(latest.timestamp || latest.createdAt || 0)
-        }
-      : null,
-    lastAt: latest ? latest.createdAt : 0
-  };
-}
-
-function listConversationsFor(username) {
-  const peers = userPeersIndex.get(username);
-  if (!peers || peers.size === 0) {
-    return [];
-  }
-  return [...peers]
-    .map((peer) => buildConversationSummary(username, peer))
-    .filter((conversation) => conversation && conversation.lastAt > 0)
-    .sort((left, right) => {
-      if (right.lastAt !== left.lastAt) {
-        return right.lastAt - left.lastAt;
-      }
-      return left.username.localeCompare(right.username);
-    });
-}
-
 function listUsersForSearch(viewer, query) {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   return users
@@ -1985,59 +1711,6 @@ function listUsersForSearch(viewer, query) {
         ? Number.parseInt(String(user.lastSeenAt || "0"), 10) || 0
         : 0
     }));
-}
-
-function messagesBetween(leftUser, rightUser) {
-  const key = conversationBucketKey(leftUser, rightUser);
-  return messageBuckets.get(key) || [];
-}
-
-function encodeMessageCursor(message) {
-  return String(message.id || "");
-}
-
-function parseMessageCursor(rawValue) {
-  const value = String(rawValue || "").trim();
-  if (!value) {
-    return null;
-  }
-  return { id: value };
-}
-
-function collectPagedMessages(sourceMessages, limit, beforeCursor, predicate = null) {
-  let beforeIndex = sourceMessages.length;
-  if (beforeCursor?.id) {
-    const matchedIndex = sourceMessages.findIndex((message) => message.id === beforeCursor.id);
-    if (matchedIndex >= 0) {
-      beforeIndex = matchedIndex;
-    }
-  }
-
-  const items = [];
-  for (let index = beforeIndex - 1; index >= 0 && items.length <= limit; index -= 1) {
-    const message = sourceMessages[index];
-    if (predicate && !predicate(message)) {
-      continue;
-    }
-    items.push(message);
-  }
-
-  const hasMore = items.length > limit;
-  const pageItems = (hasMore ? items.slice(0, limit) : items).reverse();
-  return {
-    items: pageItems,
-    hasMore,
-    nextBefore: hasMore && pageItems.length > 0 ? encodeMessageCursor(pageItems[0]) : ""
-  };
-}
-
-function pagedMessagesBetween(leftUser, rightUser, limit, beforeCursor) {
-  return collectPagedMessages(
-    messagesBetween(leftUser, rightUser),
-    limit,
-    beforeCursor,
-    (message) => !isMessageDeletedFor(message, leftUser)
-  );
 }
 
 const realtimeHub = createRealtimeHub({
@@ -2329,7 +2002,7 @@ const messageRoutes = createMessageRoutes({
   listConversationsFor,
   pushEventToUser,
   recordAdminAction,
-  nextMessageSequence: () => nextMessageSequence++,
+  nextMessageSequence: getNextMessageSequence,
   messages,
   messageClientIndex,
   messageNonceIndex,

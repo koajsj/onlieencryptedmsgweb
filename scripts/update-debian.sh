@@ -22,8 +22,9 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
 AUDIT_HMAC_KEY="${AUDIT_HMAC_KEY:-}"
-PREVIOUS_REV=""
-CURRENT_REV=""
+SKIP_REPOSITORY_UPDATE="${SKIP_REPOSITORY_UPDATE:-0}"
+PREVIOUS_REV="${PREVIOUS_REV:-}"
+CURRENT_REV="${CURRENT_REV:-}"
 SAFE_RESET_PATHS=(
   "public/index.html"
   "public/admin.html"
@@ -41,6 +42,11 @@ SAFE_RESET_PATHS=(
 hash_password() {
   local password="$1"
   node -e "const crypto=require('node:crypto');const password=process.argv[1];const salt=crypto.randomBytes(16).toString('hex');const hash=crypto.scryptSync(password,salt,64).toString('hex');process.stdout.write('scrypt:'+salt+':'+hash);" "$password"
+}
+
+generate_secret() {
+  local bytes="${1:-32}"
+  node -e "const crypto=require('node:crypto');const bytes=Number.parseInt(process.argv[1],10)||32;process.stdout.write(crypto.randomBytes(bytes).toString('hex'));" "${bytes}"
 }
 
 read_env_value() {
@@ -167,6 +173,14 @@ assert_clean_worktree_for_pull() {
 
 update_repository() {
   git config --global --add safe.directory "${APP_DIR}" 2>/dev/null || true
+  if [ "${SKIP_REPOSITORY_UPDATE}" = "1" ]; then
+    if [ -z "${PREVIOUS_REV}" ]; then
+      PREVIOUS_REV="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    CURRENT_REV="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || true)"
+    echo "Skipping repository pull because SKIP_REPOSITORY_UPDATE=1."
+    return
+  fi
   reset_safe_generated_files
   assert_clean_worktree_for_pull
   PREVIOUS_REV="$(git -C "${APP_DIR}" rev-parse HEAD 2>/dev/null || true)"

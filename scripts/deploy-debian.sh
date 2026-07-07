@@ -47,6 +47,11 @@ hash_password() {
   node -e "const crypto=require('node:crypto');const password=process.argv[1];const salt=crypto.randomBytes(16).toString('hex');const hash=crypto.scryptSync(password,salt,64).toString('hex');process.stdout.write('scrypt:'+salt+':'+hash);" "$password"
 }
 
+generate_secret() {
+  local bytes="${1:-32}"
+  node -e "const crypto=require('node:crypto');const bytes=Number.parseInt(process.argv[1],10)||32;process.stdout.write(crypto.randomBytes(bytes).toString('hex'));" "${bytes}"
+}
+
 install_base_packages() {
   apt-get update
   apt-get install -y \

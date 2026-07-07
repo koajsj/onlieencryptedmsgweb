@@ -94,7 +94,7 @@ const DANGEROUS_ATTACHMENT_EXTENSIONS = new Set([
 ]);
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-const { escapeHtml, isElementNode, scheduleClientMetaReport } = window.EchoUi;
+const { escapeHtml, formatDateTime, isElementNode, scheduleClientMetaReport } = window.EchoUi;
 const LOCK_ICON_MARKUP = '<span class="inline-lock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg></span>';
 
 const elements = {
@@ -4831,6 +4831,7 @@ async function openConversation(username) {
     });
     rebuildConversationSearchIndex(username);
     renderSidebar();
+    updateNotificationBadge();
     renderThread({ scrollBehavior: "bottom" });
     void markConversationRead(username);
   } catch (error) {
@@ -5059,6 +5060,8 @@ async function handleUserRenamed(payload) {
   state.pendingMessages.clear();
   state.outboundInFlight.clear();
   state.contacts = [];
+  syncPendingMessagesFromOutbox();
+  hydratePendingMessagesIntoCache();
 
   await loadConversations();
   await loadContacts();
@@ -5231,6 +5234,7 @@ function applyConversationReadUpdate(peer, messageIds, timestamp) {
     return;
   }
   renderSidebar();
+  updateNotificationBadge();
   if (state.activePeer === peer) {
     renderThread({ scrollBehavior: "preserve" });
   }

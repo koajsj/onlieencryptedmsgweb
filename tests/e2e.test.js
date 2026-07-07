@@ -25,6 +25,7 @@ const NORMALIZE_SOURCE = path.join(ROOT_DIR, "utils", "normalize.js");
 const GITIGNORE_FILE = path.join(ROOT_DIR, ".gitignore");
 const DEPLOY_SCRIPT = path.join(ROOT_DIR, "scripts", "deploy-debian.sh");
 const UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "update-debian.sh");
+const BOOTSTRAP_UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "bootstrap-update-debian.sh");
 const MESSAGE_KEY_INFO = "private-chat-message-key-v1";
 const KEY_BUNDLE_ITERATIONS = 210000;
 const textEncoder = new TextEncoder();
@@ -531,6 +532,7 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(appSource, /let prevMessage = sliceStart > 0 \? visibleMessages\[sliceStart - 1\] : null;/);
   assert.match(appSource, /STORAGE\.peerSecurityMeta,[\s\S]*STORAGE\.peerKeyPins[\s\S]*renameScopedStorageOwner/);
   assert.match(appSource, /state\.peerSecurityMeta\[nextUsername\] = state\.peerSecurityMeta\[previousUsername\];[\s\S]*savePeerSecurityMeta\(\);/);
+  assert.match(appSource, /state\.pendingMessages\.clear\(\);\s*state\.outboundInFlight\.clear\(\);\s*state\.contacts = \[\];\s*syncPendingMessagesFromOutbox\(\);\s*hydratePendingMessagesIntoCache\(\);/);
   assert.match(appSource, /if \(event\.key === "Escape" && document\.activeElement === elements\.messageInput\) \{\s*elements\.messageInput\.blur\(\);\s*return;/);
   assert.match(appSource, /title: "删除消息",[\s\S]*删除后仅会从当前账号的会话视图中移除。/);
   assert.match(appSource, /Math\.hypot\(touch\.clientX - state\.longPressTouchX, touch\.clientY - state\.longPressTouchY\)/);
@@ -557,10 +559,13 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.doesNotMatch(fs.readFileSync(ACCOUNT_ROUTES_SOURCE, "utf8"), /password\.length < 4|password must be 4-72 characters/);
   assert.doesNotMatch(appSource, /clearNotificationBadge\(\)/);
   assert.match(appSource, /document\.title = total > 0 \? `\(\$\{total > 99 \? "99\+" : total\}\) Echo` : "Echo";/);
+  assert.match(appSource, /renderSidebar\(\);\s*updateNotificationBadge\(\);\s*renderThread\(\{ scrollBehavior: "bottom" \}\);/);
+  assert.match(appSource, /renderSidebar\(\);\s*updateNotificationBadge\(\);\s*if \(state\.activePeer === peer\) \{/);
   assert.match(appSource, /function closeNotificationPanel\(\)/);
   assert.match(appSource, /function toggleNotificationPanel\(force, anchor = elements\.notificationBellButton\)/);
   assert.match(appSource, /window\.visualViewport\?\.addEventListener\("scroll", scheduleViewportOnlySync\)/);
   assert.match(appSource, /elements\.notificationBellButton\?\.addEventListener\("click"/);
+  assert.match(appSource, /const \{ escapeHtml, formatDateTime, isElementNode, scheduleClientMetaReport \} = window\.EchoUi;/);
   assert.match(fs.readFileSync(NORMALIZE_SOURCE, "utf8"), /function normalizePassword\(value\) \{[\s\S]*return value;[\s\S]*\}/);
   assert.match(fs.readFileSync(GITIGNORE_FILE, "utf8"), /data\/\*\.txt/);
 });
@@ -680,6 +685,7 @@ test("client guards keep older message history pagination ordered", async () => 
 test("deployment scripts preserve generated assets and verify the build without rotating admin credentials by default", () => {
   const deployScript = fs.readFileSync(DEPLOY_SCRIPT, "utf8");
   const updateScript = fs.readFileSync(UPDATE_SCRIPT, "utf8");
+  const bootstrapScript = fs.readFileSync(BOOTSTRAP_UPDATE_SCRIPT, "utf8");
   const configSource = fs.readFileSync(CONFIG_SOURCE, "utf8");
   assert.match(deployScript, /public\/ui-utils\.min\.js/);
   assert.match(updateScript, /public\/ui-utils\.min\.js/);
@@ -687,10 +693,20 @@ test("deployment scripts preserve generated assets and verify the build without 
   assert.match(deployScript, /npm run verify:build/);
   assert.match(updateScript, /npm run lint/);
   assert.match(updateScript, /npm run verify:build/);
+  assert.match(deployScript, /generate_secret\(\) \{[\s\S]*crypto\.randomBytes\(bytes\)\.toString\('hex'\)/);
+  assert.match(updateScript, /generate_secret\(\) \{[\s\S]*crypto\.randomBytes\(bytes\)\.toString\('hex'\)/);
   assert.match(updateScript, /read_env_value "ADMIN_PASSWORD_HASH"/);
-  assert.match(updateScript, /PREVIOUS_REV="\$\(git -C "\$\{APP_DIR\}" rev-parse HEAD/);
+  assert.match(updateScript, /PREVIOUS_REV="\$\{PREVIOUS_REV:-\}"/);
+  assert.match(updateScript, /SKIP_REPOSITORY_UPDATE="\$\{SKIP_REPOSITORY_UPDATE:-0\}"/);
+  assert.match(updateScript, /if \[ "\$\{SKIP_REPOSITORY_UPDATE\}" = "1" \]; then/);
   assert.match(updateScript, /wait_for_application_health/);
   assert.match(updateScript, /rollback_application/);
+  assert.match(bootstrapScript, /BACKUP_ROOT="\$\{BACKUP_ROOT:-\/var\/backups\/\$\{APP_NAME\}-bootstrap\}"/);
+  assert.match(bootstrapScript, /git -C "\$\{APP_DIR\}" reset --hard "origin\/\$\{APP_BRANCH\}"/);
+  assert.match(bootstrapScript, /SKIP_REPOSITORY_UPDATE=1/);
+  assert.match(bootstrapScript, /bash "\$\{APP_DIR\}\/scripts\/update-debian\.sh"/);
+  assert.match(bootstrapScript, /tar --null -C "\$\{APP_DIR\}" -czf "\$\{backup_dir\}\/untracked-files\.tgz"/);
+  assert.doesNotMatch(bootstrapScript, /git clean/);
   assert.match(deployScript, /public\/index\.html/);
   assert.match(updateScript, /public\/index\.html/);
   assert.doesNotMatch(updateScript, /ensure_line "ADMIN_PASSWORD_HASH" "\$\(hash_password "\$\{ADMIN_PASSWORD\}"\)"/);
@@ -1113,6 +1129,7 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.equal(sent.json.message.text, null);
     assert.equal(sent.json.message.ciphertext, encrypted.ciphertext);
     assert.equal(sent.json.message.nonce, encrypted.nonce);
+    assert.equal(sent.json.message.publicKey, bobIdentity.publicKeyBase64);
 
     const duplicateAttempt = await requestJson(server.port, "/api/messages", {
       method: "POST",
@@ -1204,6 +1221,7 @@ test("server stores only public keys and ciphertext while clients can decrypt ea
     assert.equal(history.json.messages[0].text, null);
     assert.equal(history.json.messages[0].ciphertext, encrypted.ciphertext);
     assert.equal(history.json.messages[0].nonce, encrypted.nonce);
+    assert.equal(history.json.messages[0].publicKey, aliceIdentity.publicKeyBase64);
     assert.equal(history.json.messages[1].text, null);
 
     const decrypted = await decryptMessage(

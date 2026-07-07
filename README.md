@@ -150,6 +150,14 @@ Hot update notes for VPS:
 - If the new revision fails to restart or `/health` does not respond, the script checks out the previous commit, rebuilds it, restarts the service, and exits with an error so you can inspect logs before retrying.
 - Use the same command as before on the VPS; no new update command is required.
 
+如果 VPS 上的本地部署脚本或更新脚本已经损坏，使用这个非交互式兜底更新入口：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/koajsj/onlieencryptedmsgweb/main/scripts/bootstrap-update-debian.sh | sudo bash
+```
+
+兜底脚本会先把本地差异备份到 `/var/backups/secure-chat-bootstrap/`，然后从 GitHub 刷新仓库中被跟踪的文件和脚本，再执行刷新后的更新流程。它不会执行 `git clean`，不会删除 `/var/lib/secure-chat/data` 里的生产数据，也不会要求输入确认。
+
 更新脚本现在会按下面的顺序执行：
 
 - 自动还原允许覆盖的构建产物，避免 `git pull` 被压缩文件卡住

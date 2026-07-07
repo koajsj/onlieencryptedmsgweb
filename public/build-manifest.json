@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-07-07T07:58:09.881Z",
+  "generatedAt": "2026-07-07T08:29:37.391Z",
   "files": [
     {
       "source": "public/ui-utils.js",
@@ -11,8 +11,8 @@
     {
       "source": "public/app.js",
       "built": "public/app.min.js",
-      "sourceHash": "8f621b3ced8684876707e27ba6fe836eeeb88d5cf2173022e36b0953b9c46f5e",
-      "builtHash": "1db7112ba21e96545440d5e79b44508fed443d38c6a8f885f0a2ffb18b0796cd"
+      "sourceHash": "df90f88351f6813c46ea6ddeb666724f026a2231a1e3437bddbd57ac3c34530d",
+      "builtHash": "c4ff6025a79fe47edba0c4416ea11e5e50d02cd50168292dee61c98efec16f2d"
     },
     {
       "source": "public/admin.js",
