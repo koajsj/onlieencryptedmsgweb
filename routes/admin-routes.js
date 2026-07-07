@@ -4,7 +4,6 @@ function createAdminRoutes(context) {
   const {
     syncRuntimeAdminConfigFromConfiguredSources,
     sendJson,
-    getClientAddress,
     requirePublicWriteOrigin,
     rejectIfForbiddenOrLimited,
     readJsonBody,
@@ -95,18 +94,6 @@ async function handleAdminLogin(req, res) {
     sendJson(res, 503, { error: "admin credentials are not configured" });
     return;
   }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:admin:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
   let body;
   try {
     body = await readJsonBody(req);
@@ -119,6 +106,17 @@ async function handleAdminLogin(req, res) {
   }
   const username = readSubmittedUsername(body);
   const password = String(body.password || "");
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `auth:admin:${String(username || "admin").toLowerCase()}`,
+      MAX_AUTH_REQUESTS_PER_WINDOW,
+      "too many auth requests"
+    )
+  ) {
+    return;
+  }
   const lockState = adminLoginLockState(username);
   if (adminLoginLockActive(lockState)) {
     sendJson(res, 429, { error: "too many failed attempts, try again later" });
@@ -160,12 +158,11 @@ async function handleAdminAccountReset(req, res) {
     sendJson(res, 503, { error: "admin credentials are not configured" });
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `auth:admin-account-reset:${address}`,
+      "auth:admin-account-reset",
       Math.max(5, Math.floor(MAX_AUTH_REQUESTS_PER_WINDOW / 2)),
       "too many auth requests"
     )
@@ -184,8 +181,9 @@ async function handleAdminAccountReset(req, res) {
   }
   const passphraseResult = verifyAdminUpdatePassphrase(String(body.verificationPassphrase || body.passphrase || ""));
   if (!passphraseResult.ok) {
-    sendJson(res, passphraseResult.reason === "missing" ? 503 : 403, {
-      error: passphraseResult.reason === "missing" ? "管理员身份验证口令未配置" : "身份验证口令错误"
+    const unavailable = passphraseResult.reason === "missing" || passphraseResult.reason === "default";
+    sendJson(res, unavailable ? 503 : 403, {
+      error: unavailable ? "管理员身份验证口令未配置或仍为默认值" : "身份验证口令错误"
     });
     return;
   }
@@ -241,12 +239,11 @@ function handleAdminLogout(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:logout:${session.username}:${address}`,
+      `api:admin:logout:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -281,12 +278,11 @@ function handleAdminStats(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:stats:${address}`,
+      `api:admin:stats:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -303,12 +299,11 @@ function handleAdminHealth(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:health:${address}`,
+      `api:admin:health:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -325,12 +320,11 @@ async function handleAdminDashboardStats(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:dashboard-stats:${address}`,
+      `api:admin:dashboard-stats:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -348,12 +342,11 @@ function handleAdminUsers(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:users:${address}`,
+      `api:admin:users:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -405,12 +398,11 @@ async function handleAdminUserDetail(req, res, url, pathname) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:user-detail:${address}`,
+      `api:admin:user-detail:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -437,12 +429,11 @@ async function handleAdminUserPatch(req, res, url, pathname) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:user-patch:${address}`,
+      `api:admin:user-patch:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -595,12 +586,11 @@ async function handleAdminUsersBatch(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:users:batch:${address}`,
+      `api:admin:users:batch:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -661,12 +651,11 @@ function handleAdminAuditLogs(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:audit:${address}`,
+      `api:admin:audit:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -684,12 +673,11 @@ function handleAdminMessages(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:messages:${address}`,
+      `api:admin:messages:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -726,12 +714,11 @@ async function handleAdminAccessSummary(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:access-summary:${address}`,
+      `api:admin:access-summary:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -749,12 +736,11 @@ async function handleAdminAccessLogs(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:access-logs:${address}`,
+      `api:admin:access-logs:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -777,12 +763,11 @@ async function handleAdminAccessProfile(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:admin:access-profile:${address}`,
+      `api:admin:access-profile:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )

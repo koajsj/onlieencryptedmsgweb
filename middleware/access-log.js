@@ -4,7 +4,7 @@ const crypto = require("node:crypto");
 const { parseCookies } = require("../utils/http");
 
 const ACCESS_SESSION_COOKIE = "secure_chat_visit";
-const ACCESS_SESSION_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
+const ACCESS_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 
 function buildCookieHeader(name, value, secure) {
   return [

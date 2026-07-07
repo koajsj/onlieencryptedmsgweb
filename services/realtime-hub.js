@@ -6,9 +6,11 @@ function createRealtimeHub({
   schedulePersistMessages,
   isPresenceVisibleTo,
   isMessageDeletedFor,
-  isBlockedBetween
+  isBlockedBetween,
+  maxConcurrentConnectionsPerUser = 1
 }) {
   const onlineConnections = new Map();
+  const maxConnections = Math.max(1, Number(maxConcurrentConnectionsPerUser) || 1);
 
   function writeSse(res, event, payload) {
     if (!res || res.writableEnded || res.destroyed) {
@@ -115,6 +117,20 @@ function createRealtimeHub({
 
     const connection = { res, heartbeat, username, token: String(token || "") };
     const bucket = onlineConnections.get(username) || new Set();
+    while (bucket.size >= maxConnections) {
+      const previous = bucket.values().next().value;
+      if (!previous) {
+        break;
+      }
+      try {
+        writeSse(previous.res, "system", { reason: "signed in on another device", at: Date.now() });
+        previous.res.end();
+      } catch (error) {
+        // Ignore sockets that are already closing.
+      }
+      clearInterval(previous.heartbeat);
+      bucket.delete(previous);
+    }
     const wasOnline = bucket.size > 0;
     bucket.add(connection);
     onlineConnections.set(username, bucket);

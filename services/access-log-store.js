@@ -225,7 +225,12 @@ class AccessLogStore {
     if (!this.enabled) {
       return;
     }
-    fs.mkdirSync(this.dataDir, { recursive: true });
+    fs.mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    try {
+      fs.chmodSync(this.dataDir, 0o700);
+    } catch (error) {
+      // Ignore chmod failures on filesystems that do not support POSIX modes.
+    }
     const sqlite3 = getSqlite3();
     this.db = await new Promise((resolve, reject) => {
       const db = new sqlite3.Database(this.dbFile, (error) => {
@@ -236,6 +241,11 @@ class AccessLogStore {
         resolve(db);
       });
     });
+    try {
+      fs.chmodSync(this.dbFile, 0o600);
+    } catch (error) {
+      // Ignore chmod failures on filesystems that do not support POSIX modes.
+    }
     await this.execImmediate("PRAGMA journal_mode = WAL;");
     await this.execImmediate("PRAGMA synchronous = FULL;");
     await this.execImmediate(`

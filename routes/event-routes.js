@@ -3,7 +3,6 @@
 function createEventRoutes(context) {
   const {
     requireSession,
-    getClientAddress,
     eventTicketAgentHash,
     isSameOriginRequest,
     rejectIfForbiddenOrLimited,
@@ -30,12 +29,11 @@ function handleCreateEventTicket(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `events:ticket:${session.username}:${address}`,
+      `events:ticket:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -43,7 +41,7 @@ function handleCreateEventTicket(req, res, url) {
     return;
   }
   const activeConnections = activeConnectionCount(session.username);
-  if (activeConnections >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
+  if (MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER > 1 && activeConnections >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
     sendJson(res, 429, { error: "too many concurrent connections" });
     return;
   }
@@ -85,10 +83,8 @@ function handleEvents(req, res, url) {
     return;
   }
 
-  const address = getClientAddress(req);
   if (
-    (ticketRecord.address && address && ticketRecord.address !== address) ||
-    (ticketRecord.agentHash && ticketRecord.agentHash !== eventTicketAgentHash(req))
+    ticketRecord.agentHash && ticketRecord.agentHash !== eventTicketAgentHash(req)
   ) {
     sendJson(res, 401, { error: "unauthorized" });
     return;
@@ -97,14 +93,17 @@ function handleEvents(req, res, url) {
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `events:${ticketRecord.username}:${address}`,
+      `events:${ticketRecord.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many event connections"
     )
   ) {
     return;
   }
-  if (activeConnectionCount(ticketRecord.username) >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER) {
+  if (
+    MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER > 1 &&
+    activeConnectionCount(ticketRecord.username) >= MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER
+  ) {
     sendJson(res, 429, { error: "too many concurrent connections" });
     return;
   }

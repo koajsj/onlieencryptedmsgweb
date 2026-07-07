@@ -5,7 +5,6 @@ function createContactRoutes(context) {
     requireSession,
     sendJson,
     listContactsFor,
-    getClientAddress,
     rejectIfForbiddenOrLimited,
     readJsonBody,
     sendJsonBodyError,
@@ -55,11 +54,10 @@ async function handleContactCreate(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (rejectIfForbiddenOrLimited(
     req,
     res,
-    `api:contacts:create:${session.username}:${address}`,
+    `api:contacts:create:${session.username}`,
     MAX_API_REQUESTS_PER_WINDOW,
     "too many requests"
   )) {
@@ -112,12 +110,11 @@ async function handleContactPatch(req, res, url, pathname) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:contacts:patch:${session.username}:${address}`,
+      `api:contacts:patch:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -185,12 +182,11 @@ function handleContactDelete(req, res, url, pathname) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:contacts:delete:${session.username}:${address}`,
+      `api:contacts:delete:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -218,12 +214,11 @@ async function handleContactBlock(req, res, url, pathname) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:contacts:block:${session.username}:${address}`,
+      `api:contacts:block:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )

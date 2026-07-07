@@ -123,7 +123,7 @@ install_dependencies_and_build() {
 
 prepare_data_dir() {
   mkdir -p "$(dirname "${DATA_DIR}")"
-  install -d -o www-data -g www-data -m 0755 "${DATA_DIR}"
+  install -d -o www-data -g www-data -m 0700 "${DATA_DIR}"
 
   if [ -f "${APP_DIR}/data/admin_audit.jsonl" ] && [ ! -f "${DATA_DIR}/admin_audit.jsonl" ]; then
     cp "${APP_DIR}/data/admin_audit.jsonl" "${DATA_DIR}/admin_audit.jsonl"
@@ -139,6 +139,8 @@ prepare_data_dir() {
   fi
 
   chown -R www-data:www-data "$(dirname "${DATA_DIR}")"
+  chmod 0700 "${DATA_DIR}"
+  find "${DATA_DIR}" -maxdepth 1 -type f -exec chmod 0600 {} \;
 }
 
 read_env_value() {

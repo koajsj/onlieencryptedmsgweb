@@ -224,7 +224,6 @@ function createMessageStore({
     return {
       id: String(replyTo.id),
       from: String(replyTo.from || ""),
-      text: typeof replyTo.text === "string" ? replyTo.text : "",
       createdAt: Number(replyTo.createdAt) || 0
     };
   }

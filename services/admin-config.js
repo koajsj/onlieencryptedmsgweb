@@ -196,6 +196,9 @@ function verifyAdminUpdatePassphrase(passphrase) {
   if (!expected) {
     return { ok: false, reason: "missing" };
   }
+  if (expected === DEFAULT_ADMIN_UPDATE_PASSPHRASE_VALUE) {
+    return { ok: false, reason: "default" };
+  }
   return {
     ok: verifyPlainSecret(passphrase, expected),
     reason: "invalid"

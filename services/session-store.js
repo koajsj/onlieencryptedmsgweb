@@ -431,7 +431,6 @@ function createSessionStore({
       username: session.username,
       role: session.role,
       token: session.id,
-      address: getClientAddress(req),
       agentHash: eventTicketAgentHash(req),
       issuedAt: Date.now(),
       expiresAt: Date.now() + eventTicketTtlMs

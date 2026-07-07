@@ -2,7 +2,6 @@
 
 function createSupportRoutes(context) {
   const {
-    getClientAddress,
     requirePublicWriteOrigin,
     rejectIfForbiddenOrLimited,
     readJsonBody,
@@ -23,12 +22,12 @@ async function handleClientMeta(req, res, url) {
   if (!requirePublicWriteOrigin(req, res)) {
     return;
   }
-  const address = getClientAddress(req);
+  const visitSessionId = accessLogMiddleware.getSessionId(req) || "anonymous";
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:client-meta:${address}`,
+      `api:client-meta:${visitSessionId}`,
       Math.max(30, Math.floor(MAX_API_REQUESTS_PER_WINDOW / 2)),
       "too many requests"
     )
@@ -59,8 +58,7 @@ function handleUsers(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
-  if (rejectIfForbiddenOrLimited(req, res, `api:users:${address}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
+  if (rejectIfForbiddenOrLimited(req, res, `api:users:${session.username}`, MAX_API_REQUESTS_PER_WINDOW, "too many requests")) {
     return;
   }
   const query = normalizeBoundedText(url.searchParams.get("q") || "", 64);

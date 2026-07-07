@@ -105,24 +105,36 @@ const ERROR_LOG_SENSITIVE_KEYS = new Set([
 ]);
 
 function ensureDataFiles() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(DATA_DIR, 0o700);
+  } catch (error) {
+    // Ignore chmod failures on filesystems that do not support POSIX modes.
+  }
   if (!fs.existsSync(USERS_FILE)) {
-    fs.writeFileSync(USERS_FILE, "[]\n", "utf8");
+    fs.writeFileSync(USERS_FILE, "[]\n", { encoding: "utf8", mode: 0o600 });
   }
   if (!fs.existsSync(MESSAGES_FILE)) {
-    fs.writeFileSync(MESSAGES_FILE, "[]\n", "utf8");
+    fs.writeFileSync(MESSAGES_FILE, "[]\n", { encoding: "utf8", mode: 0o600 });
   }
   if (!fs.existsSync(MESSAGES_LOG_FILE)) {
-    fs.writeFileSync(MESSAGES_LOG_FILE, "", "utf8");
+    fs.writeFileSync(MESSAGES_LOG_FILE, "", { encoding: "utf8", mode: 0o600 });
   }
   if (!fs.existsSync(ADMIN_AUDIT_FILE)) {
-    fs.writeFileSync(ADMIN_AUDIT_FILE, "", "utf8");
+    fs.writeFileSync(ADMIN_AUDIT_FILE, "", { encoding: "utf8", mode: 0o600 });
   }
   if (!fs.existsSync(SESSIONS_FILE)) {
-    fs.writeFileSync(SESSIONS_FILE, "[]\n", "utf8");
+    fs.writeFileSync(SESSIONS_FILE, "[]\n", { encoding: "utf8", mode: 0o600 });
   }
   if (!fs.existsSync(ERROR_LOG_FILE)) {
-    fs.writeFileSync(ERROR_LOG_FILE, "", "utf8");
+    fs.writeFileSync(ERROR_LOG_FILE, "", { encoding: "utf8", mode: 0o600 });
+  }
+  for (const filePath of [USERS_FILE, MESSAGES_FILE, MESSAGES_LOG_FILE, ADMIN_AUDIT_FILE, SESSIONS_FILE, ERROR_LOG_FILE]) {
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch (error) {
+      // Ignore chmod failures on filesystems that do not support POSIX modes.
+    }
   }
 }
 
@@ -1719,7 +1731,8 @@ const realtimeHub = createRealtimeHub({
   schedulePersistMessages,
   isPresenceVisibleTo,
   isMessageDeletedFor,
-  isBlockedBetween
+  isBlockedBetween,
+  maxConcurrentConnectionsPerUser: MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER
 });
 const {
   writeSse,

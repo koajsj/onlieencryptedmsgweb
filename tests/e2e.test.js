@@ -16,13 +16,20 @@ const UI_UTILS_SOURCE = path.join(ROOT_DIR, "public", "ui-utils.js");
 const ADMIN_SOURCE = path.join(ROOT_DIR, "public", "admin.js");
 const ADMIN_USER_SOURCE = path.join(ROOT_DIR, "public", "admin-user.js");
 const ACCOUNT_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "account-routes.js");
+const ADMIN_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "admin-routes.js");
+const CONTACT_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "contact-routes.js");
+const EVENT_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "event-routes.js");
 const MESSAGE_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "message-routes.js");
+const SUPPORT_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "support-routes.js");
 const INDEX_HTML = path.join(ROOT_DIR, "public", "index.html");
 const ADMIN_HTML = path.join(ROOT_DIR, "public", "admin.html");
 const ADMIN_USER_HTML = path.join(ROOT_DIR, "public", "admin-user.html");
 const CONFIG_SOURCE = path.join(ROOT_DIR, "config.js");
 const NORMALIZE_SOURCE = path.join(ROOT_DIR, "utils", "normalize.js");
 const GITIGNORE_FILE = path.join(ROOT_DIR, ".gitignore");
+const ACCESS_LOG_MIDDLEWARE = path.join(ROOT_DIR, "middleware", "access-log.js");
+const REALTIME_HUB_SOURCE = path.join(ROOT_DIR, "services", "realtime-hub.js");
+const MESSAGE_STORE_SOURCE = path.join(ROOT_DIR, "services", "message-store.js");
 const DEPLOY_SCRIPT = path.join(ROOT_DIR, "scripts", "deploy-debian.sh");
 const UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "update-debian.sh");
 const BOOTSTRAP_UPDATE_SCRIPT = path.join(ROOT_DIR, "scripts", "bootstrap-update-debian.sh");
@@ -460,6 +467,17 @@ test("browser client restores password-encrypted key bundles without reviving le
   const appSource = fs.readFileSync(APP_SOURCE, "utf8");
   const adminUserSource = fs.readFileSync(ADMIN_USER_SOURCE, "utf8");
   const configSource = fs.readFileSync(CONFIG_SOURCE, "utf8");
+  const accessLogMiddleware = fs.readFileSync(ACCESS_LOG_MIDDLEWARE, "utf8");
+  const realtimeHubSource = fs.readFileSync(REALTIME_HUB_SOURCE, "utf8");
+  const messageStoreSource = fs.readFileSync(MESSAGE_STORE_SOURCE, "utf8");
+  const routeSources = [
+    ACCOUNT_ROUTES_SOURCE,
+    ADMIN_ROUTES_SOURCE,
+    CONTACT_ROUTES_SOURCE,
+    EVENT_ROUTES_SOURCE,
+    MESSAGE_ROUTES_SOURCE,
+    SUPPORT_ROUTES_SOURCE
+  ].map((file) => fs.readFileSync(file, "utf8")).join("\n");
   assert.doesNotMatch(appSource, /encryptedPrivateKey/);
   assert.doesNotMatch(appSource, /privateKeySalt/);
   assert.doesNotMatch(appSource, /privateKeyIv/);
@@ -467,13 +485,27 @@ test("browser client restores password-encrypted key bundles without reviving le
   assert.match(appSource, /restoreIdentityFromPortableBundle/);
   assert.match(appSource, /window\.indexedDB\.open/);
   assert.match(appSource, /writeDeviceVaultRecord/);
+  assert.match(appSource, /privateKeyPkcs8Ciphertext/);
+  assert.match(appSource, /encryptLocalPrivateKeyExport/);
+  assert.match(appSource, /decryptLocalPrivateKeyExport/);
+  assert.doesNotMatch(appSource, /privateKeyPkcs8Base64: String\(identity\.privateKeyPkcs8Base64/);
   assert.match(appSource, /\/api\/me\/key-bundle/);
   assert.match(appSource, /publicKey:\s*identity\.publicKeyBase64/);
   assert.match(appSource, /deleteScopedStorageRecord\(STORAGE\.deviceIdentities/);
+  assert.match(appSource, /realtimeTakeoverPaused/);
+  assert.match(appSource, /账号已在其他设备上线/);
   assert.doesNotMatch(appSource, /同一账号可多端进入/);
   assert.doesNotMatch(adminUserSource, /encryptedPrivateKey|privateKeySalt|privateKeyIv/);
   assert.match(adminUserSource, /privateKeyStoredOnServer/);
   assert.doesNotMatch(configSource, /PRIVATE_KEY_SALT_BYTES|PRIVATE_KEY_IV_BYTES|ENCRYPTED_PRIVATE_KEY_BYTES/);
+  assert.match(configSource, /MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER \|\| "1"/);
+  assert.match(accessLogMiddleware, /ACCESS_SESSION_MAX_AGE_SECONDS = 30 \* 24 \* 60 \* 60/);
+  assert.match(realtimeHubSource, /signed in on another device/);
+  assert.doesNotMatch(messageStoreSource, /text: typeof replyTo\.text === "string"/);
+  assert.doesNotMatch(routeSources, /\$\{address\}/);
+  assert.doesNotMatch(routeSources, /ticketRecord\.address/);
+  assert.match(fs.readFileSync(path.join(ROOT_DIR, "utils", "data.js"), "utf8"), /mode: 0o600/);
+  assert.match(fs.readFileSync(SERVER_PATH, "utf8"), /fs\.chmodSync\(DATA_DIR, 0o700\)/);
 });
 
 test("browser client keeps static HTML chrome readable", () => {
@@ -695,6 +727,8 @@ test("deployment scripts preserve generated assets and verify the build without 
   assert.match(updateScript, /npm run verify:build/);
   assert.match(deployScript, /generate_secret\(\) \{[\s\S]*crypto\.randomBytes\(bytes\)\.toString\('hex'\)/);
   assert.match(updateScript, /generate_secret\(\) \{[\s\S]*crypto\.randomBytes\(bytes\)\.toString\('hex'\)/);
+  assert.match(deployScript, /install -d -o www-data -g www-data -m 0700 "\$\{DATA_DIR\}"/);
+  assert.match(deployScript, /find "\$\{DATA_DIR\}" -maxdepth 1 -type f -exec chmod 0600 \{\} \\;/);
   assert.match(updateScript, /read_env_value "ADMIN_PASSWORD_HASH"/);
   assert.match(updateScript, /PREVIOUS_REV="\$\{PREVIOUS_REV:-\}"/);
   assert.match(updateScript, /SKIP_REPOSITORY_UPDATE="\$\{SKIP_REPOSITORY_UPDATE:-0\}"/);
@@ -753,6 +787,23 @@ test("public auth endpoints reject cross-origin requests", async () => {
     });
     assert.equal(login.status, 403);
     assert.equal(login.json.error, "forbidden origin");
+
+    const defaultReset = await requestJson(server.port, "/api/admin/account/reset", {
+      method: "POST",
+      body: {
+        username: "admin",
+        password: "next-admin-password",
+        passphrase: "admin"
+      }
+    });
+    assert.equal(defaultReset.status, 503);
+    assert.match(defaultReset.json.error, /默认值/);
+
+    const defaultAdminLogin = await requestJson(server.port, "/api/admin/login", {
+      method: "POST",
+      body: { username: "admin", password: "qwer@1234" }
+    });
+    assert.equal(defaultAdminLogin.status, 200);
   } finally {
     await server.stop();
   }
@@ -1008,6 +1059,55 @@ test("event stream tickets are one-time use", async () => {
     });
     assert.equal(second.status, 401);
     assert.equal((await second.json()).error, "unauthorized");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("new realtime connection replaces the previous online device for the same user", async () => {
+  const server = await startServer();
+  let firstStream = null;
+  let secondStream = null;
+  try {
+    const identity = await createIdentity();
+    const registered = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "SingleOnlineUser",
+        password: "single123",
+        publicKey: identity.publicKeyBase64,
+        keyBundle: await createKeyBundle(identity, "single123")
+      }
+    });
+    assert.equal(registered.status, 201);
+
+    firstStream = await openEventStream(server.port, registered.session);
+    assert.equal((await firstStream.waitForEvent("ready")).me, "SingleOnlineUser");
+
+    secondStream = await openEventStream(server.port, registered.session);
+    assert.equal((await secondStream.waitForEvent("ready")).me, "SingleOnlineUser");
+    const takeover = await firstStream.waitForEvent("system", (payload) => payload.reason === "signed in on another device");
+    assert.equal(takeover.reason, "signed in on another device");
+  } finally {
+    if (firstStream) {
+      await firstStream.close();
+    }
+    if (secondStream) {
+      await secondStream.close();
+    }
+    await server.stop();
+  }
+});
+
+test("runtime data files are created with owner-only permissions", async () => {
+  const server = await startServer();
+  try {
+    const directoryMode = fs.statSync(server.dataDir).mode & 0o777;
+    assert.equal(directoryMode, 0o700);
+    for (const fileName of ["users.json", "messages.json", "messages.jsonl", "admin_audit.jsonl", "sessions.json", "errors.log"]) {
+      const fileMode = fs.statSync(path.join(server.dataDir, fileName)).mode & 0o777;
+      assert.equal(fileMode, 0o600, fileName);
+    }
   } finally {
     await server.stop();
   }
@@ -1707,13 +1807,26 @@ test("authenticated users can rotate to a new password-encrypted identity bundle
     });
     assert.equal(register.status, 201);
 
-    const rotated = await requestJson(server.port, "/api/me/key-bundle", {
+    const missingPasswordRotation = await requestJson(server.port, "/api/me/key-bundle", {
       method: "POST",
       session: register.session,
       body: {
         publicKey: nextIdentity.publicKeyBase64,
         keyBundle: await createKeyBundle(nextIdentity, "hello123"),
         rotateIdentity: true
+      }
+    });
+    assert.equal(missingPasswordRotation.status, 403);
+    assert.equal(missingPasswordRotation.json.error, "current password invalid");
+
+    const rotated = await requestJson(server.port, "/api/me/key-bundle", {
+      method: "POST",
+      session: register.session,
+      body: {
+        publicKey: nextIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(nextIdentity, "hello123"),
+        rotateIdentity: true,
+        currentPassword: "hello123"
       }
     });
     assert.equal(rotated.status, 200);

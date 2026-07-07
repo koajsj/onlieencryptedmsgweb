@@ -4,7 +4,6 @@ const crypto = require("node:crypto");
 
 function createAccountRoutes(context) {
   const {
-    getClientAddress,
     requirePublicWriteOrigin,
     rejectIfForbiddenOrLimited,
     readJsonBody,
@@ -76,19 +75,6 @@ async function handleRegister(req, res) {
   if (!requirePublicWriteOrigin(req, res)) {
     return;
   }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:register:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-
   let body;
   try {
     body = await readJsonBody(req);
@@ -108,6 +94,17 @@ async function handleRegister(req, res) {
   }
   if (isReservedUsernameKey(normalizedUsername.key)) {
     sendJson(res, 409, { error: "username is reserved" });
+    return;
+  }
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `auth:register:${normalizedUsername.key}`,
+      MAX_AUTH_REQUESTS_PER_WINDOW,
+      "too many auth requests"
+    )
+  ) {
     return;
   }
   if (findUserByKey(normalizedUsername.key)) {
@@ -170,19 +167,6 @@ async function handleLogin(req, res) {
   if (!requirePublicWriteOrigin(req, res)) {
     return;
   }
-  const address = getClientAddress(req);
-  if (
-    rejectIfForbiddenOrLimited(
-      req,
-      res,
-      `auth:login:${address}`,
-      MAX_AUTH_REQUESTS_PER_WINDOW,
-      "too many auth requests"
-    )
-  ) {
-    return;
-  }
-
   let body;
   try {
     body = await readJsonBody(req);
@@ -198,6 +182,17 @@ async function handleLogin(req, res) {
   const password = normalizePassword(body.password);
   if (!normalizedUsername || !password) {
     sendJson(res, 400, { error: "username and password are required" });
+    return;
+  }
+  if (
+    rejectIfForbiddenOrLimited(
+      req,
+      res,
+      `auth:login:${normalizedUsername.key}`,
+      MAX_AUTH_REQUESTS_PER_WINDOW,
+      "too many auth requests"
+    )
+  ) {
     return;
   }
 
@@ -248,12 +243,11 @@ function handleLogout(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:logout:${session.username}:${address}`,
+      `api:logout:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -274,12 +268,11 @@ function handleLogoutAll(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:logout-all:${session.username}:${address}`,
+      `api:logout-all:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -336,12 +329,11 @@ function handlePublicKeyLookup(req, res, url, userId) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:public-key:${session.username}:${address}`,
+      `api:public-key:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -361,12 +353,11 @@ function handlePrekeyBundleLookup(req, res, url, userId) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:prekey-bundle:${session.username}:${address}`,
+      `api:prekey-bundle:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -386,12 +377,11 @@ async function handleUploadPublicKey(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:upload-public-key:${session.username}:${address}`,
+      `api:upload-public-key:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -439,12 +429,11 @@ async function handleMeKeyBundlePatch(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:me:key-bundle:${session.username}:${address}`,
+      `api:me:key-bundle:${session.username}`,
       MAX_AUTH_REQUESTS_PER_WINDOW,
       "too many auth requests"
     )
@@ -464,12 +453,13 @@ async function handleMeKeyBundlePatch(req, res, url) {
     sendJsonBodyError(res, error);
     return;
   }
-  if (rejectUnknownBodyKeys(body, ["keyBundle", "publicKey", "rotateIdentity"], res)) {
+  if (rejectUnknownBodyKeys(body, ["keyBundle", "publicKey", "rotateIdentity", "currentPassword"], res)) {
     return;
   }
   const keyBundle = normalizeKeyBundle(body.keyBundle);
   const publicKey = String(body.publicKey || "").trim();
   const rotateIdentity = body.rotateIdentity === true;
+  const rotatesIdentityKey = Boolean(publicKey && user.publicKey && user.publicKey !== publicKey && rotateIdentity);
   if (!keyBundle) {
     sendJson(res, 400, { error: "invalid account key bundle" });
     return;
@@ -482,6 +472,16 @@ async function handleMeKeyBundlePatch(req, res, url) {
     if (user.publicKey && user.publicKey !== publicKey && !rotateIdentity) {
       sendJson(res, 409, { error: "identity public key already registered" });
       return;
+    }
+    if (rotatesIdentityKey) {
+      const currentPassword = normalizePassword(body.currentPassword);
+      const currentOk = currentPassword
+        ? await verifyPassword(currentPassword, user.passwordHash || DUMMY_PASSWORD_HASH)
+        : false;
+      if (!currentOk) {
+        sendJson(res, 403, { error: "current password invalid" });
+        return;
+      }
     }
     user.publicKey = publicKey;
   }
@@ -520,12 +520,11 @@ async function handleMeSettingsPatch(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:me:settings:${session.username}:${address}`,
+      `api:me:settings:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )
@@ -579,12 +578,11 @@ async function handleMePassword(req, res, url) {
   if (!session) {
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:me:password:${session.username}:${address}`,
+      `api:me:password:${session.username}`,
       MAX_AUTH_REQUESTS_PER_WINDOW,
       "too many auth requests"
     )
@@ -669,12 +667,11 @@ async function handleMeSessionRevoke(req, res, url) {
     sendJson(res, 401, { error: "unauthorized" });
     return;
   }
-  const address = getClientAddress(req);
   if (
     rejectIfForbiddenOrLimited(
       req,
       res,
-      `api:me:sessions:revoke:${session.username}:${address}`,
+      `api:me:sessions:revoke:${session.username}`,
       MAX_API_REQUESTS_PER_WINDOW,
       "too many requests"
     )

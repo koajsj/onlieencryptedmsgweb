@@ -2,6 +2,14 @@
 
 const fs = require("node:fs");
 
+function chmodOwnerReadWrite(filePath) {
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch (error) {
+    // Ignore chmod failures on filesystems that do not support POSIX modes.
+  }
+}
+
 function readJsonFile(filePath) {
   const raw = fs.readFileSync(filePath, "utf8");
   try {
@@ -27,15 +35,19 @@ function readJsonLinesFile(filePath) {
 
 function writeJsonFile(filePath, value) {
   const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  chmodOwnerReadWrite(tempPath);
   fs.renameSync(tempPath, filePath);
+  chmodOwnerReadWrite(filePath);
 }
 
 function rewriteJsonLinesFile(filePath, rows) {
   const tempPath = `${filePath}.tmp`;
   const body = rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join("\n")}\n` : "";
-  fs.writeFileSync(tempPath, body, "utf8");
+  fs.writeFileSync(tempPath, body, { encoding: "utf8", mode: 0o600 });
+  chmodOwnerReadWrite(tempPath);
   fs.renameSync(tempPath, filePath);
+  chmodOwnerReadWrite(filePath);
 }
 
 function appendJsonLinesFile(filePath, rows) {
@@ -43,11 +55,13 @@ function appendJsonLinesFile(filePath, rows) {
     return;
   }
   const body = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
-  fs.appendFileSync(filePath, body, "utf8");
+  fs.appendFileSync(filePath, body, { encoding: "utf8", mode: 0o600 });
+  chmodOwnerReadWrite(filePath);
 }
 
 function appendTextFileSync(filePath, text) {
-  fs.appendFileSync(filePath, String(text || ""), "utf8");
+  fs.appendFileSync(filePath, String(text || ""), { encoding: "utf8", mode: 0o600 });
+  chmodOwnerReadWrite(filePath);
 }
 
 module.exports = {

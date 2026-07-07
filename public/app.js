@@ -246,6 +246,7 @@ const state = {
   reconnectTimer: 0,
   reconnectAttempts: 0,
   manualEventSourceClose: false,
+  realtimeTakeoverPaused: false,
   connectionState: "offline",
   accountProfile: {},
   contactProfiles: {},
@@ -1741,7 +1742,9 @@ function normalizeVaultIdentityRecord(record) {
     publicKeyBase64,
     privateKey: record.privateKey,
     storageKey: record.storageKey,
-    privateKeyPkcs8Base64: String(record.privateKeyPkcs8Base64 || "")
+    privateKeyPkcs8Base64: String(record.privateKeyPkcs8Base64 || ""),
+    privateKeyPkcs8Iv: String(record.privateKeyPkcs8Iv || ""),
+    privateKeyPkcs8Ciphertext: String(record.privateKeyPkcs8Ciphertext || "")
   };
 }
 
@@ -1751,6 +1754,61 @@ async function createDeviceStorageKey() {
     false,
     ["encrypt", "decrypt"]
   );
+}
+
+async function encryptLocalPrivateKeyExport(privateKeyPkcs8Base64, storageKey) {
+  if (!privateKeyPkcs8Base64 || !storageKey) {
+    return {
+      privateKeyPkcs8Iv: "",
+      privateKeyPkcs8Ciphertext: ""
+    };
+  }
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv
+    },
+    storageKey,
+    base64ToBytes(privateKeyPkcs8Base64)
+  );
+  return {
+    privateKeyPkcs8Iv: bytesToBase64(iv),
+    privateKeyPkcs8Ciphertext: bytesToBase64(new Uint8Array(ciphertext))
+  };
+}
+
+async function decryptLocalPrivateKeyExport(record) {
+  if (!record) {
+    return "";
+  }
+  if (record.privateKeyPkcs8Iv && record.privateKeyPkcs8Ciphertext && record.storageKey) {
+    const plaintext = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: base64ToBytes(record.privateKeyPkcs8Iv)
+      },
+      record.storageKey,
+      base64ToBytes(record.privateKeyPkcs8Ciphertext)
+    );
+    return bytesToBase64(new Uint8Array(plaintext));
+  }
+  return String(record.privateKeyPkcs8Base64 || "");
+}
+
+async function writeIdentityVaultRecord(username, identity) {
+  if (!username || !identity?.publicKeyBase64 || !identity?.privateKey) {
+    return;
+  }
+  const storageKey = identity.storageKey || await createDeviceStorageKey();
+  const encryptedExport = await encryptLocalPrivateKeyExport(String(identity.privateKeyPkcs8Base64 || ""), storageKey);
+  await writeDeviceVaultRecord({
+    username,
+    publicKeyBase64: String(identity.publicKeyBase64 || ""),
+    privateKey: identity.privateKey,
+    storageKey,
+    ...encryptedExport
+  });
 }
 
 async function buildPortableKeyBundle(privateKeyPkcs8Base64, password) {
@@ -1876,7 +1934,7 @@ async function migrateLegacyStoredIdentity(username) {
   }
   const migratedPrivateKey = await importPrivateKey(legacy.privateKeyPkcs8Base64, false);
   const migratedStorageKey = await createDeviceStorageKey();
-  await writeDeviceVaultRecord({
+  await writeIdentityVaultRecord(username, {
     username,
     publicKeyBase64: legacy.publicKeyBase64,
     privateKey: migratedPrivateKey,
@@ -1898,7 +1956,19 @@ async function readStoredIdentity(username) {
   }
   const stored = normalizeVaultIdentityRecord(await readDeviceVaultRecord(username));
   if (stored) {
-    return stored;
+    const privateKeyPkcs8Base64 = await decryptLocalPrivateKeyExport(stored);
+    if (stored.privateKeyPkcs8Base64 && privateKeyPkcs8Base64) {
+      await writeIdentityVaultRecord(username, {
+        publicKeyBase64: stored.publicKeyBase64,
+        privateKey: stored.privateKey,
+        storageKey: stored.storageKey,
+        privateKeyPkcs8Base64
+      });
+    }
+    return {
+      ...stored,
+      privateKeyPkcs8Base64
+    };
   }
   return migrateLegacyStoredIdentity(username);
 }
@@ -1908,13 +1978,7 @@ async function persistSessionIdentity(identity, username = state.me?.username ||
   if (!username || !identity?.publicKeyBase64 || !identity?.privateKey) {
     return;
   }
-  await writeDeviceVaultRecord({
-    username,
-    publicKeyBase64: String(identity.publicKeyBase64 || ""),
-    privateKey: identity.privateKey,
-    storageKey: identity.storageKey || await createDeviceStorageKey(),
-    privateKeyPkcs8Base64: String(identity.privateKeyPkcs8Base64 || "")
-  });
+  await writeIdentityVaultRecord(username, identity);
   deleteScopedStorageRecord(STORAGE.deviceIdentities, username);
 }
 
@@ -2713,6 +2777,7 @@ function clearSession(showAuth = true, clearIdentity = true) {
 
 function setSession(user, identity) {
   state.authenticated = true;
+  state.realtimeTakeoverPaused = false;
   state.me = user;
   state.identity = identity;
   state.previewMode = false;
@@ -5260,6 +5325,12 @@ async function createEventTicket() {
 }
 
 function startEventStream(silent = false) {
+  if (silent && state.realtimeTakeoverPaused) {
+    return;
+  }
+  if (!silent) {
+    state.realtimeTakeoverPaused = false;
+  }
   void openEventStream().catch((error) => {
     state.connectionState = "offline";
     renderThread();
@@ -5356,8 +5427,28 @@ async function openEventStream() {
       .catch(() => {});
   });
 
+  source.addEventListener("system", (event) => {
+    const payload = parseSsePayload(event);
+    if (payload.reason !== "signed in on another device") {
+      return;
+    }
+    state.realtimeTakeoverPaused = true;
+    state.manualEventSourceClose = true;
+    if (state.reconnectTimer) {
+      window.clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = 0;
+    }
+    if (state.eventSource) {
+      state.eventSource.close();
+      state.eventSource = null;
+    }
+    state.connectionState = "offline";
+    renderThread();
+    showToast("账号已在其他设备上线，本设备已停止实时同步", "error");
+  });
+
   source.addEventListener("error", () => {
-    if (state.manualEventSourceClose || !state.authenticated) {
+    if (state.manualEventSourceClose || state.realtimeTakeoverPaused || !state.authenticated) {
       return;
     }
     if (state.eventSource) {
@@ -5439,6 +5530,7 @@ async function syncServerKeyBundle(password, identity, options = {}) {
   }
   if (options.rotateIdentity) {
     payload.rotateIdentity = true;
+    payload.currentPassword = password;
   }
   return api("/api/me/key-bundle", {
     method: "POST",

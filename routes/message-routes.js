@@ -5,7 +5,6 @@ const crypto = require("node:crypto");
 function createMessageRoutes(context) {
   const {
     requireSession,
-    getClientAddress,
     rejectIfForbiddenOrLimited,
     sendJson,
     sendJsonBodyError,
@@ -78,12 +77,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:conversations:${address}`,
+        `api:conversations:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
@@ -100,12 +98,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:messages:get:${address}`,
+        `api:messages:get:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
@@ -144,12 +141,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:messages:post:${session.username}:${address}`,
+        `api:messages:post:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
@@ -302,12 +298,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:messages:recall:${session.username}:${address}`,
+        `api:messages:recall:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
@@ -367,12 +362,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:messages:delete:${session.username}:${address}`,
+        `api:messages:delete:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
@@ -420,12 +414,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:messages:read:${session.username}:${address}`,
+        `api:messages:read:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
@@ -484,12 +477,11 @@ function createMessageRoutes(context) {
     if (!session) {
       return;
     }
-    const address = getClientAddress(req);
     if (
       rejectIfForbiddenOrLimited(
         req,
         res,
-        `api:typing:${session.username}:${address}`,
+        `api:typing:${session.username}`,
         limits.MAX_API_REQUESTS_PER_WINDOW,
         "too many requests"
       )
