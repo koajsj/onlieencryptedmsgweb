@@ -2415,12 +2415,7 @@ function parseMessageCursor(rawValue) {
 function collectPagedMessages(sourceMessages, limit, beforeCursor, predicate = null) {
   let beforeIndex = sourceMessages.length;
   if (beforeCursor?.id) {
-    const matchedIndex = sourceMessages.findIndex((message) => {
-      if (predicate && !predicate(message)) {
-        return false;
-      }
-      return message.id === beforeCursor.id;
-    });
+    const matchedIndex = sourceMessages.findIndex((message) => message.id === beforeCursor.id);
     if (matchedIndex >= 0) {
       beforeIndex = matchedIndex;
     }
@@ -2445,7 +2440,12 @@ function collectPagedMessages(sourceMessages, limit, beforeCursor, predicate = n
 }
 
 function pagedMessagesBetween(leftUser, rightUser, limit, beforeCursor) {
-  return collectPagedMessages(visibleMessagesBetween(leftUser, rightUser), limit, beforeCursor);
+  return collectPagedMessages(
+    messagesBetween(leftUser, rightUser),
+    limit,
+    beforeCursor,
+    (message) => !isMessageDeletedFor(message, leftUser)
+  );
 }
 
 function writeSse(res, event, payload) {
@@ -2552,15 +2552,17 @@ function attachConnection(username, res, token = "") {
 }
 
 function detachConnection(username, connection) {
-  const bucket = onlineConnections.get(username);
+  const connectionUsername = String(connection?.username || "");
+  const bucketUsername = onlineConnections.has(username) ? username : connectionUsername;
+  const bucket = onlineConnections.get(bucketUsername);
   if (!bucket) {
     return;
   }
   clearInterval(connection.heartbeat);
   bucket.delete(connection);
   if (bucket.size === 0) {
-    onlineConnections.delete(username);
-    pushPresence(username, false);
+    onlineConnections.delete(bucketUsername);
+    pushPresence(bucketUsername, false);
   }
 }
 
@@ -2772,6 +2774,7 @@ const adminRoutes = createAdminRoutes({
   buildAdminUserDetail,
   isReservedUsernameKey,
   findUserByKey,
+  rebuildUserIndex,
   messages,
   rebuildMessageBuckets,
   onlineConnections,

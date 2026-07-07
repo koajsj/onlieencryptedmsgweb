@@ -67,7 +67,7 @@
             <div class="detail-columns">
               <section class="panel" id="identityPanel">
                 <div class="panel-head">
-                  <h3><span class="sec-icon" aria-hidden="true">◎</span>身份信息</h3>
+                  <h3><span class="sec-icon" aria-hidden="true">•</span>身份信息</h3>
                   <span class="detail-badge">账号与密钥摘要</span>
                 </div>
                 <div class="detail-list" id="identityList"></div>
@@ -76,14 +76,14 @@
 
               <section class="panel action-panel" id="activityPanel">
                 <div class="panel-head">
-                  <h3><span class="sec-icon" aria-hidden="true">◍</span>账号操作</h3>
+                  <h3><span class="sec-icon" aria-hidden="true">•</span>账号操作</h3>
                   <span class="detail-badge" id="actionStatusBadge">待加载</span>
                 </div>
                 <form id="renameForm" class="detail-form">
-                  <label><span>修改用户名</span><input id="renameInput" placeholder="3-24 字母数字下划线" /></label>
+                  <label><span>修改用户名</span><input id="renameInput" placeholder="3-24 位字母、数字或下划线" /></label>
                   <button type="submit" class="button secondary">保存用户名</button>
                 </form>
-                <p class="detail-note">为避免破坏端到端加密密钥，用户密码只能由用户本人在聊天设置中修改。</p>
+                <p class="detail-note">为了避免破坏端到端加密密钥，用户密码只能由用户本人在聊天设置中修改。</p>
                 <form id="banForm" class="detail-form">
                   <label><span>封禁原因</span><input id="banReasonInput" placeholder="封禁时填写原因，解封时可留空" /></label>
                   <button id="banToggleButton" type="submit" class="button danger">更新封禁状态</button>
@@ -95,7 +95,7 @@
             <div class="detail-columns">
               <section class="panel" id="accessPanel">
                 <div class="panel-head">
-                  <h3><span class="sec-icon" aria-hidden="true">▤</span>访问画像</h3>
+                  <h3><span class="sec-icon" aria-hidden="true">•</span>访问画像</h3>
                   <span class="detail-badge" id="accessBadge">最近 12 条日志</span>
                 </div>
                 <div class="detail-list" id="accessProfileList"></div>
@@ -104,7 +104,7 @@
 
               <section class="panel" id="conversationPanel">
                 <div class="panel-head">
-                  <h3><span class="sec-icon" aria-hidden="true">◈</span>会话关系</h3>
+                  <h3><span class="sec-icon" aria-hidden="true">•</span>会话关系</h3>
                   <span class="detail-badge">最近活跃对话</span>
                 </div>
                 <div class="detail-list" id="conversationList"></div>
@@ -114,7 +114,7 @@
             <div class="detail-columns">
               <section class="panel" id="messagePanel">
                 <div class="panel-head">
-                  <h3><span class="sec-icon" aria-hidden="true">◇</span>最近消息</h3>
+                  <h3><span class="sec-icon" aria-hidden="true">•</span>最近消息</h3>
                   <span class="detail-badge">按时间倒序</span>
                 </div>
                 <div class="messages-list" id="messageList"></div>
@@ -122,7 +122,7 @@
 
               <section class="panel" id="auditPanel">
                 <div class="panel-head">
-                  <h3><span class="sec-icon" aria-hidden="true">◌</span>相关审计</h3>
+                  <h3><span class="sec-icon" aria-hidden="true">•</span>相关审计</h3>
                   <span class="detail-badge">关联该用户的管理员操作</span>
                 </div>
                 <div class="messages-list" id="auditList"></div>

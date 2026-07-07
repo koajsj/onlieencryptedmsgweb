@@ -48,6 +48,7 @@ function createAdminRoutes(context) {
     buildAdminUserDetail,
     isReservedUsernameKey,
     findUserByKey,
+    rebuildUserIndex,
     messages,
     rebuildMessageBuckets,
     onlineConnections,
@@ -490,6 +491,7 @@ async function handleAdminUserPatch(req, res, url, pathname) {
   const requestedName = normalizeBoundedText(body.username || "", 24);
   const oldState = adminPublicUser(user);
   let shouldRevokeUserSessions = false;
+  let sessionsChanged = false;
   let disconnectReason = "";
   if (requestedName) {
     const normalizedUsername = normalizeUsername(requestedName);
@@ -508,12 +510,21 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     const previousUsername = user.username;
     user.username = normalizedUsername.value;
     user.usernameKey = normalizedUsername.key;
+    rebuildUserIndex();
     for (const message of messages) {
       if (message.from === previousUsername) {
         message.from = user.username;
       }
       if (message.to === previousUsername) {
         message.to = user.username;
+      }
+      if (Array.isArray(message.deletedFor) && message.deletedFor.includes(previousUsername)) {
+        message.deletedFor = [
+          ...new Set(message.deletedFor.map((name) => (name === previousUsername ? user.username : name)))
+        ];
+      }
+      if (message.recalledBy === previousUsername) {
+        message.recalledBy = user.username;
       }
       if (message.replyTo?.from === previousUsername) {
         message.replyTo.from = user.username;
@@ -540,11 +551,15 @@ async function handleAdminUserPatch(req, res, url, pathname) {
     for (const sessionRecord of sessions.values()) {
       if (sessionRecord.role === "user" && sessionRecord.username === previousUsername) {
         sessionRecord.username = user.username;
+        sessionsChanged = true;
       }
     }
     const connections = onlineConnections.get(previousUsername);
     if (connections) {
       onlineConnections.delete(previousUsername);
+      for (const connection of connections) {
+        connection.username = user.username;
+      }
       onlineConnections.set(user.username, connections);
     }
     purgeUserEventTickets(previousUsername);
@@ -568,6 +583,9 @@ async function handleAdminUserPatch(req, res, url, pathname) {
   }
 
   persistUsers();
+  if (sessionsChanged) {
+    schedulePersistSessions();
+  }
   if (shouldRevokeUserSessions) {
     deleteSessionsForUsername(user.username, "user");
     purgeUserEventTickets(user.username);

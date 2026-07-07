@@ -3578,7 +3578,7 @@ function renderSidebar() {
     ? (() => {
         const remoteResults = state.searchResults.map((user) => ({
           ...user,
-          sourceLabel: "联系人",
+          sourceLabel: "用户",
           searchHint: user.online ? "当前在线" : "可发起会话"
         }));
         const merged = new Map();
@@ -4006,8 +4006,9 @@ function renderThread(options = {}) {
       elements.messageList.append(createSpacer(virtualWindow.topSpacer));
     }
     const slice = virtualWindow ? visibleMessages.slice(virtualWindow.start, virtualWindow.end) : visibleMessages;
-    let prevMessage = null;
-    let lastDayKey = "";
+    const sliceStart = virtualWindow ? virtualWindow.start : 0;
+    let prevMessage = sliceStart > 0 ? visibleMessages[sliceStart - 1] : null;
+    let lastDayKey = prevMessage ? new Date(prevMessage.createdAt || 0).toDateString() : "";
     for (let index = 0; index < slice.length; index += 1) {
       const message = slice[index];
       const dayKey = new Date(message.createdAt || 0).toDateString();
@@ -4036,8 +4037,11 @@ function renderThread(options = {}) {
     scrollMessagesToBottom(true);
     return;
   }
+  const preservePrependedMessages = scrollBehavior === "preserve-prepend";
   if (virtualWindow) {
-    elements.messageList.scrollTop = previousScrollTop;
+    elements.messageList.scrollTop = preservePrependedMessages && previousScrollHeight > 0
+      ? previousScrollTop + (elements.messageList.scrollHeight - previousScrollHeight)
+      : previousScrollTop;
     updateScrollBottomButton();
     return;
   }
@@ -4881,7 +4885,7 @@ async function loadOlderMessages(peer) {
       nextBefore: String(payload.nextBefore || ""),
       loadingOlder: false
     });
-    renderThread({ scrollBehavior: "preserve" });
+    renderThread({ scrollBehavior: "preserve-prepend" });
   } catch (error) {
     paging.loadingOlder = false;
     renderThread({ scrollBehavior: "preserve" });
@@ -4963,6 +4967,7 @@ async function handleUserRenamed(payload) {
       STORAGE.drafts,
       STORAGE.pendingOutbox,
       STORAGE.activePeer,
+      STORAGE.peerSecurityMeta,
       STORAGE.peerKeyPins
     ]) {
       renameScopedStorageOwner(key, previousUsername, nextUsername);
@@ -4992,6 +4997,11 @@ async function handleUserRenamed(payload) {
     state.peerKeyPins[nextUsername] = state.peerKeyPins[previousUsername];
     delete state.peerKeyPins[previousUsername];
     savePeerKeyPins();
+  }
+  if (Object.prototype.hasOwnProperty.call(state.peerSecurityMeta, previousUsername)) {
+    state.peerSecurityMeta[nextUsername] = state.peerSecurityMeta[previousUsername];
+    delete state.peerSecurityMeta[previousUsername];
+    savePeerSecurityMeta();
   }
   if (state.peerObservedKeys.has(previousUsername)) {
     state.peerObservedKeys.set(nextUsername, state.peerObservedKeys.get(previousUsername));
@@ -5779,6 +5789,14 @@ async function deleteMessageById(peer, messageId) {
   if (!target) {
     return;
   }
+  const confirmed = await confirmActionDialog({
+    title: "删除消息",
+    message: "确认删除这条消息吗？删除后仅会从当前账号的会话视图中移除。",
+    confirmLabel: "删除"
+  });
+  if (!confirmed) {
+    return;
+  }
   const messageNode = elements.messageList?.querySelector(`[data-message-id="${messageId}"]`);
   if (messageNode) {
     messageNode.classList.add("is-recalling");
@@ -6184,9 +6202,7 @@ function handleGlobalKeydown(event) {
     return;
   }
   if (event.key === "Escape" && document.activeElement === elements.messageInput) {
-    elements.messageInput.value = "";
-    setDraftForPeer(state.activePeer, "");
-    autoResizeComposer();
+    elements.messageInput.blur();
     return;
   }
   if (event.key === "Escape" && state.replyTarget) {

@@ -1008,6 +1008,9 @@ function renderUsers() {
   elements.prevUsersPageButton.disabled = state.usersPage <= 1;
   elements.nextUsersPageButton.disabled = state.usersPage >= totalPages;
   const hasSelection = state.selectedUsers.size > 0;
+  const selectedOnPage = state.users.filter((user) => state.selectedUsers.has(user.username)).length;
+  elements.selectAllUsers.checked = state.users.length > 0 && selectedOnPage === state.users.length;
+  elements.selectAllUsers.indeterminate = selectedOnPage > 0 && selectedOnPage < state.users.length;
   elements.batchBanButton.disabled = !hasPermission("admin:user:batch") || !hasSelection;
   elements.batchUnbanButton.disabled = !hasPermission("admin:user:batch") || !hasSelection;
 }
@@ -1257,11 +1260,12 @@ function syncMessageAuditControls() {
   if (elements.msgKeywordInput) {
     elements.msgKeywordInput.value = "";
     elements.msgKeywordInput.disabled = true;
-    elements.msgKeywordInput.placeholder = "明文关键词检索已禁用";
+    elements.msgKeywordInput.hidden = true;
   }
   if (elements.msgMaskCheckbox) {
     elements.msgMaskCheckbox.checked = false;
     elements.msgMaskCheckbox.disabled = true;
+    elements.msgMaskCheckbox.closest("label")?.setAttribute("hidden", "hidden");
   }
 }
 
@@ -1362,6 +1366,7 @@ async function handleUserAction(event) {
     } else {
       state.selectedUsers.delete(username);
     }
+    renderUsers();
     return;
   }
 

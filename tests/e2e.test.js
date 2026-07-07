@@ -524,7 +524,14 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.doesNotMatch(appSource, /document\.activeElement === elements\.messageInput && state\.activePeer\) \{\s*scrollMessagesToBottom\(false\)/);
   assert.doesNotMatch(closeEventStreamBody, /manualEventSourceClose = false/);
   assert.match(appSource, /setComposerBusy\(false\);\s*syncReplyState\(\);/);
-  assert.match(appSource, /if \(virtualWindow\) \{\s*elements\.messageList\.scrollTop = previousScrollTop;\s*updateScrollBottomButton\(\);\s*return;/);
+  assert.match(appSource, /const preservePrependedMessages = scrollBehavior === "preserve-prepend";/);
+  assert.match(appSource, /if \(virtualWindow\) \{\s*elements\.messageList\.scrollTop = preservePrependedMessages && previousScrollHeight > 0[\s\S]*updateScrollBottomButton\(\);\s*return;/);
+  assert.match(appSource, /const sliceStart = virtualWindow \? virtualWindow\.start : 0;/);
+  assert.match(appSource, /let prevMessage = sliceStart > 0 \? visibleMessages\[sliceStart - 1\] : null;/);
+  assert.match(appSource, /STORAGE\.peerSecurityMeta,[\s\S]*STORAGE\.peerKeyPins[\s\S]*renameScopedStorageOwner/);
+  assert.match(appSource, /state\.peerSecurityMeta\[nextUsername\] = state\.peerSecurityMeta\[previousUsername\];[\s\S]*savePeerSecurityMeta\(\);/);
+  assert.match(appSource, /if \(event\.key === "Escape" && document\.activeElement === elements\.messageInput\) \{\s*elements\.messageInput\.blur\(\);\s*return;/);
+  assert.match(appSource, /title: "删除消息",[\s\S]*删除后仅会从当前账号的会话视图中移除。/);
   assert.match(appSource, /Math\.hypot\(touch\.clientX - state\.longPressTouchX, touch\.clientY - state\.longPressTouchY\)/);
   assert.match(appSource, /bundle\.capabilities\.zeroKnowledgeMessages !== true/);
   assert.match(appSource, /return bytes;\s*\}\s*function renderAttachmentTransfers/);
@@ -566,6 +573,105 @@ test("browser client recall flow waits for the server and server source stays fr
   assert.ok(serverSource.includes("${value.slice(0, 1024)}..."));
   assert.doesNotMatch(serverSource, /…/);
   assert.match(messageRoutesSource, /const target = messageIdIndex\.get\(messageId\);[\s\S]*target\.from !== session\.username/);
+});
+
+test("client guards keep older message history pagination ordered", async () => {
+  const server = await startServer();
+  try {
+    const aliceIdentity = await createIdentity();
+    const bobIdentity = await createIdentity();
+    const aliceRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "PagingAlice",
+        password: "hello1234",
+        publicKey: aliceIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(aliceIdentity, "hello1234")
+      }
+    });
+    const bobRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "PagingBob",
+        password: "world1234",
+        publicKey: bobIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(bobIdentity, "world1234")
+      }
+    });
+    assert.equal(aliceRegister.status, 201);
+    assert.equal(bobRegister.status, 201);
+
+    const sentIds = [];
+    for (let index = 0; index < 5; index += 1) {
+      const encrypted = await encryptMessage(
+        aliceIdentity,
+        "PagingAlice",
+        "PagingBob",
+        bobIdentity.publicKeyBase64,
+        `paging message ${index + 1}`,
+        70 + index
+      );
+      const sent = await requestJson(server.port, "/api/messages", {
+        method: "POST",
+        session: aliceRegister.session,
+        body: {
+          to: "PagingBob",
+          clientId: `paging-message-${index + 1}`,
+          nonce: encrypted.nonce,
+          ciphertext: encrypted.ciphertext
+        }
+      });
+      assert.equal(sent.status, 201);
+      sentIds.push(sent.json.message.id);
+    }
+
+    const firstPage = await requestJson(server.port, "/api/messages?with=PagingAlice&limit=2", {
+      session: bobRegister.session
+    });
+    assert.equal(firstPage.status, 200);
+    assert.deepEqual(firstPage.json.messages.map((message) => message.id), [sentIds[3], sentIds[4]]);
+    assert.equal(firstPage.json.hasMore, true);
+    assert.equal(firstPage.json.nextBefore, sentIds[3]);
+
+    const secondPage = await requestJson(
+      server.port,
+      `/api/messages?with=PagingAlice&limit=2&before=${encodeURIComponent(firstPage.json.nextBefore)}`,
+      { session: bobRegister.session }
+    );
+    assert.equal(secondPage.status, 200);
+    assert.deepEqual(secondPage.json.messages.map((message) => message.id), [sentIds[1], sentIds[2]]);
+    assert.equal(secondPage.json.hasMore, true);
+    assert.equal(secondPage.json.nextBefore, sentIds[1]);
+
+    const deletedCursor = await requestJson(server.port, "/api/messages/delete", {
+      method: "POST",
+      session: bobRegister.session,
+      body: { messageId: firstPage.json.nextBefore }
+    });
+    assert.equal(deletedCursor.status, 200);
+
+    const afterDeletedCursor = await requestJson(
+      server.port,
+      `/api/messages?with=PagingAlice&limit=2&before=${encodeURIComponent(firstPage.json.nextBefore)}`,
+      { session: bobRegister.session }
+    );
+    assert.equal(afterDeletedCursor.status, 200);
+    assert.deepEqual(afterDeletedCursor.json.messages.map((message) => message.id), [sentIds[1], sentIds[2]]);
+    assert.equal(afterDeletedCursor.json.hasMore, true);
+    assert.equal(afterDeletedCursor.json.nextBefore, sentIds[1]);
+
+    const thirdPage = await requestJson(
+      server.port,
+      `/api/messages?with=PagingAlice&limit=2&before=${encodeURIComponent(secondPage.json.nextBefore)}`,
+      { session: bobRegister.session }
+    );
+    assert.equal(thirdPage.status, 200);
+    assert.deepEqual(thirdPage.json.messages.map((message) => message.id), [sentIds[0]]);
+    assert.equal(thirdPage.json.hasMore, false);
+    assert.equal(thirdPage.json.nextBefore, "");
+  } finally {
+    await server.stop();
+  }
 });
 
 test("deployment scripts preserve generated assets and verify the build without rotating admin credentials by default", () => {
@@ -715,6 +821,137 @@ test("state-changing endpoints reject csrf bypasses and malformed patch payloads
     assert.equal(inconsistentAdminPatch.status, 400);
     assert.equal(inconsistentAdminPatch.json.error, "bannedReason requires banned");
   } finally {
+    await server.stop();
+  }
+});
+
+test("state-changing endpoints preserve per-user deleted message state across admin rename", async () => {
+  const server = await startServer();
+  let bobStream = null;
+  try {
+    const aliceIdentity = await createIdentity();
+    const bobIdentity = await createIdentity();
+    const aliceRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "RenameAlice",
+        password: "hello1234",
+        publicKey: aliceIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(aliceIdentity, "hello1234")
+      }
+    });
+    const bobRegister = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "RenameBob",
+        password: "world1234",
+        publicKey: bobIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(bobIdentity, "world1234")
+      }
+    });
+    assert.equal(aliceRegister.status, 201);
+    assert.equal(bobRegister.status, 201);
+
+    const encrypted = await encryptMessage(
+      aliceIdentity,
+      "RenameAlice",
+      "RenameBob",
+      bobIdentity.publicKeyBase64,
+      "rename delete-state regression",
+      41
+    );
+    const sent = await requestJson(server.port, "/api/messages", {
+      method: "POST",
+      session: aliceRegister.session,
+      body: {
+        to: "RenameBob",
+        clientId: "rename-delete-state-0001",
+        nonce: encrypted.nonce,
+        ciphertext: encrypted.ciphertext
+      }
+    });
+    assert.equal(sent.status, 201);
+
+    const deletedForBob = await requestJson(server.port, "/api/messages/delete", {
+      method: "POST",
+      session: bobRegister.session,
+      body: {
+        messageId: sent.json.message.id
+      }
+    });
+    assert.equal(deletedForBob.status, 200);
+
+    const beforeRenameHistory = await requestJson(server.port, "/api/messages?with=RenameAlice", {
+      session: bobRegister.session
+    });
+    assert.equal(beforeRenameHistory.status, 200);
+    assert.equal(beforeRenameHistory.json.messages.length, 0);
+
+    const adminLogin = await requestJson(server.port, "/api/admin/login", {
+      method: "POST",
+      body: { username: "admin", password: "qwer@1234" }
+    });
+    assert.equal(adminLogin.status, 200);
+
+    bobStream = await openEventStream(server.port, bobRegister.session);
+    assert.equal((await bobStream.waitForEvent("ready")).me, "RenameBob");
+
+    const renamed = await requestJson(server.port, "/api/admin/users/RenameBob", {
+      method: "PATCH",
+      session: adminLogin.session,
+      body: { username: "RenameBobNext" }
+    });
+    assert.equal(renamed.status, 200);
+    assert.equal(renamed.json.user.username, "RenameBobNext");
+    assert.equal(
+      (await bobStream.waitForEvent("user-renamed", (payload) => payload.previousUsername === "RenameBob")).username,
+      "RenameBobNext"
+    );
+
+    const detailWithStream = await requestJson(server.port, "/api/admin/users/RenameBobNext", {
+      session: adminLogin.session
+    });
+    assert.equal(detailWithStream.status, 200);
+    assert.equal(detailWithStream.json.detail.realtime.eventConnections, 1);
+
+    await bobStream.close();
+    bobStream = null;
+    await delay(20);
+
+    const detailAfterStreamClose = await requestJson(server.port, "/api/admin/users/RenameBobNext", {
+      session: adminLogin.session
+    });
+    assert.equal(detailAfterStreamClose.status, 200);
+    assert.equal(detailAfterStreamClose.json.detail.realtime.eventConnections, 0);
+
+    const newNameLogin = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: { username: "RenameBobNext", password: "world1234" }
+    });
+    assert.equal(newNameLogin.status, 200);
+    assert.equal(newNameLogin.json.user.username, "RenameBobNext");
+
+    const oldNameLogin = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: { username: "RenameBob", password: "world1234" }
+    });
+    assert.equal(oldNameLogin.status, 401);
+
+    const meAfterRename = await requestJson(server.port, "/api/me", {
+      session: bobRegister.session
+    });
+    assert.equal(meAfterRename.status, 200);
+    assert.equal(meAfterRename.json.user.username, "RenameBobNext");
+
+    const afterRenameHistory = await requestJson(server.port, "/api/messages?with=RenameAlice", {
+      session: bobRegister.session
+    });
+    assert.equal(afterRenameHistory.status, 200);
+    assert.equal(afterRenameHistory.json.messages.length, 0);
+  } finally {
+    if (bobStream) {
+      await bobStream.close();
+    }
     await server.stop();
   }
 });
