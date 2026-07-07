@@ -51,7 +51,7 @@ function createAdminRoutes(context) {
     rebuildUserIndex,
     messages,
     rebuildMessageBuckets,
-    onlineConnections,
+    renameUserConnections,
     purgeUserEventTickets,
     accessLogStore,
     broadcastUserRename,
@@ -554,14 +554,7 @@ async function handleAdminUserPatch(req, res, url, pathname) {
         sessionsChanged = true;
       }
     }
-    const connections = onlineConnections.get(previousUsername);
-    if (connections) {
-      onlineConnections.delete(previousUsername);
-      for (const connection of connections) {
-        connection.username = user.username;
-      }
-      onlineConnections.set(user.username, connections);
-    }
+    renameUserConnections(previousUsername, user.username);
     purgeUserEventTickets(previousUsername);
     await accessLogStore.renameUserId(previousUsername, user.username);
     broadcastUserRename(previousUsername, user.username);
