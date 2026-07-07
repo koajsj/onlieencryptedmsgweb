@@ -15,6 +15,7 @@ const APP_SOURCE = path.join(ROOT_DIR, "public", "app.js");
 const UI_UTILS_SOURCE = path.join(ROOT_DIR, "public", "ui-utils.js");
 const ADMIN_SOURCE = path.join(ROOT_DIR, "public", "admin.js");
 const ADMIN_USER_SOURCE = path.join(ROOT_DIR, "public", "admin-user.js");
+const ACCOUNT_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "account-routes.js");
 const MESSAGE_ROUTES_SOURCE = path.join(ROOT_DIR, "routes", "message-routes.js");
 const INDEX_HTML = path.join(ROOT_DIR, "public", "index.html");
 const ADMIN_HTML = path.join(ROOT_DIR, "public", "admin.html");
@@ -552,6 +553,8 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(appSource, /消息会在本页联网后自动发送，刷新页面会丢失/);
   assert.match(appSource, /Offline retries stay in-memory only to avoid persisting plaintext locally/);
   assert.doesNotMatch(appSource, /elements\.authPasswordInput\.value\.trim\(\)/);
+  assert.doesNotMatch(appSource, /password\.length < 4|密码长度需为 4-72 位|新密码至少需要 4 个字符/);
+  assert.doesNotMatch(fs.readFileSync(ACCOUNT_ROUTES_SOURCE, "utf8"), /password\.length < 4|password must be 4-72 characters/);
   assert.doesNotMatch(appSource, /clearNotificationBadge\(\)/);
   assert.match(appSource, /document\.title = total > 0 \? `\(\$\{total > 99 \? "99\+" : total\}\) Echo` : "Echo";/);
   assert.match(appSource, /function closeNotificationPanel\(\)/);
@@ -584,18 +587,18 @@ test("client guards keep older message history pagination ordered", async () => 
       method: "POST",
       body: {
         username: "PagingAlice",
-        password: "hello1234",
+        password: "a",
         publicKey: aliceIdentity.publicKeyBase64,
-        keyBundle: await createKeyBundle(aliceIdentity, "hello1234")
+        keyBundle: await createKeyBundle(aliceIdentity, "a")
       }
     });
     const bobRegister = await requestJson(server.port, "/api/register", {
       method: "POST",
       body: {
         username: "PagingBob",
-        password: "world1234",
+        password: "b",
         publicKey: bobIdentity.publicKeyBase64,
-        keyBundle: await createKeyBundle(bobIdentity, "world1234")
+        keyBundle: await createKeyBundle(bobIdentity, "b")
       }
     });
     assert.equal(aliceRegister.status, 201);
@@ -1521,9 +1524,9 @@ test("password change rotates the password hash while keeping the encrypted key 
       method: "POST",
       body: {
         username: "Changer",
-        password: "hello123",
+        password: "x",
         publicKey: identity.publicKeyBase64,
-        keyBundle: await createKeyBundle(identity, "hello123")
+        keyBundle: await createKeyBundle(identity, "x")
       }
     });
     assert.equal(register.status, 201);
@@ -1532,9 +1535,9 @@ test("password change rotates the password hash while keeping the encrypted key 
       method: "POST",
       session: register.session,
       body: {
-        currentPassword: "hello123",
-        newPassword: "hello456",
-        keyBundle: await createKeyBundle(identity, "hello456")
+        currentPassword: "x",
+        newPassword: "y",
+        keyBundle: await createKeyBundle(identity, "y")
       }
     });
     assert.equal(changed.status, 200);
@@ -1543,7 +1546,7 @@ test("password change rotates the password hash while keeping the encrypted key 
       method: "POST",
       body: {
         username: "Changer",
-        password: "hello123"
+        password: "x"
       }
     });
     assert.equal(oldLogin.status, 401);
@@ -1552,11 +1555,11 @@ test("password change rotates the password hash while keeping the encrypted key 
       method: "POST",
       body: {
         username: "Changer",
-        password: "hello456"
+        password: "y"
       }
     });
     assert.equal(newLogin.status, 200);
-    assert.equal(await decryptKeyBundle(newLogin.json.keyBundle, "hello456"), identity.privateKeyPkcs8Base64);
+    assert.equal(await decryptKeyBundle(newLogin.json.keyBundle, "y"), identity.privateKeyPkcs8Base64);
   } finally {
     await server.stop();
   }

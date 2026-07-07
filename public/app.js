@@ -2153,9 +2153,6 @@ function validateAuthInput(username, password) {
   if (!password) {
     return { ok: false, field: elements.authPasswordInput, message: "请输入密码。" };
   }
-  if (password.length < 4 || password.length > 72) {
-    return { ok: false, field: elements.authPasswordInput, message: "密码长度需为 4-72 位。" };
-  }
   return { ok: true };
 }
 
@@ -2523,7 +2520,6 @@ function translateApiError(pathname, status, payload) {
     "username and password are required": "请输入账号和密码",
     "invalid username or password": "账号或密码错误",
     "username must be 3-24 characters using letters, numbers, or underscore": "用户名需为 3-24 位，只能使用字母、数字或下划线。",
-    "password must be 4-72 characters": "密码长度需为 4-72 位。",
     "username already exists": "用户名已存在",
     "username is reserved": "该用户名不可使用",
     "account banned": "账号已被禁用",
@@ -6693,10 +6689,6 @@ function bindEvents() {
     }
     if (newPw !== confirmPw) {
       showToast("两次输入的新密码不一致", "error");
-      return;
-    }
-    if (newPw.length < 4) {
-      showToast("新密码至少需要 4 个字符", "error");
       return;
     }
     try {

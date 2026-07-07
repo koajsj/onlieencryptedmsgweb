@@ -196,11 +196,6 @@ async function handleAdminAccountReset(req, res) {
     sendJson(res, 400, { error: "管理员账号格式无效" });
     return;
   }
-  if (password.length < 4 || password.length > 72) {
-    sendJson(res, 400, { error: "管理员密码必须为 4-72 位" });
-    return;
-  }
-
   const nextConfig = {
     username: normalizedUsername.value,
     credential: {

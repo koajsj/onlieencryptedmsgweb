@@ -110,10 +110,6 @@ async function handleRegister(req, res) {
     sendJson(res, 409, { error: "username is reserved" });
     return;
   }
-  if (password.length < 4 || password.length > 72) {
-    sendJson(res, 400, { error: "password must be 4-72 characters" });
-    return;
-  }
   if (findUserByKey(normalizedUsername.key)) {
     sendJson(res, 409, { error: "username already exists" });
     return;
@@ -621,10 +617,6 @@ async function handleMePassword(req, res, url) {
   }
   if (providedKeyBundle && !keyBundle) {
     sendJson(res, 400, { error: "invalid account key bundle" });
-    return;
-  }
-  if (nextPassword.length < 4 || nextPassword.length > 72) {
-    sendJson(res, 400, { error: "password must be 4-72 characters" });
     return;
   }
   const currentOk = await verifyPassword(currentPassword, user.passwordHash || DUMMY_PASSWORD_HASH);
