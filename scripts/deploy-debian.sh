@@ -29,6 +29,8 @@ ADMIN_PASSWORD_HASH="${ADMIN_PASSWORD_HASH:-}"
 ADMIN_UPDATE_PASSPHRASE="${ADMIN_UPDATE_PASSPHRASE:-}"
 AUDIT_HMAC_KEY="${AUDIT_HMAC_KEY:-}"
 SAFE_RESET_PATHS=(
+  "scripts/deploy-debian.sh"
+  "scripts/update-debian.sh"
   "public/index.html"
   "public/admin.html"
   "public/admin-user.html"

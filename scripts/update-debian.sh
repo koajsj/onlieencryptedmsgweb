@@ -26,6 +26,8 @@ SKIP_REPOSITORY_UPDATE="${SKIP_REPOSITORY_UPDATE:-0}"
 PREVIOUS_REV="${PREVIOUS_REV:-}"
 CURRENT_REV="${CURRENT_REV:-}"
 SAFE_RESET_PATHS=(
+  "scripts/deploy-debian.sh"
+  "scripts/update-debian.sh"
   "public/index.html"
   "public/admin.html"
   "public/admin-user.html"
