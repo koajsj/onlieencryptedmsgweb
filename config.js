@@ -132,7 +132,7 @@ const USER_LOGIN_MAX_FAILURES = Math.max(
 );
 const MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER = Math.max(
   1,
-  Number.parseInt(process.env.MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER || "1", 10) || 1
+  Number.parseInt(process.env.MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER || "5", 10) || 5
 );
 const DUMMY_PASSWORD_HASH =
   "scrypt:" +

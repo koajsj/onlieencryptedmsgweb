@@ -492,15 +492,14 @@ test("browser client restores password-encrypted key bundles without reviving le
   assert.match(appSource, /\/api\/me\/key-bundle/);
   assert.match(appSource, /publicKey:\s*identity\.publicKeyBase64/);
   assert.match(appSource, /deleteScopedStorageRecord\(STORAGE\.deviceIdentities/);
-  assert.match(appSource, /realtimeTakeoverPaused/);
-  assert.match(appSource, /账号已在其他设备上线/);
-  assert.doesNotMatch(appSource, /同一账号可多端进入/);
+  assert.doesNotMatch(appSource, /realtimeTakeoverPaused/);
+  assert.doesNotMatch(appSource, /账号已在其他设备上线/);
   assert.doesNotMatch(adminUserSource, /encryptedPrivateKey|privateKeySalt|privateKeyIv/);
   assert.match(adminUserSource, /privateKeyStoredOnServer/);
   assert.doesNotMatch(configSource, /PRIVATE_KEY_SALT_BYTES|PRIVATE_KEY_IV_BYTES|ENCRYPTED_PRIVATE_KEY_BYTES/);
-  assert.match(configSource, /MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER \|\| "1"/);
+  assert.match(configSource, /MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER \|\| "5"/);
   assert.match(accessLogMiddleware, /ACCESS_SESSION_MAX_AGE_SECONDS = 30 \* 24 \* 60 \* 60/);
-  assert.match(realtimeHubSource, /signed in on another device/);
+  assert.doesNotMatch(realtimeHubSource, /signed in on another device/);
   assert.doesNotMatch(messageStoreSource, /text: typeof replyTo\.text === "string"/);
   assert.doesNotMatch(routeSources, /\$\{address\}/);
   assert.doesNotMatch(routeSources, /ticketRecord\.address/);
@@ -1067,10 +1066,11 @@ test("event stream tickets are one-time use", async () => {
   }
 });
 
-test("new realtime connection replaces the previous online device for the same user", async () => {
-  const server = await startServer();
+test("multiple realtime connections for one user receive presence updates", async () => {
+  const server = await startServer({ MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER: "2" });
   let firstStream = null;
   let secondStream = null;
+  let peerStream = null;
   try {
     const identity = await createIdentity();
     const registered = await requestJson(server.port, "/api/register", {
@@ -1087,11 +1087,43 @@ test("new realtime connection replaces the previous online device for the same u
     firstStream = await openEventStream(server.port, registered.session);
     assert.equal((await firstStream.waitForEvent("ready")).me, "SingleOnlineUser");
 
-    secondStream = await openEventStream(server.port, registered.session);
+    const secondDeviceLogin = await requestJson(server.port, "/api/login", {
+      method: "POST",
+      body: {
+        username: "SingleOnlineUser",
+        password: "single123"
+      }
+    });
+    assert.equal(secondDeviceLogin.status, 200);
+    secondStream = await openEventStream(server.port, secondDeviceLogin.session);
     assert.equal((await secondStream.waitForEvent("ready")).me, "SingleOnlineUser");
-    const takeover = await firstStream.waitForEvent("system", (payload) => payload.reason === "signed in on another device");
-    assert.equal(takeover.reason, "signed in on another device");
+    const cappedTicket = await requestJson(server.port, "/api/events/token", {
+      method: "POST",
+      session: registered.session
+    });
+    assert.equal(cappedTicket.status, 429);
+    assert.equal(cappedTicket.json.error, "too many concurrent connections");
+
+    const peerIdentity = await createIdentity();
+    const peerRegistered = await requestJson(server.port, "/api/register", {
+      method: "POST",
+      body: {
+        username: "PresencePeer",
+        password: "peer123",
+        publicKey: peerIdentity.publicKeyBase64,
+        keyBundle: await createKeyBundle(peerIdentity, "peer123")
+      }
+    });
+    assert.equal(peerRegistered.status, 201);
+    peerStream = await openEventStream(server.port, peerRegistered.session);
+    assert.equal((await peerStream.waitForEvent("ready")).me, "PresencePeer");
+    const isPeerOnline = (payload) => payload.username === "PresencePeer" && payload.online === true;
+    assert.equal((await firstStream.waitForEvent("presence", isPeerOnline)).username, "PresencePeer");
+    assert.equal((await secondStream.waitForEvent("presence", isPeerOnline)).username, "PresencePeer");
   } finally {
+    if (peerStream) {
+      await peerStream.close();
+    }
     if (firstStream) {
       await firstStream.close();
     }

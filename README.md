@@ -33,6 +33,7 @@
 - `ADMIN_PASSWORD_HASH`：`scrypt:salt:hash` 形式的预生成哈希，直接喂入。
 - `ADMIN_UPDATE_PASSPHRASE`：管理员账号热更新验证口令。默认值 `admin` 只用于兼容部署文件，公开账号重置接口不会接受这个默认弱口令；生产环境如需启用后台“重置管理员账号”，必须显式配置非默认值。
 - `AUDIT_HMAC_KEY`：管理员审计链 HMAC 密钥。生产环境建议持久化保存，避免管理员密码调整后出现审计链误告警。
+- `MAX_CONCURRENT_EVENT_CONNECTIONS_PER_USER`：单个账号可同时保持的实时连接数，默认 `5`。多设备会同时接收实时消息；超过上限时，新连接会被拒绝而不会中断已在线设备。
 
 部署脚本会把最终凭据写入 `/etc/default/secure-chat`；更新脚本会保留已有凭据，除非你显式传入新的管理员变量。
 

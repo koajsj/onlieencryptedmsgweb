@@ -119,6 +119,10 @@ function handleEvents(req, res, url) {
   res.write(": connected\n\n");
 
   const connection = attachConnection(ticketRecord.username, res, ticketRecord.token);
+  if (!connection) {
+    res.end();
+    return;
+  }
   writeSse(res, "ready", {
     me: ticketRecord.username,
     onlineUsers: listOnlineUsers().filter((username) => isPresenceVisibleTo(ticketRecord.username, username))

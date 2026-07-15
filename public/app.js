@@ -246,7 +246,6 @@ const state = {
   reconnectTimer: 0,
   reconnectAttempts: 0,
   manualEventSourceClose: false,
-  realtimeTakeoverPaused: false,
   connectionState: "offline",
   accountProfile: {},
   contactProfiles: {},
@@ -2785,7 +2784,6 @@ function clearSession(showAuth = true, clearIdentity = true) {
 
 function setSession(user, identity) {
   state.authenticated = true;
-  state.realtimeTakeoverPaused = false;
   state.me = user;
   state.identity = identity;
   state.previewMode = false;
@@ -5333,12 +5331,6 @@ async function createEventTicket() {
 }
 
 function startEventStream(silent = false) {
-  if (silent && state.realtimeTakeoverPaused) {
-    return;
-  }
-  if (!silent) {
-    state.realtimeTakeoverPaused = false;
-  }
   void openEventStream().catch((error) => {
     state.connectionState = "offline";
     renderThread();
@@ -5435,28 +5427,8 @@ async function openEventStream() {
       .catch(() => {});
   });
 
-  source.addEventListener("system", (event) => {
-    const payload = parseSsePayload(event);
-    if (payload.reason !== "signed in on another device") {
-      return;
-    }
-    state.realtimeTakeoverPaused = true;
-    state.manualEventSourceClose = true;
-    if (state.reconnectTimer) {
-      window.clearTimeout(state.reconnectTimer);
-      state.reconnectTimer = 0;
-    }
-    if (state.eventSource) {
-      state.eventSource.close();
-      state.eventSource = null;
-    }
-    state.connectionState = "offline";
-    renderThread();
-    showToast("账号已在其他设备上线，本设备已停止实时同步", "error");
-  });
-
   source.addEventListener("error", () => {
-    if (state.manualEventSourceClose || state.realtimeTakeoverPaused || !state.authenticated) {
+    if (state.manualEventSourceClose || !state.authenticated) {
       return;
     }
     if (state.eventSource) {
