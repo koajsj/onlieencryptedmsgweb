@@ -1031,6 +1031,15 @@ function sanitizeAttachmentName(value) {
   return String(value || "未命名文件").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim().slice(0, 80) || "未命名文件";
 }
 
+function base64DecodedByteLength(value) {
+  const encoded = String(value || "");
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    return -1;
+  }
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return (encoded.length / 4) * 3 - padding;
+}
+
 function parseAttachmentMessage(text) {
   const value = String(text || "");
   if (!value.startsWith(ATTACHMENT_MARKER)) {
@@ -1049,13 +1058,12 @@ function parseAttachmentMessage(text) {
       size > MAX_ATTACHMENT_BYTES ||
       DANGEROUS_ATTACHMENT_TYPES.has(type) ||
       DANGEROUS_ATTACHMENT_EXTENSIONS.has(ext) ||
-      !isAllowedAttachmentType(type, ext) ||
-      !/^[A-Za-z0-9+/]*={0,2}$/.test(data)
+      !isAllowedAttachmentType(type, ext)
     ) {
       return null;
     }
-    const estimatedSize = Math.floor(data.length * 3 / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
-    if (Math.abs(estimatedSize - size) > 2) {
+    const decodedSize = base64DecodedByteLength(data);
+    if (decodedSize !== size) {
       return null;
     }
     return {

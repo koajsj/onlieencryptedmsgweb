@@ -572,6 +572,9 @@ test("client guards duplicate sends and mobile viewport resizing", () => {
   assert.match(appSource, /return bytes;\s*\}\s*function renderAttachmentTransfers/);
   assert.match(appSource, /const bytes = await validateAttachmentFile\(file\);[\s\S]*buildAttachmentMessageText\(file, bytes\)/);
   assert.match(appSource, /const batchReplyTarget = state\.replyTarget \? \{ \.\.\.state\.replyTarget \} : null;/);
+  assert.match(appSource, /function base64DecodedByteLength\(value\)/);
+  assert.match(appSource, /const decodedSize = base64DecodedByteLength\(data\);/);
+  assert.match(appSource, /if \(decodedSize !== size\)/);
   assert.match(appSource, /const replyTo = batchReplyTarget \? \{ \.\.\.batchReplyTarget \} : null;/);
   assert.match(appSource, /MAX_ATTACHMENT_BATCH_BYTES = 8 \* 1024 \* 1024/);
   assert.match(appSource, /function isAllowedAttachmentType\(type, ext\)/);
