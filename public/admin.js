@@ -187,6 +187,7 @@ function translateAdminError(pathname, status, payload) {
     "invalid admin credentials": "管理员账号或密码错误",
     "身份验证口令错误": "身份验证口令错误",
     "管理员身份验证口令未配置": "管理员身份验证口令未配置",
+    "管理员身份验证口令未配置或仍为默认值": "管理员身份验证口令未配置，或仍在使用默认口令",
     "管理员配置写入失败": "管理员配置写入失败",
     unauthorized: "请先登录管理员账号",
     "session expired": "管理员登录已过期，请重新登录",
